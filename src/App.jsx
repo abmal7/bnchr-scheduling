@@ -77,6 +77,10 @@ const tireSize = (t) => `${t.width}/${t.aspect}R${t.rim}`;
 const uid = () => `it-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const itemsTotal = (items) => (items || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
 
+// shared inline style objects (defined early — const is not hoisted)
+const miniLabel = { fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 };
+const slotCellBase = { border: "1px solid var(--border)", padding: "8px 6px", textAlign: "center" };
+
 async function searchTires(q) {
   const term = (q || "").trim();
   if (term.length < 2) return [];
@@ -263,6 +267,8 @@ async function createCustomer(c) {
 }
 async function createCar(car) {
   try { const r = await sb("/customer_cars", { method: "POST", body: JSON.stringify(car) }); return r?.[0] || { ...car, id: `lcar-${Date.now()}` }; }
+  catch { return { ...car, id: `lcar-${Date.now()}` }; }
+}
 async function fetchAddresses() {
   try { const d = await sb("/customer_addresses?select=*"); return d || []; }
   catch { return MOCK_ADDRESSES; }
@@ -270,8 +276,6 @@ async function fetchAddresses() {
 async function createAddress(a) {
   try { const r = await sb("/customer_addresses", { method: "POST", body: JSON.stringify(a) }); return r?.[0] || { ...a, id: `laddr-${Date.now()}` }; }
   catch { return { ...a, id: `laddr-${Date.now()}` }; }
-}
-  catch { return { ...car, id: `lcar-${Date.now()}` }; }
 }
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
@@ -735,7 +739,6 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
     </div>
   );
 }
-const slotCellBase = { border: "1px solid var(--border)", padding: "8px 6px", textAlign: "center" };
 
 // ─── New Order Modal (redesigned flow) ────────────────────────────────────────
 // 1) Mobile → autofill name + cars + addresses
@@ -1018,7 +1021,6 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
     </div>
   );
 }
-const miniLabel = { fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 };
 
 // ─── Mini editors: cars + addresses (used in New Customer + profile) ──────────
 function CarRowsEditor({ rows, setRows }) {
