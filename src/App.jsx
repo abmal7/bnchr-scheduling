@@ -168,6 +168,12 @@ const MOCK_CARS = [
   { id: "mcar-3", customer_id: "mc-2", brand: "Porsche", model: "Cayenne",      year: "2023", plate: "Kuwait · 77321 · Private" },
   { id: "mcar-4", customer_id: "mc-3", brand: "GMC",     model: "Yukon",        year: "2021", plate: "Kuwait · 33210 · Private" },
 ];
+const MOCK_ADDRESSES = [
+  { id: "ma-1", customer_id: "mc-1", label: "Home", area: "Salmiya", block: "12", street: "Hamad Al-Mubarak", house: "14", map_link: "https://maps.google.com/?q=29.3375,48.0838" },
+  { id: "ma-2", customer_id: "mc-1", label: "Office", area: "Sharq", block: "3", street: "Ahmad Al-Jaber", house: "Tower 5", map_link: "" },
+  { id: "ma-3", customer_id: "mc-2", label: "Home", area: "Rumaithiya", block: "3", street: "Al-Khaleej", house: "7A", map_link: "" },
+  { id: "ma-4", customer_id: "mc-3", label: "Home", area: "Hawalli", block: "5", street: "Tunis", house: "22", map_link: "" },
+];
 const MOCK_JOBS = [
   {
     id: "mock-1", customer_id: "mc-1",
@@ -257,6 +263,14 @@ async function createCustomer(c) {
 }
 async function createCar(car) {
   try { const r = await sb("/customer_cars", { method: "POST", body: JSON.stringify(car) }); return r?.[0] || { ...car, id: `lcar-${Date.now()}` }; }
+async function fetchAddresses() {
+  try { const d = await sb("/customer_addresses?select=*"); return d || []; }
+  catch { return MOCK_ADDRESSES; }
+}
+async function createAddress(a) {
+  try { const r = await sb("/customer_addresses", { method: "POST", body: JSON.stringify(a) }); return r?.[0] || { ...a, id: `laddr-${Date.now()}` }; }
+  catch { return { ...a, id: `laddr-${Date.now()}` }; }
+}
   catch { return { ...car, id: `lcar-${Date.now()}` }; }
 }
 
@@ -728,7 +742,7 @@ const slotCellBase = { border: "1px solid var(--border)", padding: "8px 6px", te
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, customers, cars, jobs, onNewCustomer }) {
+function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onNewCustomer }) {
   const blank = {
     customer_name: "", customer_mobile: "", customer_id: null,
     area: "", block: "", street: "", house: "", map_link: "",
@@ -746,6 +760,8 @@ function NewJobModal({ onClose, onCreated, customers, cars, jobs, onNewCustomer 
   const [mobileQ, setMobileQ] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [selectedCar, setSelectedCar] = useState(null);
+  const [selectedAddr, setSelectedAddr] = useState(null);
+  const [addrMode, setAddrMode] = useState("pick"); // pick | new
   const [saving, setSaving] = useState(false);
 
   const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
@@ -758,18 +774,23 @@ function NewJobModal({ onClose, onCreated, customers, cars, jobs, onNewCustomer 
   const grandTotal = itemsSum + laborCharge;
 
   const customerCars = selectedCustomer ? cars.filter(c => c.customer_id === selectedCustomer.id) : [];
+  const customerAddrs = selectedCustomer ? (addresses || []).filter(a => a.customer_id === selectedCustomer.id) : [];
 
   // mobile lookup
   const mobileMatches = mobileQ.length < 3 ? [] : customers.filter(c => (c.mobile || "").includes(mobileQ));
 
   const selectCustomer = (c) => {
-    setSelectedCustomer(c); setSelectedCar(null); setMobileQ("");
+    setSelectedCustomer(c); setSelectedCar(null); setSelectedAddr(null); setAddrMode("pick"); setMobileQ("");
     setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, area: c.area || p.area,
       car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null }));
   };
   const selectCar = (car) => {
     setSelectedCar(car);
     setF(p => ({ ...p, car_id: car.id, car_brand: car.brand, car_model: car.model, car_year: car.year, car_plate: car.plate }));
+  };
+  const selectAddr = (a) => {
+    setSelectedAddr(a); setAddrMode("pick");
+    setF(p => ({ ...p, area: a.area, block: a.block, street: a.street, house: a.house, map_link: a.map_link || "" }));
   };
   const clearCustomer = () => {
     setSelectedCustomer(null); setSelectedCar(null);
@@ -882,11 +903,39 @@ function NewJobModal({ onClose, onCreated, customers, cars, jobs, onNewCustomer 
 
             {/* Address */}
             <div className="form-section-title">Location</div>
-            <div className="form-field"><label>Area *</label><input value={f.area} onChange={set("area")} placeholder="Salmiya" /></div>
-            <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
-            <div className="form-field"><label>Street</label><input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" /></div>
-            <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
-            <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
+            {/* Saved address picker (when customer has addresses) */}
+            {selectedCustomer && customerAddrs.length > 0 && addrMode === "pick" && (
+              <div className="form-full">
+                <label style={miniLabel}>Saved Addresses</label>
+                <div className="car-picker">
+                  {customerAddrs.map(a => (
+                    <div key={a.id} className={`car-option ${selectedAddr?.id === a.id ? "selected" : ""}`} onClick={() => selectAddr(a)}>
+                      <div className={`car-option-radio ${selectedAddr?.id === a.id ? "selected" : ""}`} />
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>{a.label || "Address"} — {a.area}</div>
+                        <div style={{ fontSize: 12, color: "var(--muted)" }}>Block {a.block}, St {a.street}, {a.house}{a.map_link ? " · 📍" : ""}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => { setAddrMode("new"); setSelectedAddr(null); setF(p => ({ ...p, area: "", block: "", street: "", house: "", map_link: "" })); }}>+ Use a new address</button>
+              </div>
+            )}
+            {/* Manual address fields (no saved addrs, or adding new) */}
+            {(!selectedCustomer || customerAddrs.length === 0 || addrMode === "new") && (
+              <>
+                {selectedCustomer && customerAddrs.length > 0 && addrMode === "new" && (
+                  <div className="form-full" style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setAddrMode("pick")}>← Back to saved addresses</button>
+                  </div>
+                )}
+                <div className="form-field"><label>Area *</label><input value={f.area} onChange={set("area")} placeholder="Salmiya" /></div>
+                <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
+                <div className="form-field"><label>Street</label><input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" /></div>
+                <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
+                <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
+              </>
+            )}
 
             {/* 2 — Service + items + labor */}
             <div className="form-section-title">2 · Service & Items</div>
@@ -971,46 +1020,104 @@ function NewJobModal({ onClose, onCreated, customers, cars, jobs, onNewCustomer 
 }
 const miniLabel = { fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 };
 
-// ─── New Customer Modal ───────────────────────────────────────────────────────
-function NewCustomerModal({ initialName, onClose, onCreated }) {
-  const [f, setF] = useState({ name: initialName || "", mobile: "", area: "", notes: "" });
+// ─── Mini editors: cars + addresses (used in New Customer + profile) ──────────
+function CarRowsEditor({ rows, setRows }) {
+  const add = () => setRows(p => [...p, { _tmp: uid(), brand: "", model: "", year: "", plate: "" }]);
+  const upd = (i, k, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, [k]: v } : r));
+  const del = (i) => setRows(p => p.filter((_, idx) => idx !== i));
+  return (
+    <div className="form-full">
+      <label style={miniLabel}>Vehicles</label>
+      {rows.map((r, i) => (
+        <div key={r._tmp || r.id || i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 70px 1fr 32px", gap: 6, marginBottom: 6 }}>
+          <input className="filter-input" placeholder="Brand" value={r.brand} onChange={e => upd(i, "brand", e.target.value)} />
+          <input className="filter-input" placeholder="Model" value={r.model} onChange={e => upd(i, "model", e.target.value)} />
+          <input className="filter-input" placeholder="Year" value={r.year} onChange={e => upd(i, "year", e.target.value)} />
+          <input className="filter-input" placeholder="Plate" value={r.plate} onChange={e => upd(i, "plate", e.target.value)} />
+          <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => del(i)}>✕</button>
+        </div>
+      ))}
+      <button className="btn btn-ghost btn-sm" onClick={add}>+ Add vehicle</button>
+    </div>
+  );
+}
+
+function AddressRowsEditor({ rows, setRows }) {
+  const add = () => setRows(p => [...p, { _tmp: uid(), label: "Home", area: "", block: "", street: "", house: "", map_link: "" }]);
+  const upd = (i, k, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, [k]: v } : r));
+  const del = (i) => setRows(p => p.filter((_, idx) => idx !== i));
+  return (
+    <div className="form-full">
+      <label style={miniLabel}>Addresses</label>
+      {rows.map((r, i) => (
+        <div key={r._tmp || r.id || i} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <input className="filter-input" placeholder="Label (Home, Office…)" value={r.label} onChange={e => upd(i, "label", e.target.value)} style={{ width: 160 }} />
+            <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => del(i)}>✕</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 1fr 70px", gap: 6, marginBottom: 6 }}>
+            <input className="filter-input" placeholder="Area" value={r.area} onChange={e => upd(i, "area", e.target.value)} />
+            <input className="filter-input" placeholder="Block" value={r.block} onChange={e => upd(i, "block", e.target.value)} />
+            <input className="filter-input" placeholder="Street" value={r.street} onChange={e => upd(i, "street", e.target.value)} />
+            <input className="filter-input" placeholder="House" value={r.house} onChange={e => upd(i, "house", e.target.value)} />
+          </div>
+          <input className="filter-input" style={{ width: "100%" }} placeholder="Google Map link" value={r.map_link} onChange={e => upd(i, "map_link", e.target.value)} />
+        </div>
+      ))}
+      <button className="btn btn-ghost btn-sm" onClick={add}>+ Add address</button>
+    </div>
+  );
+}
+
+// ─── New Customer Modal (with cars + addresses) ───────────────────────────────
+function NewCustomerModal({ initialName, initialMobile, onClose, onCreated }) {
+  const [f, setF] = useState({ name: initialName || "", mobile: initialMobile || "", notes: "" });
+  const [carRows, setCarRows] = useState([]);
+  const [addrRows, setAddrRows] = useState([]);
   const [saving, setSaving] = useState(false);
   const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
 
   const save = async () => {
     if (!f.name || !f.mobile) return;
     setSaving(true);
-    const c = await createCustomer({ ...f, created_at: new Date().toISOString() });
-    onCreated(c);
+    // primary area = first address area (back-compat with customer.area)
+    const primaryArea = addrRows[0]?.area || "";
+    const c = await createCustomer({ ...f, area: primaryArea, created_at: new Date().toISOString() });
+    // save cars
+    const savedCars = [];
+    for (const r of carRows) {
+      if (!r.brand && !r.model) continue;
+      const car = await createCar({ brand: r.brand, model: r.model, year: r.year, plate: r.plate, customer_id: c.id, created_at: new Date().toISOString() });
+      savedCars.push(car);
+    }
+    // save addresses
+    const savedAddrs = [];
+    for (const r of addrRows) {
+      if (!r.area) continue;
+      const a = await createAddress({ label: r.label, area: r.area, block: r.block, street: r.street, house: r.house, map_link: r.map_link, customer_id: c.id, created_at: new Date().toISOString() });
+      savedAddrs.push(a);
+    }
+    onCreated(c, savedCars, savedAddrs);
     setSaving(false);
     onClose();
   };
 
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 420 }}>
+      <div className="modal">
         <div className="modal-header">
           <h3>New Customer</h3>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
           <div className="form-grid">
-            <div className="form-field form-full">
-              <label>Full Name *</label>
-              <input value={f.name} onChange={set("name")} placeholder="Ahmad Al-Salem" />
-            </div>
-            <div className="form-field">
-              <label>Mobile *</label>
-              <input value={f.mobile} onChange={set("mobile")} placeholder="99001234" />
-            </div>
-            <div className="form-field">
-              <label>Area</label>
-              <input value={f.area} onChange={set("area")} placeholder="Salmiya" />
-            </div>
-            <div className="form-field form-full">
-              <label>Notes</label>
-              <textarea value={f.notes} onChange={set("notes")} placeholder="VIP, fleet client, special instructions…" />
-            </div>
+            <div className="form-field"><label>Full Name *</label><input value={f.name} onChange={set("name")} placeholder="Ahmad Al-Salem" /></div>
+            <div className="form-field"><label>Mobile *</label><input value={f.mobile} onChange={set("mobile")} placeholder="99001234" /></div>
+            <div className="form-field form-full"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="VIP, fleet client…" /></div>
+            <div className="form-section-title">Vehicles</div>
+            <CarRowsEditor rows={carRows} setRows={setCarRows} />
+            <div className="form-section-title">Addresses</div>
+            <AddressRowsEditor rows={addrRows} setRows={setAddrRows} />
           </div>
         </div>
         <div className="modal-footer">
@@ -1438,8 +1545,9 @@ function HistoryView({ jobs, onSelectJob }) {
 }
 
 // ─── Customer Profile Detail ──────────────────────────────────────────────────
-function CustomerProfileDetail({ customer, cars, jobs, onBack, onSelectJob, onAddCar }) {
+function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSelectJob, onAddCar, onAddAddress }) {
   const customerCars = cars.filter(c => c.customer_id === customer.id);
+  const customerAddrs = (addresses || []).filter(a => a.customer_id === customer.id);
   const customerJobs = jobs.filter(j => j.customer_id === customer.id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
   const totalSpent = customerJobs.reduce((s, j) => s + Number(j.total || 0), 0);
 
@@ -1475,6 +1583,24 @@ function CustomerProfileDetail({ customer, cars, jobs, onBack, onSelectJob, onAd
                 <div className="car-card-plate">{car.plate}</div>
               </div>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.filter(j => j.car_id === car.id).length} jobs</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <h3>Addresses ({customerAddrs.length})</h3>
+          <button className="btn btn-ghost btn-sm" onClick={() => onAddAddress(customer)}>+ Add Address</button>
+        </div>
+        <div className="card-body">
+          {customerAddrs.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>No addresses on file.</div>}
+          {customerAddrs.map(a => (
+            <div key={a.id} className="car-card">
+              <div>
+                <div className="car-card-info">{a.label || "Address"} — {a.area}</div>
+                <div className="car-card-plate">Block {a.block}, St {a.street}, {a.house}{a.map_link ? " · 📍 map" : ""}</div>
+              </div>
             </div>
           ))}
         </div>
@@ -1545,6 +1671,45 @@ function AddCarModal({ customer, onClose, onCreated }) {
 }
 
 // ─── Customers View ───────────────────────────────────────────────────────────
+// ─── Add Address Modal ────────────────────────────────────────────────────────
+function AddAddressModal({ customer, onClose, onCreated }) {
+  const [f, setF] = useState({ label: "Home", area: "", block: "", street: "", house: "", map_link: "" });
+  const [saving, setSaving] = useState(false);
+  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  const save = async () => {
+    if (!f.area) return;
+    setSaving(true);
+    const a = await createAddress({ ...f, customer_id: customer.id, created_at: new Date().toISOString() });
+    onCreated(a);
+    setSaving(false);
+    onClose();
+  };
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 460 }}>
+        <div className="modal-header">
+          <h3>Add Address — {customer.name}</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-grid">
+            <div className="form-field form-full"><label>Label</label><input value={f.label} onChange={set("label")} placeholder="Home, Office…" /></div>
+            <div className="form-field"><label>Area *</label><input value={f.area} onChange={set("area")} placeholder="Salmiya" /></div>
+            <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
+            <div className="form-field"><label>Street</label><input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" /></div>
+            <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
+            <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Add Address"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer }) {
   const [search, setSearch] = useState("");
 
@@ -1610,6 +1775,7 @@ export default function App() {
   const [jobs, setJobs] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [cars, setCars] = useState([]);
+  const [addresses, setAddresses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("schedule");
   const [selectedJob, setSelectedJob] = useState(null);
@@ -1617,9 +1783,12 @@ export default function App() {
   const [showNew, setShowNew] = useState(false);
   const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerMobile, setNewCustomerMobile] = useState("");
   const [newCustomerCallback, setNewCustomerCallback] = useState(null);
   const [showAddCar, setShowAddCar] = useState(false);
   const [addCarTarget, setAddCarTarget] = useState(null);
+  const [showAddAddr, setShowAddAddr] = useState(false);
+  const [addAddrTarget, setAddAddrTarget] = useState(null);
   const [usingMock, setUsingMock] = useState(false);
 
   const login = () => {
@@ -1630,10 +1799,11 @@ export default function App() {
   useEffect(() => {
     if (!authed) return;
     setLoading(true);
-    Promise.all([fetchJobs(), fetchCustomers(), fetchCars()]).then(([j, c, cr]) => {
+    Promise.all([fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses()]).then(([j, c, cr, ad]) => {
       setJobs(j);
       setCustomers(c);
       setCars(cr);
+      setAddresses(ad);
       setUsingMock(j.some(x => x.id?.startsWith("mock-")));
       setLoading(false);
     });
@@ -1652,14 +1822,17 @@ export default function App() {
     if (selectedJob?.id === updated.id) setSelectedJob(updated);
   };
 
-  const handleNewCustomer = (name, cb) => {
-    setNewCustomerName(name);
+  const handleNewCustomer = (mobile, cb) => {
+    setNewCustomerMobile(mobile || "");
+    setNewCustomerName("");
     setNewCustomerCallback(() => cb);
     setShowNewCustomer(true);
   };
 
-  const handleCustomerCreated = (c) => {
+  const handleCustomerCreated = (c, newCars = [], newAddrs = []) => {
     setCustomers(prev => [c, ...prev]);
+    if (newCars.length) setCars(prev => [...newCars, ...prev]);
+    if (newAddrs.length) setAddresses(prev => [...newAddrs, ...prev]);
     if (newCustomerCallback) newCustomerCallback(c);
     setShowNewCustomer(false);
   };
@@ -1672,6 +1845,15 @@ export default function App() {
   const handleCarCreated = (car) => {
     setCars(prev => [car, ...prev]);
     setShowAddCar(false);
+  };
+
+  const handleAddressCreated = (addr) => {
+    setAddresses(prev => [addr, ...prev]);
+    setShowAddAddr(false);
+  };
+  const handleAddAddress = (customer) => {
+    setAddAddrTarget(customer);
+    setShowAddAddr(true);
   };
 
   const allTabs = [
@@ -1741,10 +1923,12 @@ export default function App() {
             <CustomerProfileDetail
               customer={selectedCustomer}
               cars={cars}
+              addresses={addresses}
               jobs={jobs}
               onBack={() => setSelectedCustomer(null)}
               onSelectJob={(job) => { setSelectedJob(job); }}
               onAddCar={handleAddCar}
+              onAddAddress={handleAddAddress}
             />
           )}
 
@@ -1755,7 +1939,7 @@ export default function App() {
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "customers" && (
-            <CustomersView customers={customers} cars={cars} jobs={jobs} onSelectCustomer={setSelectedCustomer} onNewCustomer={() => { setNewCustomerName(""); setNewCustomerCallback(null); setShowNewCustomer(true); }} />
+            <CustomersView customers={customers} cars={cars} jobs={jobs} onSelectCustomer={setSelectedCustomer} onNewCustomer={() => { setNewCustomerName(""); setNewCustomerMobile(""); setNewCustomerCallback(null); setShowNewCustomer(true); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "myjobs" && (
             <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} />
@@ -1770,6 +1954,7 @@ export default function App() {
         <NewJobModal
           customers={customers}
           cars={cars}
+          addresses={addresses}
           jobs={jobs}
           onClose={() => setShowNew(false)}
           onCreated={j => setJobs(prev => [j, ...prev])}
@@ -1780,6 +1965,7 @@ export default function App() {
       {showNewCustomer && (
         <NewCustomerModal
           initialName={newCustomerName}
+          initialMobile={newCustomerMobile}
           onClose={() => setShowNewCustomer(false)}
           onCreated={handleCustomerCreated}
         />
@@ -1790,6 +1976,14 @@ export default function App() {
           customer={addCarTarget}
           onClose={() => setShowAddCar(false)}
           onCreated={handleCarCreated}
+        />
+      )}
+
+      {showAddAddr && addAddrTarget && (
+        <AddAddressModal
+          customer={addAddrTarget}
+          onClose={() => setShowAddAddr(false)}
+          onCreated={handleAddressCreated}
         />
       )}
     </>
