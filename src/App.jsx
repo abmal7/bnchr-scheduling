@@ -147,16 +147,16 @@ const css = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   :root {
-    --bg:       #0D0F12;
-    --surface:  #141720;
-    --card:     #1A1E2A;
-    --border:   #252B3B;
-    --accent:   #F5A623;
-    --accent2:  #E8430A;
-    --text:     #F0F2F7;
-    --muted:    #7B859A;
-    --success:  #22C55E;
-    --danger:   #EF4444;
+    --bg:       #F0F2F5;
+    --surface:  #FFFFFF;
+    --card:     #FFFFFF;
+    --border:   #D8DCE6;
+    --accent:   #D4840A;
+    --accent2:  #C13A06;
+    --text:     #0F1117;
+    --muted:    #5A6278;
+    --success:  #15803D;
+    --danger:   #DC2626;
     --radius:   10px;
     --font-head: 'Space Grotesk', sans-serif;
     --font-body: 'Inter', sans-serif;
@@ -169,23 +169,23 @@ const css = `
   .login-box { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 40px 36px; width: 320px; }
   .login-box h1 { font-family: var(--font-head); font-size: 22px; font-weight: 700; margin-bottom: 4px; }
   .login-box p { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
-  .login-box input { width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; color: var(--text); font-size: 14px; margin-bottom: 12px; outline: none; }
+  .login-box input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; color: var(--text); font-size: 14px; margin-bottom: 12px; outline: none; }
   .login-box input:focus { border-color: var(--accent); }
   .login-error { color: var(--danger); font-size: 12px; margin-bottom: 10px; }
   .role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 20px; }
-  .role-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 8px; color: var(--muted); font-size: 13px; cursor: pointer; text-align: center; transition: all .15s; }
-  .role-btn.active { background: var(--accent); border-color: var(--accent); color: #000; font-weight: 600; }
+  .role-btn { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 8px; color: var(--muted); font-size: 13px; cursor: pointer; text-align: center; transition: all .15s; }
+  .role-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 
   /* ── Layout ── */
   .app { display: flex; flex-direction: column; min-height: 100vh; }
-  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 20px; height: 56px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 20px; height: 56px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
   .topbar-left { display: flex; align-items: center; gap: 12px; }
   .logo { font-family: var(--font-head); font-size: 17px; font-weight: 700; letter-spacing: -.3px; }
   .logo span { color: var(--accent); }
   .badge-role { background: var(--border); border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .nav-tabs { display: flex; gap: 2px; }
   .nav-tab { background: none; border: none; color: var(--muted); font-size: 13px; font-weight: 500; padding: 8px 14px; border-radius: 8px; cursor: pointer; transition: all .15s; }
-  .nav-tab.active, .nav-tab:hover { background: var(--card); color: var(--text); }
+  .nav-tab.active, .nav-tab:hover { background: var(--bg); color: var(--text); }
   .topbar-right { display: flex; align-items: center; gap: 10px; }
   .btn-logout { background: none; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; padding: 6px 12px; cursor: pointer; }
   .btn-logout:hover { border-color: var(--danger); color: var(--danger); }
@@ -194,8 +194,8 @@ const css = `
 
   /* ── Buttons ── */
   .btn { border: none; border-radius: var(--radius); padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; display: inline-flex; align-items: center; gap: 6px; }
-  .btn-primary { background: var(--accent); color: #000; }
-  .btn-primary:hover { background: #f0b840; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #b86e08; }
   .btn-ghost { background: var(--card); border: 1px solid var(--border); color: var(--text); }
   .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
   .btn-danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
@@ -223,9 +223,9 @@ const css = `
   .job-card-name { font-weight: 600; font-size: 15px; }
   .job-card-service { color: var(--muted); font-size: 13px; margin-top: 3px; }
   .tag { border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
-  .tag-truck { background: #1e2d4a; color: #60A5FA; }
-  .tag-time { background: #1e2a1e; color: #86EFAC; font-size: 12px; }
-  .tag-total { background: #2a1e12; color: var(--accent); }
+  .tag-truck { background: #DBEAFE; color: #1D4ED8; }
+  .tag-time { background: #DCFCE7; color: #15803D; font-size: 12px; }
+  .tag-total { background: #FEF3C7; color: var(--accent); }
   .status-pill { border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 700; letter-spacing: .3px; }
 
   /* ── Job Detail ── */
@@ -244,8 +244,8 @@ const css = `
 
   /* ── Checks ── */
   .checks-list { display: flex; flex-direction: column; gap: 8px; }
-  .check-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: border-color .15s; }
-  .check-item.done { border-color: var(--success); background: #0f1f12; }
+  .check-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: border-color .15s; }
+  .check-item.done { border-color: var(--success); background: #F0FDF4; }
   .check-item.locked { opacity: .45; cursor: not-allowed; }
   .check-circle { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; }
   .check-circle.done { background: var(--success); border-color: var(--success); color: #000; }
@@ -263,7 +263,7 @@ const css = `
   .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .form-field { display: flex; flex-direction: column; gap: 5px; }
   .form-field label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
-  .form-field input, .form-field select, .form-field textarea { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 14px; font-family: var(--font-body); outline: none; width: 100%; }
+  .form-field input, .form-field select, .form-field textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 14px; font-family: var(--font-body); outline: none; width: 100%; }
   .form-field input:focus, .form-field select:focus, .form-field textarea:focus { border-color: var(--accent); }
   .form-field textarea { resize: vertical; min-height: 70px; }
   .form-section-title { font-family: var(--font-head); font-size: 13px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .8px; margin-top: 8px; margin-bottom: 2px; grid-column: 1 / -1; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
@@ -276,7 +276,7 @@ const css = `
   .my-job-num { font-family: var(--font-head); font-size: 24px; font-weight: 700; color: var(--accent); }
   .my-job-body p { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
   .my-job-body p strong { color: var(--text); }
-  .map-btn { display: inline-flex; align-items: center; gap: 6px; background: #1a2540; border: 1px solid #2a3a60; border-radius: 8px; color: #60A5FA; font-size: 13px; font-weight: 600; padding: 8px 14px; text-decoration: none; margin-top: 10px; }
+  .map-btn { display: inline-flex; align-items: center; gap: 6px; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; color: #1D4ED8; font-size: 13px; font-weight: 600; padding: 8px 14px; text-decoration: none; margin-top: 10px; }
 
   /* ── Distributor ── */
   .dist-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 10px; }
@@ -311,7 +311,6 @@ const css = `
   .stat-card .lbl { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .stat-card .accent { color: var(--accent); }
   .stat-card .success { color: var(--success); }
-
   /* ── Responsive ── */
   @media (max-width: 640px) {
     .form-grid, .detail-grid { grid-template-columns: 1fr; }
@@ -662,7 +661,7 @@ function JobDetail({ job, onBack, onUpdate, role }) {
             {STATUS_FLOW.map((s, i) => (
               <span key={s.key} style={{
                 padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
-                background: i < flowIdx ? "#16A34A22" : i === flowIdx ? s.color + "33" : "var(--surface)",
+                background: i < flowIdx ? "#F0FDF4" : i === flowIdx ? s.color + "18" : "var(--bg)",
                 color: i < flowIdx ? "var(--success)" : i === flowIdx ? s.color : "var(--muted)",
                 border: `1px solid ${i === flowIdx ? s.color : "var(--border)"}`,
               }}>
@@ -739,7 +738,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
           <div className="lbl">Revenue (shown)</div>
         </div>
         <div className="stat-card">
-          <div className="num" style={{ color: "#60A5FA" }}>{jobs.filter(j=>j.payment_status==="paid").length}</div>
+          <div className="num" style={{ color: "#1D4ED8" }}>{jobs.filter(j=>j.payment_status==="paid").length}</div>
           <div className="lbl">Paid</div>
         </div>
       </div>
