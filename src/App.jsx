@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // ─── Supabase ────────────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://itpghtviyotueqpspxun.supabase.co";
@@ -14,27 +14,26 @@ async function sb(path, opts = {}) {
     },
     ...opts,
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err);
-  }
+  if (!res.ok) { const err = await res.text(); throw new Error(err); }
   return res.status === 204 ? null : res.json();
 }
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────
 const PASSWORD = "bnchr901";
 const TRUCKS = ["T1", "T2", "T4", "T5", "T6"];
 
 const STATUS_FLOW = [
-  { key: "booked",     label: "Booked",       color: "#4B5563" },
-  { key: "part_ready", label: "Part Ready",   color: "#7C3AED" },
-  { key: "assigned",   label: "Assigned",     color: "#2563EB" },
-  { key: "en_route",   label: "En Route",     color: "#D97706" },
-  { key: "on_site",    label: "On Site",      color: "#EA580C" },
-  { key: "done",       label: "Done",         color: "#16A34A" },
-  { key: "invoiced",   label: "Invoiced",     color: "#0891B2" },
-  { key: "paid",       label: "Paid",         color: "#059669" },
+  { key: "booked",     label: "Booked",      color: "#64748B" },
+  { key: "part_ready", label: "Part Ready",  color: "#7C3AED" },
+  { key: "assigned",   label: "Assigned",    color: "#2563EB" },
+  { key: "en_route",   label: "En Route",    color: "#D97706" },
+  { key: "on_site",    label: "On Site",     color: "#EA580C" },
+  { key: "done",       label: "Done",        color: "#15803D" },
+  { key: "invoiced",   label: "Invoiced",    color: "#0891B2" },
+  { key: "paid",       label: "Paid",        color: "#059669" },
 ];
+
+const DONE_STATUSES = ["done", "invoiced", "paid"];
 
 const CHECK_LABELS = [
   "Sales — size, specs, customer photos confirmed",
@@ -44,130 +43,142 @@ const CHECK_LABELS = [
 ];
 
 const SERVICE_TYPES = [
-  "Tire Change & Balancing",
-  "Oil & Filter",
-  "Battery Change",
-  "Brake Change",
-  "Programming",
-  "Mechanical Check",
-  "Wheel Repair",
-  "Rotation",
-  "Other",
+  "Tire Change & Balancing","Oil & Filter","Battery Change",
+  "Brake Change","Programming","Mechanical Check","Wheel Repair","Rotation","Other",
 ];
-
 const LEAD_SOURCES = ["WhatsApp", "Signal", "Shopify", "Instagram", "Other"];
-
 const ROLES = [
-  { key: "sales",       label: "Sales" },
-  { key: "purchaser",   label: "Purchaser" },
-  { key: "technician",  label: "Technician" },
+  { key: "sales", label: "Sales" },
+  { key: "purchaser", label: "Purchaser" },
+  { key: "technician", label: "Technician" },
   { key: "distributor", label: "Distributor" },
 ];
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 const today = () => new Date().toISOString().split("T")[0];
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" }) : "—";
 const fmtTime = (d) => d ? new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "—";
+const fmtDateTime = (d) => d ? `${fmtDate(d)} ${fmtTime(d)}` : "—";
 const statusMeta = (key) => STATUS_FLOW.find((s) => s.key === key) || STATUS_FLOW[0];
 const nextStatus = (key) => {
   const idx = STATUS_FLOW.findIndex((s) => s.key === key);
   return idx < STATUS_FLOW.length - 1 ? STATUS_FLOW[idx + 1] : null;
 };
 
-// ─── Mock data (used when Supabase tables don't exist yet) ────────────────────
+// ─── Mock Data ───────────────────────────────────────────────────────────────
+const MOCK_CUSTOMERS = [
+  { id: "mc-1", name: "Ahmad Al-Salem",   mobile: "99001234", area: "Salmiya",    notes: "VIP — Porsche fleet" },
+  { id: "mc-2", name: "Sara Al-Rashidi",  mobile: "66778899", area: "Rumaithiya", notes: "" },
+  { id: "mc-3", name: "Khalid Al-Mutairi",mobile: "55443322", area: "Hawalli",    notes: "Prefers morning slots" },
+];
+const MOCK_CARS = [
+  { id: "mcar-1", customer_id: "mc-1", brand: "Toyota",  model: "Land Cruiser", year: "2022", plate: "Kuwait · 12345 · Private" },
+  { id: "mcar-2", customer_id: "mc-1", brand: "Porsche", model: "Cayenne",      year: "2023", plate: "Kuwait · 84000 · Private" },
+  { id: "mcar-3", customer_id: "mc-2", brand: "Porsche", model: "Cayenne",      year: "2023", plate: "Kuwait · 77321 · Private" },
+  { id: "mcar-4", customer_id: "mc-3", brand: "GMC",     model: "Yukon",        year: "2021", plate: "Kuwait · 33210 · Private" },
+];
 const MOCK_JOBS = [
   {
-    id: "mock-1",
-    customer_name: "Ahmad Al-Salem",
-    customer_mobile: "99001234",
-    area: "Salmiya",
-    block: "12",
-    street: "Hamad Al-Mubarak",
-    house: "14",
+    id: "mock-1", customer_id: "mc-1",
+    customer_name: "Ahmad Al-Salem", customer_mobile: "99001234",
+    area: "Salmiya", block: "12", street: "Hamad Al-Mubarak", house: "14",
     map_link: "https://maps.google.com/?q=29.3375,48.0838",
-    car_brand: "Toyota",
-    car_model: "Land Cruiser",
-    car_year: "2022",
-    car_plate: "Kuwait · 12345 · Private",
-    service_type: "Tire Change & Balancing",
-    service_details: "215/60R16 Michelin Pilot Sport 4 · Japan 2025",
-    qty: 4,
-    item_price: 38,
-    total: 172,
-    assigned_truck: "T2",
-    assigned_technician: "Fahad",
-    status: "assigned",
-    scheduled_at: new Date().toISOString(),
-    lead_from: "WhatsApp",
-    sales_agent: "Hussain",
-    xero_ref: "PO-2026-0041",
-    payment_through: "Link",
-    payment_status: "paid",
-    checks: [true, false, false, false],
-    notes: "Customer has Tesla wall charger — park carefully",
+    car_brand: "Toyota", car_model: "Land Cruiser", car_year: "2022", car_plate: "Kuwait · 12345 · Private",
+    service_type: "Tire Change & Balancing", service_details: "215/60R16 Michelin Pilot Sport 4 · Japan 2025",
+    qty: 4, item_price: 38, total: 172,
+    assigned_truck: "T2", assigned_technician: "Fahad", status: "assigned",
+    scheduled_at: new Date().toISOString(), lead_from: "WhatsApp", sales_agent: "Hussain",
+    xero_ref: "PO-2026-0041", payment_through: "Link", payment_status: "paid",
+    checks: [true, false, false, false], notes: "Tesla wall charger — park carefully",
     created_at: new Date().toISOString(),
   },
   {
-    id: "mock-2",
-    customer_name: "Sara Al-Rashidi",
-    customer_mobile: "66778899",
-    area: "Rumaithiya",
-    block: "3",
-    street: "Al-Khaleej",
-    house: "7A",
-    map_link: "",
-    car_brand: "Porsche",
-    car_model: "Cayenne",
-    car_year: "2023",
-    car_plate: "Kuwait · 77321 · Private",
-    service_type: "Tire Change & Balancing",
-    service_details: "295/40R21 Pirelli P Zero · Germany 2025",
-    qty: 2,
-    item_price: 95,
-    total: 200,
-    assigned_truck: "T4",
-    assigned_technician: "Omar",
-    status: "booked",
-    scheduled_at: new Date(Date.now() + 3600000 * 3).toISOString(),
-    lead_from: "Signal",
-    sales_agent: "Alaa",
-    xero_ref: "",
-    payment_through: "Tabby",
-    payment_status: "pending",
-    checks: [false, false, false, false],
-    notes: "",
+    id: "mock-2", customer_id: "mc-2",
+    customer_name: "Sara Al-Rashidi", customer_mobile: "66778899",
+    area: "Rumaithiya", block: "3", street: "Al-Khaleej", house: "7A", map_link: "",
+    car_brand: "Porsche", car_model: "Cayenne", car_year: "2023", car_plate: "Kuwait · 77321 · Private",
+    service_type: "Tire Change & Balancing", service_details: "295/40R21 Pirelli P Zero · Germany 2025",
+    qty: 2, item_price: 95, total: 200,
+    assigned_truck: "T4", assigned_technician: "Omar", status: "booked",
+    scheduled_at: new Date(Date.now() + 3600000 * 3).toISOString(), lead_from: "Signal", sales_agent: "Alaa",
+    xero_ref: "", payment_through: "Tabby", payment_status: "pending",
+    checks: [false, false, false, false], notes: "",
     created_at: new Date().toISOString(),
   },
+  {
+    id: "mock-3", customer_id: "mc-1",
+    customer_name: "Ahmad Al-Salem", customer_mobile: "99001234",
+    area: "Salmiya", block: "12", street: "Hamad Al-Mubarak", house: "14", map_link: "",
+    car_brand: "Porsche", car_model: "Cayenne", car_year: "2023", car_plate: "Kuwait · 84000 · Private",
+    service_type: "Oil & Filter", service_details: "Mobil 1 5W-40 Full Synthetic",
+    qty: 1, item_price: 25, total: 25,
+    assigned_truck: "T1", assigned_technician: "Fahad", status: "paid",
+    scheduled_at: new Date(Date.now() - 86400000 * 5).toISOString(), lead_from: "WhatsApp", sales_agent: "Hussain",
+    xero_ref: "PO-2026-0038", payment_through: "Link", payment_status: "paid",
+    checks: [true, true, true, true], notes: "",
+    created_at: new Date(Date.now() - 86400000 * 5).toISOString(),
+  },
+  {
+    id: "mock-4", customer_id: "mc-3",
+    customer_name: "Khalid Al-Mutairi", customer_mobile: "55443322",
+    area: "Hawalli", block: "5", street: "Tunis", house: "22", map_link: "",
+    car_brand: "GMC", car_model: "Yukon", car_year: "2021", car_plate: "Kuwait · 33210 · Private",
+    service_type: "Tire Change & Balancing", service_details: "275/55R20 Michelin Primacy · USA 2024",
+    qty: 4, item_price: 55, total: 220,
+    assigned_truck: "T5", assigned_technician: "Saad", status: "paid",
+    scheduled_at: new Date(Date.now() - 86400000 * 12).toISOString(), lead_from: "WhatsApp", sales_agent: "Yousef",
+    xero_ref: "PO-2026-0031", payment_through: "Link", payment_status: "paid",
+    checks: [true, true, true, true], notes: "",
+    created_at: new Date(Date.now() - 86400000 * 12).toISOString(),
+  },
 ];
+
+// ─── DB Layer ─────────────────────────────────────────────────────────────────
+async function fetchJobs() {
+  try { const d = await sb("/jobs?select=*&order=scheduled_at.desc"); return d || []; }
+  catch { return MOCK_JOBS; }
+}
+async function fetchCustomers() {
+  try { const d = await sb("/customers?select=*&order=name.asc"); return d || []; }
+  catch { return MOCK_CUSTOMERS; }
+}
+async function fetchCars() {
+  try { const d = await sb("/customer_cars?select=*"); return d || []; }
+  catch { return MOCK_CARS; }
+}
+async function createJob(job) {
+  try { const r = await sb("/jobs", { method: "POST", body: JSON.stringify(job) }); return r?.[0] || { ...job, id: `local-${Date.now()}` }; }
+  catch { return { ...job, id: `local-${Date.now()}` }; }
+}
+async function updateJob(id, patch) {
+  try { await sb(`/jobs?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
+}
+async function createCustomer(c) {
+  try { const r = await sb("/customers", { method: "POST", body: JSON.stringify(c) }); return r?.[0] || { ...c, id: `lc-${Date.now()}` }; }
+  catch { return { ...c, id: `lc-${Date.now()}` }; }
+}
+async function createCar(car) {
+  try { const r = await sb("/customer_cars", { method: "POST", body: JSON.stringify(car) }); return r?.[0] || { ...car, id: `lcar-${Date.now()}` }; }
+  catch { return { ...car, id: `lcar-${Date.now()}` }; }
+}
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
-
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
   :root {
-    --bg:       #F0F2F5;
-    --surface:  #FFFFFF;
-    --card:     #FFFFFF;
-    --border:   #D8DCE6;
-    --accent:   #D4840A;
-    --accent2:  #C13A06;
-    --text:     #0F1117;
-    --muted:    #5A6278;
-    --success:  #15803D;
-    --danger:   #DC2626;
-    --radius:   10px;
-    --font-head: 'Space Grotesk', sans-serif;
-    --font-body: 'Inter', sans-serif;
+    --bg: #F0F2F5; --surface: #FFFFFF; --card: #FFFFFF; --border: #D8DCE6;
+    --accent: #D4840A; --accent2: #C13A06; --text: #0F1117; --muted: #5A6278;
+    --success: #15803D; --danger: #DC2626; --radius: 10px;
+    --font-head: 'Space Grotesk', sans-serif; --font-body: 'Inter', sans-serif;
   }
-
   body { background: var(--bg); color: var(--text); font-family: var(--font-body); font-size: 14px; line-height: 1.5; min-height: 100vh; }
 
-  /* ── Login ── */
-  .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-  .login-box { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 40px 36px; width: 320px; }
+  /* Login */
+  .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
+  .login-box { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 40px 36px; width: 320px; box-shadow: 0 4px 24px rgba(0,0,0,.08); }
   .login-box h1 { font-family: var(--font-head); font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .login-box h1 span { color: var(--accent); }
   .login-box p { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
   .login-box input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; color: var(--text); font-size: 14px; margin-bottom: 12px; outline: none; }
   .login-box input:focus { border-color: var(--accent); }
@@ -176,7 +187,7 @@ const css = `
   .role-btn { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 8px; color: var(--muted); font-size: 13px; cursor: pointer; text-align: center; transition: all .15s; }
   .role-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 
-  /* ── Layout ── */
+  /* Layout */
   .app { display: flex; flex-direction: column; min-height: 100vh; }
   .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 20px; height: 56px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
   .topbar-left { display: flex; align-items: center; gap: 12px; }
@@ -185,118 +196,157 @@ const css = `
   .badge-role { background: var(--border); border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .nav-tabs { display: flex; gap: 2px; }
   .nav-tab { background: none; border: none; color: var(--muted); font-size: 13px; font-weight: 500; padding: 8px 14px; border-radius: 8px; cursor: pointer; transition: all .15s; }
-  .nav-tab.active, .nav-tab:hover { background: var(--bg); color: var(--text); }
+  .nav-tab.active { background: var(--bg); color: var(--text); font-weight: 600; }
+  .nav-tab:hover:not(.active) { color: var(--text); }
   .topbar-right { display: flex; align-items: center; gap: 10px; }
   .btn-logout { background: none; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; padding: 6px 12px; cursor: pointer; }
   .btn-logout:hover { border-color: var(--danger); color: var(--danger); }
-
   .main { flex: 1; padding: 24px 20px; max-width: 1200px; margin: 0 auto; width: 100%; }
 
-  /* ── Buttons ── */
+  /* Buttons */
   .btn { border: none; border-radius: var(--radius); padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; display: inline-flex; align-items: center; gap: 6px; }
   .btn-primary { background: var(--accent); color: #fff; }
   .btn-primary:hover { background: #b86e08; }
   .btn-ghost { background: var(--card); border: 1px solid var(--border); color: var(--text); }
   .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
   .btn-danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+  .btn-success { background: var(--success); color: #fff; }
   .btn-sm { padding: 5px 12px; font-size: 12px; }
-  .btn-success { background: var(--success); color: #000; }
 
-  /* ── Cards ── */
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); }
+  /* Cards */
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 1px 3px rgba(0,0,0,.04); }
   .card-header { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
   .card-header h3 { font-family: var(--font-head); font-size: 15px; font-weight: 600; }
   .card-body { padding: 16px; }
 
-  /* ── Job list ── */
-  .jobs-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
-  .jobs-title { font-family: var(--font-head); font-size: 20px; font-weight: 700; }
-  .filters { display: flex; gap: 8px; flex-wrap: wrap; }
-  .filter-select { background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; padding: 7px 12px; cursor: pointer; }
-  .filter-select:focus { outline: none; border-color: var(--accent); }
-
-  .job-cards { display: flex; flex-direction: column; gap: 10px; }
-  .job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .15s; }
-  .job-card:hover { border-color: var(--accent); }
-  .job-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-  .job-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
-  .job-card-name { font-weight: 600; font-size: 15px; }
-  .job-card-service { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  /* Tags & Pills */
   .tag { border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
   .tag-truck { background: #DBEAFE; color: #1D4ED8; }
-  .tag-time { background: #DCFCE7; color: #15803D; font-size: 12px; }
+  .tag-time  { background: #DCFCE7; color: #15803D; font-size: 12px; }
   .tag-total { background: #FEF3C7; color: var(--accent); }
   .status-pill { border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 700; letter-spacing: .3px; }
 
-  /* ── Job Detail ── */
-  .job-detail { display: flex; flex-direction: column; gap: 16px; }
-  .detail-back { background: none; border: none; color: var(--muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; padding: 0; }
+  /* Search input */
+  .search-wrap { position: relative; }
+  .search-input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px 9px 34px; font-size: 14px; color: var(--text); outline: none; }
+  .search-input:focus { border-color: var(--accent); }
+  .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; pointer-events: none; }
+  .search-dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.1); z-index: 50; max-height: 260px; overflow-y: auto; }
+  .search-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
+  .search-item:last-child { border-bottom: none; }
+  .search-item:hover { background: var(--bg); }
+  .search-item-name { font-weight: 600; font-size: 14px; }
+  .search-item-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .search-new { padding: 10px 14px; cursor: pointer; color: var(--accent); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .search-new:hover { background: var(--bg); }
+
+  /* Job list */
+  .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+  .page-title { font-family: var(--font-head); font-size: 20px; font-weight: 700; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+  .filter-select { background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; padding: 7px 12px; cursor: pointer; outline: none; }
+  .filter-select:focus { border-color: var(--accent); }
+  .filter-input { background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; padding: 7px 12px; outline: none; }
+  .filter-input:focus { border-color: var(--accent); }
+
+  .job-cards { display: flex; flex-direction: column; gap: 10px; }
+  .job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+  .job-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(212,132,10,.1); }
+  .job-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .job-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+  .job-card-name { font-weight: 600; font-size: 15px; }
+  .job-card-service { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+  /* Stats */
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+  .stat-num { font-family: var(--font-head); font-size: 28px; font-weight: 700; }
+  .stat-lbl { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  /* Detail */
+  .detail-back { background: none; border: none; color: var(--muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 0; }
   .detail-back:hover { color: var(--text); }
-  .detail-hero { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
-  .detail-hero-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+  .detail-hero { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+  .detail-hero-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
   .detail-hero h2 { font-family: var(--font-head); font-size: 20px; font-weight: 700; }
   .detail-hero-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
-  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .detail-field label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .detail-field label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
   .detail-field p { font-size: 14px; }
   .detail-field a { color: var(--accent); text-decoration: none; }
   .detail-field a:hover { text-decoration: underline; }
 
-  /* ── Checks ── */
+  /* Checks */
   .checks-list { display: flex; flex-direction: column; gap: 8px; }
   .check-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: border-color .15s; }
   .check-item.done { border-color: var(--success); background: #F0FDF4; }
   .check-item.locked { opacity: .45; cursor: not-allowed; }
   .check-circle { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; }
-  .check-circle.done { background: var(--success); border-color: var(--success); color: #000; }
+  .check-circle.done { background: var(--success); border-color: var(--success); color: #fff; }
   .check-text { font-size: 13px; }
   .check-num { font-size: 11px; font-weight: 700; color: var(--muted); margin-right: 4px; }
 
-  /* ── Status advance ── */
-  .status-section { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .status-flow { display: flex; gap: 4px; flex-wrap: wrap; }
-  .flow-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
-  .flow-dot.active { background: var(--accent); }
-  .flow-dot.done { background: var(--success); }
-
-  /* ── Form (new job) ── */
+  /* Form */
   .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .form-field { display: flex; flex-direction: column; gap: 5px; }
   .form-field label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   .form-field input, .form-field select, .form-field textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 14px; font-family: var(--font-body); outline: none; width: 100%; }
   .form-field input:focus, .form-field select:focus, .form-field textarea:focus { border-color: var(--accent); }
   .form-field textarea { resize: vertical; min-height: 70px; }
-  .form-section-title { font-family: var(--font-head); font-size: 13px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .8px; margin-top: 8px; margin-bottom: 2px; grid-column: 1 / -1; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
-  .form-full { grid-column: 1 / -1; }
+  .form-section-title { font-family: var(--font-head); font-size: 12px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .8px; margin-top: 4px; grid-column: 1/-1; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .form-full { grid-column: 1/-1; }
 
-  /* ── My Jobs (technician) ── */
-  .my-job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; cursor: pointer; transition: border-color .15s; }
+  /* Customer search in form */
+  .customer-found { background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; }
+  .customer-found-name { font-weight: 600; font-size: 14px; color: #1D4ED8; }
+  .customer-found-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .car-picker { display: flex; flex-direction: column; gap: 6px; }
+  .car-option { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; background: var(--bg); transition: all .15s; }
+  .car-option.selected { border-color: var(--accent); background: #FEF9EE; }
+  .car-option-radio { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+  .car-option-radio.selected { border-color: var(--accent); background: var(--accent); }
+  .car-option-radio.selected::after { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #fff; }
+
+  /* My Jobs */
+  .my-job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; cursor: pointer; transition: border-color .15s; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
   .my-job-card:hover { border-color: var(--accent); }
-  .my-job-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-  .my-job-num { font-family: var(--font-head); font-size: 24px; font-weight: 700; color: var(--accent); }
-  .my-job-body p { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-  .my-job-body p strong { color: var(--text); }
+  .my-job-num { font-family: var(--font-head); font-size: 28px; font-weight: 700; color: var(--accent); }
   .map-btn { display: inline-flex; align-items: center; gap: 6px; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; color: #1D4ED8; font-size: 13px; font-weight: 600; padding: 8px 14px; text-decoration: none; margin-top: 10px; }
 
-  /* ── Distributor ── */
-  .dist-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 10px; }
-  .dist-card h4 { font-family: var(--font-head); font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  /* Distributor */
+  .dist-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
   .dist-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .dist-row:last-child { border-bottom: none; }
   .toggle-btn { width: 38px; height: 22px; border-radius: 11px; border: none; cursor: pointer; transition: background .2s; position: relative; flex-shrink: 0; }
   .toggle-btn.on { background: var(--success); }
   .toggle-btn.off { background: var(--border); }
-  .toggle-btn::after { content: ''; position: absolute; width: 16px; height: 16px; border-radius: 50%; background: #fff; top: 3px; transition: left .2s; }
+  .toggle-btn::after { content: ''; position: absolute; width: 16px; height: 16px; border-radius: 50%; background: #fff; top: 3px; transition: left .2s; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
   .toggle-btn.on::after { left: 19px; }
   .toggle-btn.off::after { left: 3px; }
 
-  /* ── Empty ── */
-  .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
-  .empty h3 { font-family: var(--font-head); font-size: 18px; margin-bottom: 8px; color: var(--text); }
+  /* Customer profile cards */
+  .customer-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; cursor: pointer; transition: border-color .15s, box-shadow .15s; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+  .customer-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(212,132,10,.1); }
+  .customer-card-name { font-family: var(--font-head); font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+  .customer-card-meta { font-size: 13px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .cars-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .car-chip { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; font-size: 12px; font-weight: 500; }
+  .history-mini { font-size: 12px; color: var(--muted); }
 
-  /* ── Overlay / Modal ── */
-  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 200; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 40px 16px; }
-  .modal { background: var(--card); border: 1px solid var(--border); border-radius: 14px; width: 100%; max-width: 640px; }
+  /* Profile detail */
+  .profile-section { margin-bottom: 16px; }
+  .profile-section-title { font-family: var(--font-head); font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 10px; }
+  .car-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+  .car-card-info { font-size: 14px; font-weight: 600; }
+  .car-card-plate { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* History view */
+  .history-job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 8px; cursor: pointer; transition: border-color .15s; }
+  .history-job-card:hover { border-color: var(--accent); }
+
+  /* Modal */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 200; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 40px 16px; }
+  .modal { background: var(--card); border: 1px solid var(--border); border-radius: 14px; width: 100%; max-width: 640px; box-shadow: 0 8px 40px rgba(0,0,0,.15); }
   .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
   .modal-header h3 { font-family: var(--font-head); font-size: 17px; font-weight: 700; }
   .modal-close { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; }
@@ -304,24 +354,21 @@ const css = `
   .modal-body { padding: 20px; }
   .modal-footer { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
 
-  /* ── Stats ── */
-  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
-  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
-  .stat-card .num { font-family: var(--font-head); font-size: 28px; font-weight: 700; }
-  .stat-card .lbl { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .stat-card .accent { color: var(--accent); }
-  .stat-card .success { color: var(--success); }
-  /* ── Responsive ── */
+  /* Empty */
+  .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .empty h3 { font-family: var(--font-head); font-size: 18px; margin-bottom: 8px; color: var(--text); }
+
+  /* Divider */
+  .job-detail { display: flex; flex-direction: column; gap: 14px; }
+
   @media (max-width: 640px) {
     .form-grid, .detail-grid { grid-template-columns: 1fr; }
     .nav-tabs { display: none; }
     .topbar { padding: 0 12px; }
-    .main { padding: 16px 12px; }
-    .my-job-num { font-size: 30px; }
+    .main { padding: 14px 12px; }
   }
 `;
 
-// ─── Inject CSS ───────────────────────────────────────────────────────────────
 function StyleTag() {
   useEffect(() => {
     const el = document.createElement("style");
@@ -332,67 +379,108 @@ function StyleTag() {
   return null;
 }
 
-// ─── Supabase DB layer ────────────────────────────────────────────────────────
-async function fetchJobs() {
-  try {
-    const data = await sb("/jobs?select=*&order=scheduled_at.asc");
-    return data || [];
-  } catch {
-    // Table doesn't exist yet — use mock data
-    return MOCK_JOBS;
-  }
-}
-
-async function createJob(job) {
-  try {
-    const res = await sb("/jobs", {
-      method: "POST",
-      body: JSON.stringify(job),
-    });
-    return res?.[0] || { ...job, id: `local-${Date.now()}` };
-  } catch {
-    return { ...job, id: `local-${Date.now()}` };
-  }
-}
-
-async function updateJob(id, patch) {
-  try {
-    await sb(`/jobs?id=eq.${id}`, {
-      method: "PATCH",
-      prefer: "return=minimal",
-      body: JSON.stringify(patch),
-    });
-  } catch {
-    // Silently update local state only
-  }
-}
-
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 function StatusPill({ status }) {
   const m = statusMeta(status);
+  return <span className="status-pill" style={{ background: m.color + "18", color: m.color, border: `1px solid ${m.color}33` }}>{m.label}</span>;
+}
+
+// ─── Customer Search Box ──────────────────────────────────────────────────────
+function CustomerSearchBox({ customers, onSelect, onCreateNew }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const filtered = q.length < 2 ? [] : customers.filter(c =>
+    c.name.toLowerCase().includes(q.toLowerCase()) ||
+    c.mobile.includes(q)
+  );
+
   return (
-    <span className="status-pill" style={{ background: m.color + "22", color: m.color }}>
-      {m.label}
-    </span>
+    <div ref={ref} className="search-wrap">
+      <span className="search-icon">🔍</span>
+      <input
+        className="search-input"
+        placeholder="Search customer by name or mobile…"
+        value={q}
+        onChange={e => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => q.length >= 2 && setOpen(true)}
+      />
+      {open && q.length >= 2 && (
+        <div className="search-dropdown">
+          {filtered.map(c => (
+            <div key={c.id} className="search-item" onClick={() => { onSelect(c); setOpen(false); setQ(""); }}>
+              <div className="search-item-name">{c.name}</div>
+              <div className="search-item-sub">{c.mobile} · {c.area}</div>
+            </div>
+          ))}
+          <div className="search-new" onClick={() => { onCreateNew(q); setOpen(false); setQ(""); }}>
+            + Create new customer "{q}"
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
 // ─── New Job Modal ────────────────────────────────────────────────────────────
-function NewJobModal({ onClose, onCreated }) {
+function NewJobModal({ onClose, onCreated, customers, cars, onNewCustomer }) {
   const blank = {
-    customer_name: "", customer_mobile: "", area: "", block: "", street: "", house: "",
-    map_link: "", car_brand: "", car_model: "", car_year: "", car_plate: "",
+    customer_name: "", customer_mobile: "", customer_id: null,
+    area: "", block: "", street: "", house: "", map_link: "",
+    car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
     service_type: "Tire Change & Balancing", service_details: "", qty: 1,
-    item_price: "", total: "", assigned_truck: "T1", assigned_technician: "",
-    lead_from: "WhatsApp", sales_agent: "", xero_ref: "", payment_through: "Link",
-    payment_status: "pending", notes: "", status: "booked",
-    scheduled_at: new Date().toISOString().slice(0, 16),
+    item_price: "", total: "",
+    assigned_truck: "T1", assigned_technician: "", lead_from: "WhatsApp", sales_agent: "",
+    xero_ref: "", payment_through: "Link", payment_status: "pending", notes: "",
+    status: "booked", scheduled_at: new Date().toISOString().slice(0, 16),
     checks: [false, false, false, false],
   };
   const [f, setF] = useState(blank);
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [selectedCar, setSelectedCar] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
+
+  const customerCars = selectedCustomer ? cars.filter(c => c.customer_id === selectedCustomer.id) : [];
+
+  const handleSelectCustomer = (c) => {
+    setSelectedCustomer(c);
+    setSelectedCar(null);
+    setF(p => ({
+      ...p,
+      customer_id: c.id,
+      customer_name: c.name,
+      customer_mobile: c.mobile,
+      area: c.area || p.area,
+      car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
+    }));
+  };
+
+  const handleSelectCar = (car) => {
+    setSelectedCar(car);
+    setF(p => ({
+      ...p,
+      car_id: car.id,
+      car_brand: car.brand,
+      car_model: car.model,
+      car_year: car.year,
+      car_plate: car.plate,
+    }));
+  };
+
+  const clearCustomer = () => {
+    setSelectedCustomer(null);
+    setSelectedCar(null);
+    setF(p => ({ ...p, customer_id: null, customer_name: "", customer_mobile: "", car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null }));
+  };
 
   const save = async () => {
     if (!f.customer_name || !f.area || !f.service_type) return;
@@ -405,7 +493,7 @@ function NewJobModal({ onClose, onCreated }) {
   };
 
   return (
-    <div className="overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-header">
           <h3>New Job</h3>
@@ -413,16 +501,90 @@ function NewJobModal({ onClose, onCreated }) {
         </div>
         <div className="modal-body">
           <div className="form-grid">
+
+            {/* Customer search */}
             <div className="form-section-title">Customer</div>
-            <div className="form-field">
-              <label>Name *</label>
-              <input value={f.customer_name} onChange={set("customer_name")} placeholder="Ahmad Al-Salem" />
-            </div>
-            <div className="form-field">
-              <label>Mobile</label>
-              <input value={f.customer_mobile} onChange={set("customer_mobile")} placeholder="99001234" />
+            <div className="form-full">
+              {!selectedCustomer ? (
+                <CustomerSearchBox
+                  customers={customers}
+                  onSelect={handleSelectCustomer}
+                  onCreateNew={(name) => onNewCustomer(name, handleSelectCustomer)}
+                />
+              ) : (
+                <div className="customer-found">
+                  <div>
+                    <div className="customer-found-name">{selectedCustomer.name}</div>
+                    <div className="customer-found-sub">{selectedCustomer.mobile} · {selectedCustomer.area}</div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm" onClick={clearCustomer}>Change</button>
+                </div>
+              )}
             </div>
 
+            {/* Manual name/mobile if no customer selected */}
+            {!selectedCustomer && (
+              <>
+                <div className="form-field">
+                  <label>Name *</label>
+                  <input value={f.customer_name} onChange={set("customer_name")} placeholder="Ahmad Al-Salem" />
+                </div>
+                <div className="form-field">
+                  <label>Mobile</label>
+                  <input value={f.customer_mobile} onChange={set("customer_mobile")} placeholder="99001234" />
+                </div>
+              </>
+            )}
+
+            {/* Car picker */}
+            {selectedCustomer && (
+              <>
+                <div className="form-section-title">Vehicle</div>
+                <div className="form-full">
+                  {customerCars.length > 0 && (
+                    <div className="car-picker" style={{ marginBottom: 10 }}>
+                      {customerCars.map(car => (
+                        <div key={car.id} className={`car-option ${selectedCar?.id === car.id ? "selected" : ""}`} onClick={() => handleSelectCar(car)}>
+                          <div className={`car-option-radio ${selectedCar?.id === car.id ? "selected" : ""}`} />
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: 14 }}>{car.brand} {car.model} {car.year}</div>
+                            <div style={{ fontSize: 12, color: "var(--muted)" }}>{car.plate}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!selectedCar && (
+                    <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>Or enter a new vehicle:</div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* Vehicle fields */}
+            {(!selectedCustomer || !selectedCar) && (
+              <>
+                {!selectedCustomer && <div className="form-section-title">Vehicle</div>}
+                <div className="form-field">
+                  <label>Brand</label>
+                  <input value={f.car_brand} onChange={set("car_brand")} placeholder="Toyota" />
+                </div>
+                <div className="form-field">
+                  <label>Model</label>
+                  <input value={f.car_model} onChange={set("car_model")} placeholder="Land Cruiser" />
+                </div>
+                <div className="form-field">
+                  <label>Year</label>
+                  <input value={f.car_year} onChange={set("car_year")} placeholder="2023" />
+                </div>
+                <div className="form-field">
+                  <label>Plate</label>
+                  <input value={f.car_plate} onChange={set("car_plate")} placeholder="Kuwait · 12345" />
+                </div>
+              </>
+            )}
+
+            {/* Location */}
             <div className="form-section-title">Location</div>
             <div className="form-field">
               <label>Area *</label>
@@ -442,32 +604,15 @@ function NewJobModal({ onClose, onCreated }) {
             </div>
             <div className="form-field form-full">
               <label>Google Map Link</label>
-              <input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/..." />
+              <input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" />
             </div>
 
-            <div className="form-section-title">Vehicle</div>
-            <div className="form-field">
-              <label>Brand</label>
-              <input value={f.car_brand} onChange={set("car_brand")} placeholder="Toyota" />
-            </div>
-            <div className="form-field">
-              <label>Model</label>
-              <input value={f.car_model} onChange={set("car_model")} placeholder="Land Cruiser" />
-            </div>
-            <div className="form-field">
-              <label>Year</label>
-              <input value={f.car_year} onChange={set("car_year")} placeholder="2023" />
-            </div>
-            <div className="form-field">
-              <label>Plate / Description</label>
-              <input value={f.car_plate} onChange={set("car_plate")} placeholder="Kuwait · 12345 · Private" />
-            </div>
-
+            {/* Service */}
             <div className="form-section-title">Service</div>
             <div className="form-field">
               <label>Type *</label>
               <select value={f.service_type} onChange={set("service_type")}>
-                {SERVICE_TYPES.map((s) => <option key={s}>{s}</option>)}
+                {SERVICE_TYPES.map(s => <option key={s}>{s}</option>)}
               </select>
             </div>
             <div className="form-field">
@@ -487,6 +632,7 @@ function NewJobModal({ onClose, onCreated }) {
               <input type="number" value={f.total} onChange={set("total")} placeholder="172" />
             </div>
 
+            {/* Scheduling */}
             <div className="form-section-title">Scheduling & Assignment</div>
             <div className="form-field">
               <label>Date & Time</label>
@@ -495,7 +641,7 @@ function NewJobModal({ onClose, onCreated }) {
             <div className="form-field">
               <label>Truck</label>
               <select value={f.assigned_truck} onChange={set("assigned_truck")}>
-                {TRUCKS.map((t) => <option key={t}>{t}</option>)}
+                {TRUCKS.map(t => <option key={t}>{t}</option>)}
               </select>
             </div>
             <div className="form-field">
@@ -507,17 +653,16 @@ function NewJobModal({ onClose, onCreated }) {
               <input value={f.sales_agent} onChange={set("sales_agent")} placeholder="Hussain" />
             </div>
 
+            {/* Admin */}
             <div className="form-section-title">Payment & Admin</div>
             <div className="form-field">
               <label>Lead From</label>
-              <select value={f.lead_from} onChange={set("lead_from")}>
-                {LEAD_SOURCES.map((s) => <option key={s}>{s}</option>)}
-              </select>
+              <select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select>
             </div>
             <div className="form-field">
               <label>Payment Through</label>
               <select value={f.payment_through} onChange={set("payment_through")}>
-                {["Link", "Tabby", "Warranty", "Cash", "KNET"].map((s) => <option key={s}>{s}</option>)}
+                {["Link","Tabby","Warranty","Cash","KNET"].map(s => <option key={s}>{s}</option>)}
               </select>
             </div>
             <div className="form-field">
@@ -533,22 +678,71 @@ function NewJobModal({ onClose, onCreated }) {
             </div>
             <div className="form-field form-full">
               <label>Notes</label>
-              <textarea value={f.notes} onChange={set("notes")} placeholder="Tesla jack pads needed, customer has gate code…" />
+              <textarea value={f.notes} onChange={set("notes")} placeholder="Tesla jack pads, gate code, special instructions…" />
             </div>
           </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>
-            {saving ? "Saving…" : "Create Job"}
-          </button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Create Job"}</button>
         </div>
       </div>
     </div>
   );
 }
 
-// ─── Job Detail View ──────────────────────────────────────────────────────────
+// ─── New Customer Modal ───────────────────────────────────────────────────────
+function NewCustomerModal({ initialName, onClose, onCreated }) {
+  const [f, setF] = useState({ name: initialName || "", mobile: "", area: "", notes: "" });
+  const [saving, setSaving] = useState(false);
+  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
+
+  const save = async () => {
+    if (!f.name || !f.mobile) return;
+    setSaving(true);
+    const c = await createCustomer({ ...f, created_at: new Date().toISOString() });
+    onCreated(c);
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 420 }}>
+        <div className="modal-header">
+          <h3>New Customer</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-grid">
+            <div className="form-field form-full">
+              <label>Full Name *</label>
+              <input value={f.name} onChange={set("name")} placeholder="Ahmad Al-Salem" />
+            </div>
+            <div className="form-field">
+              <label>Mobile *</label>
+              <input value={f.mobile} onChange={set("mobile")} placeholder="99001234" />
+            </div>
+            <div className="form-field">
+              <label>Area</label>
+              <input value={f.area} onChange={set("area")} placeholder="Salmiya" />
+            </div>
+            <div className="form-field form-full">
+              <label>Notes</label>
+              <textarea value={f.notes} onChange={set("notes")} placeholder="VIP, fleet client, special instructions…" />
+            </div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Create Customer"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Job Detail ───────────────────────────────────────────────────────────────
 function JobDetail({ job, onBack, onUpdate, role }) {
   const [j, setJ] = useState(job);
 
@@ -556,29 +750,27 @@ function JobDetail({ job, onBack, onUpdate, role }) {
     const nx = nextStatus(j.status);
     if (!nx) return;
     const patch = { status: nx.key };
-    setJ((p) => ({ ...p, ...patch }));
+    setJ(p => ({ ...p, ...patch }));
     await updateJob(j.id, patch);
     onUpdate({ ...j, ...patch });
   };
 
   const toggleCheck = async (idx) => {
-    // Enforce sequential — can only check if previous is checked
     if (idx > 0 && !j.checks[idx - 1]) return;
     const checks = [...j.checks];
     checks[idx] = !checks[idx];
-    setJ((p) => ({ ...p, checks }));
+    setJ(p => ({ ...p, checks }));
     await updateJob(j.id, { checks });
     onUpdate({ ...j, checks });
   };
 
   const nx = nextStatus(j.status);
-  const flowIdx = STATUS_FLOW.findIndex((s) => s.key === j.status);
+  const flowIdx = STATUS_FLOW.findIndex(s => s.key === j.status);
 
   return (
     <div className="job-detail">
-      <button className="detail-back" onClick={onBack}>← Back to jobs</button>
+      <button className="detail-back" onClick={onBack}>← Back</button>
 
-      {/* Hero */}
       <div className="detail-hero">
         <div className="detail-hero-top">
           <div>
@@ -587,62 +779,20 @@ function JobDetail({ job, onBack, onUpdate, role }) {
           </div>
           <StatusPill status={j.status} />
         </div>
-
         <div className="detail-grid">
-          <div className="detail-field">
-            <label>Time</label>
-            <p>{fmtDate(j.scheduled_at)} at {fmtTime(j.scheduled_at)}</p>
-          </div>
-          <div className="detail-field">
-            <label>Truck / Tech</label>
-            <p>{j.assigned_truck} · {j.assigned_technician || "—"}</p>
-          </div>
-          <div className="detail-field">
-            <label>Location</label>
-            <p>{j.area}, Block {j.block}, St {j.street}, {j.house}</p>
-          </div>
-          <div className="detail-field">
-            <label>Map</label>
-            <p>{j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer">Open in Maps ↗</a> : "—"}</p>
-          </div>
-          <div className="detail-field">
-            <label>Mobile</label>
-            <p><a href={`tel:${j.customer_mobile}`}>{j.customer_mobile}</a></p>
-          </div>
-          <div className="detail-field">
-            <label>Lead From</label>
-            <p>{j.lead_from}</p>
-          </div>
-          <div className="detail-field">
-            <label>Service</label>
-            <p>{j.service_type} × {j.qty}</p>
-          </div>
-          <div className="detail-field">
-            <label>Total</label>
-            <p style={{ color: "var(--accent)", fontWeight: 700 }}>KWD {Number(j.total).toFixed(3)}</p>
-          </div>
-          <div className="detail-field" style={{ gridColumn: "1/-1" }}>
-            <label>Item Details</label>
-            <p>{j.service_details || "—"}</p>
-          </div>
-          {j.notes && (
-            <div className="detail-field" style={{ gridColumn: "1/-1" }}>
-              <label>Notes</label>
-              <p style={{ color: "var(--accent)" }}>⚠ {j.notes}</p>
-            </div>
-          )}
-          <div className="detail-field">
-            <label>Payment</label>
-            <p>{j.payment_through} · <span style={{ color: j.payment_status === "paid" ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span></p>
-          </div>
-          <div className="detail-field">
-            <label>Xero PO Ref</label>
-            <p>{j.xero_ref || "—"}</p>
-          </div>
-          <div className="detail-field">
-            <label>Sales Agent</label>
-            <p>{j.sales_agent || "—"}</p>
-          </div>
+          <div className="detail-field"><label>Time</label><p>{fmtDate(j.scheduled_at)} at {fmtTime(j.scheduled_at)}</p></div>
+          <div className="detail-field"><label>Truck / Tech</label><p>{j.assigned_truck} · {j.assigned_technician || "—"}</p></div>
+          <div className="detail-field"><label>Location</label><p>{j.area}, Block {j.block}, St {j.street}, {j.house}</p></div>
+          <div className="detail-field"><label>Map</label><p>{j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer">Open Maps ↗</a> : "—"}</p></div>
+          <div className="detail-field"><label>Mobile</label><p><a href={`tel:${j.customer_mobile}`}>{j.customer_mobile}</a></p></div>
+          <div className="detail-field"><label>Lead From</label><p>{j.lead_from}</p></div>
+          <div className="detail-field"><label>Service</label><p>{j.service_type} × {j.qty}</p></div>
+          <div className="detail-field"><label>Total</label><p style={{ color: "var(--accent)", fontWeight: 700 }}>KWD {Number(j.total || 0).toFixed(3)}</p></div>
+          <div className="detail-field" style={{ gridColumn: "1/-1" }}><label>Item Details</label><p>{j.service_details || "—"}</p></div>
+          {j.notes && <div className="detail-field" style={{ gridColumn: "1/-1" }}><label>Notes</label><p style={{ color: "#B45309", fontWeight: 500 }}>⚠ {j.notes}</p></div>}
+          <div className="detail-field"><label>Payment</label><p>{j.payment_through} · <span style={{ color: j.payment_status === "paid" ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span></p></div>
+          <div className="detail-field"><label>Xero PO Ref</label><p>{j.xero_ref || "—"}</p></div>
+          <div className="detail-field"><label>Sales Agent</label><p>{j.sales_agent || "—"}</p></div>
         </div>
       </div>
 
@@ -650,20 +800,16 @@ function JobDetail({ job, onBack, onUpdate, role }) {
       <div className="card">
         <div className="card-header">
           <h3>Status Flow</h3>
-          {nx && (
-            <button className="btn btn-primary btn-sm" onClick={advanceStatus}>
-              Advance → {nx.label}
-            </button>
-          )}
+          {nx && <button className="btn btn-primary btn-sm" onClick={advanceStatus}>Advance → {nx.label}</button>}
         </div>
         <div className="card-body">
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {STATUS_FLOW.map((s, i) => (
               <span key={s.key} style={{
                 padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
                 background: i < flowIdx ? "#F0FDF4" : i === flowIdx ? s.color + "18" : "var(--bg)",
                 color: i < flowIdx ? "var(--success)" : i === flowIdx ? s.color : "var(--muted)",
-                border: `1px solid ${i === flowIdx ? s.color : "var(--border)"}`,
+                border: `1px solid ${i === flowIdx ? s.color + "44" : "var(--border)"}`,
               }}>
                 {i < flowIdx ? "✓ " : ""}{s.label}
               </span>
@@ -684,15 +830,9 @@ function JobDetail({ job, onBack, onUpdate, role }) {
               const done = j.checks[i];
               const locked = i > 0 && !j.checks[i - 1];
               return (
-                <div
-                  key={i}
-                  className={`check-item ${done ? "done" : ""} ${locked ? "locked" : ""}`}
-                  onClick={() => !locked && toggleCheck(i)}
-                >
+                <div key={i} className={`check-item ${done ? "done" : ""} ${locked ? "locked" : ""}`} onClick={() => !locked && toggleCheck(i)}>
                   <div className={`check-circle ${done ? "done" : ""}`}>{done ? "✓" : ""}</div>
-                  <div className="check-text">
-                    <span className="check-num">#{i + 1}</span>{label}
-                  </div>
+                  <div className="check-text"><span className="check-num">#{i + 1}</span>{label}</div>
                 </div>
               );
             })}
@@ -703,50 +843,40 @@ function JobDetail({ job, onBack, onUpdate, role }) {
   );
 }
 
-// ─── Schedule View (Sales / Purchaser / Office) ───────────────────────────────
+// ─── Schedule View ────────────────────────────────────────────────────────────
 function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
   const [filterTruck, setFilterTruck] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterDate, setFilterDate] = useState(today());
+  const [search, setSearch] = useState("");
 
-  const filtered = jobs.filter((j) => {
+  const activeJobs = jobs.filter(j => !DONE_STATUSES.includes(j.status) || filterStatus !== "all");
+
+  const filtered = jobs.filter(j => {
     if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
     if (filterStatus !== "all" && j.status !== filterStatus) return false;
-    if (filterDate && j.scheduled_at) {
-      const d = new Date(j.scheduled_at).toISOString().split("T")[0];
-      if (d !== filterDate) return false;
-    }
+    if (filterDate) { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; if (d !== filterDate) return false; }
+    if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
     return true;
   });
 
   const totalKD = filtered.reduce((s, j) => s + Number(j.total || 0), 0);
-  const done = filtered.filter((j) => j.status === "done" || j.status === "invoiced" || j.status === "paid").length;
+  const done = filtered.filter(j => DONE_STATUSES.includes(j.status)).length;
 
   return (
     <>
       <div className="stats-grid">
-        <div className="stat-card">
-          <div className="num accent">{filtered.length}</div>
-          <div className="lbl">Jobs showing</div>
-        </div>
-        <div className="stat-card">
-          <div className="num success">{done}</div>
-          <div className="lbl">Completed</div>
-        </div>
-        <div className="stat-card">
-          <div className="num accent">KWD {totalKD.toFixed(3)}</div>
-          <div className="lbl">Revenue (shown)</div>
-        </div>
-        <div className="stat-card">
-          <div className="num" style={{ color: "#1D4ED8" }}>{jobs.filter(j=>j.payment_status==="paid").length}</div>
-          <div className="lbl">Paid</div>
-        </div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{filtered.length}</div><div className="stat-lbl">Jobs showing</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{done}</div><div className="stat-lbl">Completed</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>KWD {totalKD.toFixed(3)}</div><div className="stat-lbl">Revenue (shown)</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{jobs.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid</div></div>
       </div>
 
-      <div className="jobs-header">
-        <div className="jobs-title">Schedule</div>
+      <div className="page-header">
+        <div className="page-title">Schedule</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <div className="filters">
+            <input className="filter-input" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 140 }} />
             <input type="date" className="filter-select" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
             <select className="filter-select" value={filterTruck} onChange={e => setFilterTruck(e.target.value)}>
               <option value="all">All Trucks</option>
@@ -756,19 +886,15 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
               <option value="all">All Statuses</option>
               {STATUS_FLOW.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
-            <button className="btn btn-ghost btn-sm" onClick={() => setFilterDate("")}>Clear Date</button>
+            {filterDate && <button className="btn btn-ghost btn-sm" onClick={() => setFilterDate("")}>Clear Date</button>}
           </div>
-          {role === "sales" && (
-            <button className="btn btn-primary" onClick={onNewJob}>+ New Job</button>
-          )}
+          {role === "sales" && <button className="btn btn-primary" onClick={onNewJob}>+ New Job</button>}
         </div>
       </div>
 
       <div className="job-cards">
-        {filtered.length === 0 && (
-          <div className="empty"><h3>No jobs</h3><p>Adjust the filters or create a new job.</p></div>
-        )}
-        {filtered.map((job) => (
+        {filtered.length === 0 && <div className="empty"><h3>No jobs</h3><p>Adjust filters or create a new job.</p></div>}
+        {filtered.map(job => (
           <div key={job.id} className="job-card" onClick={() => onSelectJob(job)}>
             <div className="job-card-top">
               <div>
@@ -784,8 +910,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{job.area}</span>
               {job.payment_status === "paid"
                 ? <span style={{ fontSize: 11, color: "var(--success)", fontWeight: 700 }}>✓ Paid</span>
-                : <span style={{ fontSize: 11, color: "var(--danger)", fontWeight: 600 }}>Unpaid</span>
-              }
+                : <span style={{ fontSize: 11, color: "var(--danger)", fontWeight: 600 }}>Unpaid</span>}
             </div>
           </div>
         ))}
@@ -794,48 +919,272 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
   );
 }
 
-// ─── My Jobs View (Technician) ────────────────────────────────────────────────
-function MyJobsView({ jobs, role, onSelectJob }) {
+// ─── History View ─────────────────────────────────────────────────────────────
+function HistoryView({ jobs, onSelectJob }) {
+  const [search, setSearch] = useState("");
+  const [filterTruck, setFilterTruck] = useState("all");
+  const [filterAgent, setFilterAgent] = useState("all");
+
+  const doneJobs = jobs.filter(j => DONE_STATUSES.includes(j.status));
+  const agents = [...new Set(doneJobs.map(j => j.sales_agent).filter(Boolean))];
+
+  const filtered = doneJobs.filter(j => {
+    if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
+    if (filterAgent !== "all" && j.sales_agent !== filterAgent) return false;
+    if (search) {
+      const s = search.toLowerCase();
+      if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.service_details?.toLowerCase().includes(s)) return false;
+    }
+    return true;
+  }).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+
+  const totalRevenue = filtered.reduce((s, j) => s + Number(j.total || 0), 0);
+
+  return (
+    <>
+      <div className="stats-grid">
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{filtered.length}</div><div className="stat-lbl">Completed jobs</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>KWD {totalRevenue.toFixed(3)}</div><div className="stat-lbl">Total revenue</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{doneJobs.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid invoices</div></div>
+      </div>
+
+      <div className="page-header">
+        <div className="page-title">Order History</div>
+        <div className="filters">
+          <input className="filter-input" placeholder="Search customer, item…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 200 }} />
+          <select className="filter-select" value={filterTruck} onChange={e => setFilterTruck(e.target.value)}>
+            <option value="all">All Trucks</option>
+            {TRUCKS.map(t => <option key={t}>{t}</option>)}
+          </select>
+          {agents.length > 0 && (
+            <select className="filter-select" value={filterAgent} onChange={e => setFilterAgent(e.target.value)}>
+              <option value="all">All Agents</option>
+              {agents.map(a => <option key={a}>{a}</option>)}
+            </select>
+          )}
+        </div>
+      </div>
+
+      {filtered.length === 0 && <div className="empty"><h3>No history yet</h3><p>Completed jobs will appear here.</p></div>}
+
+      {filtered.map(job => (
+        <div key={job.id} className="history-job-card" onClick={() => onSelectJob(job)}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{job.customer_name}</div>
+              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>{job.service_type} × {job.qty} · {job.car_brand} {job.car_model}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{fmtDateTime(job.scheduled_at)} · {job.assigned_truck} · {job.sales_agent}</div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div style={{ fontWeight: 700, color: "var(--accent)", fontSize: 15 }}>KWD {Number(job.total || 0).toFixed(3)}</div>
+              <StatusPill status={job.status} />
+              <div style={{ fontSize: 11, marginTop: 4, color: job.payment_status === "paid" ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{job.payment_status}</div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+// ─── Customer Profile Detail ──────────────────────────────────────────────────
+function CustomerProfileDetail({ customer, cars, jobs, onBack, onSelectJob, onAddCar }) {
+  const customerCars = cars.filter(c => c.customer_id === customer.id);
+  const customerJobs = jobs.filter(j => j.customer_id === customer.id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+  const totalSpent = customerJobs.reduce((s, j) => s + Number(j.total || 0), 0);
+
+  return (
+    <div className="job-detail">
+      <button className="detail-back" onClick={onBack}>← Back to Customers</button>
+
+      <div className="detail-hero">
+        <div className="detail-hero-top">
+          <div>
+            <h2>{customer.name}</h2>
+            <div className="detail-hero-sub"><a href={`tel:${customer.mobile}`}>{customer.mobile}</a> · {customer.area}</div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontFamily: "var(--font-head)", fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>KWD {totalSpent.toFixed(3)}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.length} jobs total</div>
+          </div>
+        </div>
+        {customer.notes && <div style={{ fontSize: 13, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px" }}>⚠ {customer.notes}</div>}
+      </div>
+
+      {/* Cars */}
+      <div className="card">
+        <div className="card-header">
+          <h3>Vehicles ({customerCars.length})</h3>
+          <button className="btn btn-ghost btn-sm" onClick={() => onAddCar(customer)}>+ Add Vehicle</button>
+        </div>
+        <div className="card-body">
+          {customerCars.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>No vehicles on file.</div>}
+          {customerCars.map(car => (
+            <div key={car.id} className="car-card">
+              <div>
+                <div className="car-card-info">{car.brand} {car.model} {car.year}</div>
+                <div className="car-card-plate">{car.plate}</div>
+              </div>
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.filter(j => j.car_id === car.id).length} jobs</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Service history */}
+      <div className="card">
+        <div className="card-header"><h3>Service History</h3></div>
+        <div className="card-body">
+          {customerJobs.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>No jobs yet.</div>}
+          {customerJobs.map(job => (
+            <div key={job.id} className="history-job-card" onClick={() => onSelectJob(job)} style={{ marginBottom: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>{job.service_type} × {job.qty}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{job.car_brand} {job.car_model} · {fmtDate(job.scheduled_at)}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{job.service_details}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {Number(job.total || 0).toFixed(3)}</div>
+                  <StatusPill status={job.status} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Add Car Modal ────────────────────────────────────────────────────────────
+function AddCarModal({ customer, onClose, onCreated }) {
+  const [f, setF] = useState({ brand: "", model: "", year: "", plate: "" });
+  const [saving, setSaving] = useState(false);
+  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+
+  const save = async () => {
+    if (!f.brand || !f.model) return;
+    setSaving(true);
+    const car = await createCar({ ...f, customer_id: customer.id, created_at: new Date().toISOString() });
+    onCreated(car);
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 420 }}>
+        <div className="modal-header">
+          <h3>Add Vehicle — {customer.name}</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-grid">
+            <div className="form-field"><label>Brand *</label><input value={f.brand} onChange={set("brand")} placeholder="Toyota" /></div>
+            <div className="form-field"><label>Model *</label><input value={f.model} onChange={set("model")} placeholder="Land Cruiser" /></div>
+            <div className="form-field"><label>Year</label><input value={f.year} onChange={set("year")} placeholder="2023" /></div>
+            <div className="form-field"><label>Plate</label><input value={f.plate} onChange={set("plate")} placeholder="Kuwait · 12345 · Private" /></div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Add Vehicle"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Customers View ───────────────────────────────────────────────────────────
+function CustomersView({ customers, cars, jobs, onSelectCustomer }) {
+  const [search, setSearch] = useState("");
+
+  const filtered = customers.filter(c =>
+    !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.mobile.includes(search)
+  ).sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <>
+      <div className="page-header">
+        <div className="page-title">Customers ({customers.length})</div>
+        <div className="search-wrap" style={{ width: 260 }}>
+          <span className="search-icon">🔍</span>
+          <input className="search-input" placeholder="Search name or mobile…" value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+      </div>
+
+      {filtered.length === 0 && <div className="empty"><h3>No customers yet</h3><p>Customers are created when you add a new job.</p></div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
+        {filtered.map(c => {
+          const cCars = cars.filter(car => car.customer_id === c.id);
+          const cJobs = jobs.filter(j => j.customer_id === c.id);
+          const totalSpent = cJobs.reduce((s, j) => s + Number(j.total || 0), 0);
+          const lastJob = cJobs.sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at))[0];
+          return (
+            <div key={c.id} className="customer-card" onClick={() => onSelectCustomer(c)}>
+              <div className="customer-card-name">{c.name}</div>
+              <div className="customer-card-meta">
+                <span>📱 {c.mobile}</span>
+                <span>📍 {c.area}</span>
+              </div>
+              {cCars.length > 0 && (
+                <div className="cars-row">
+                  {cCars.map(car => (
+                    <span key={car.id} className="car-chip">{car.brand} {car.model} {car.year}</span>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+                <span className="history-mini">{cJobs.length} job{cJobs.length !== 1 ? "s" : ""} · Last: {lastJob ? fmtDate(lastJob.scheduled_at) : "—"}</span>
+                <span style={{ fontWeight: 700, color: "var(--accent)", fontSize: 14 }}>KWD {totalSpent.toFixed(3)}</span>
+              </div>
+              {c.notes && <div style={{ fontSize: 12, color: "#B45309", marginTop: 6 }}>⚠ {c.notes}</div>}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+// ─── My Jobs View ─────────────────────────────────────────────────────────────
+function MyJobsView({ jobs, onSelectJob }) {
   const [myTruck, setMyTruck] = useState("T2");
   const myJobs = jobs
     .filter(j => j.assigned_truck === myTruck)
-    .filter(j => {
-      const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
-      return d === today();
-    })
+    .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
     .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
 
   return (
     <>
-      <div className="jobs-header">
-        <div className="jobs-title">My Jobs — {fmtDate(new Date().toISOString())}</div>
+      <div className="page-header">
+        <div className="page-title">My Jobs — {fmtDate(new Date().toISOString())}</div>
         <select className="filter-select" value={myTruck} onChange={e => setMyTruck(e.target.value)}>
           {TRUCKS.map(t => <option key={t}>{t}</option>)}
         </select>
       </div>
-      {myJobs.length === 0 && (
-        <div className="empty"><h3>No jobs today</h3><p>You're all clear for {myTruck}.</p></div>
-      )}
+      {myJobs.length === 0 && <div className="empty"><h3>No jobs today</h3><p>All clear for {myTruck}.</p></div>}
       <div className="job-cards">
         {myJobs.map((job, i) => (
           <div key={job.id} className="my-job-card" onClick={() => onSelectJob(job)}>
-            <div className="my-job-header">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div className="my-job-num">#{i + 1}</div>
               <StatusPill status={job.status} />
             </div>
-            <div className="my-job-body">
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 14 }}>
               <p><strong>{job.customer_name}</strong> · <a href={`tel:${job.customer_mobile}`} style={{ color: "var(--accent)" }}>{job.customer_mobile}</a></p>
-              <p><strong>Time:</strong> {fmtTime(job.scheduled_at)}</p>
-              <p><strong>Address:</strong> {job.area}, Block {job.block}, St {job.street}, House {job.house}</p>
-              <p><strong>Car:</strong> {job.car_brand} {job.car_model} {job.car_year} · {job.car_plate || "—"}</p>
-              <p><strong>Service:</strong> {job.service_type} × {job.qty}</p>
-              <p style={{ color: "var(--muted)", fontSize: 12 }}>{job.service_details}</p>
-              {job.notes && <p style={{ color: "var(--accent)", marginTop: 6 }}>⚠ {job.notes}</p>}
+              <p style={{ color: "var(--muted)" }}>⏰ {fmtTime(job.scheduled_at)}</p>
+              <p>📍 {job.area}, Block {job.block}, St {job.street}, {job.house}</p>
+              <p>🚗 {job.car_brand} {job.car_model} {job.car_year} · {job.car_plate || "—"}</p>
+              <p>🔧 {job.service_type} × {job.qty}</p>
+              {job.service_details && <p style={{ color: "var(--muted)", fontSize: 13 }}>{job.service_details}</p>}
+              {job.notes && <p style={{ color: "#B45309", marginTop: 4 }}>⚠ {job.notes}</p>}
             </div>
             {job.map_link
               ? <a className="map-btn" href={job.map_link} target="_blank" rel="noreferrer">📍 Open in Maps</a>
-              : <div style={{ marginTop: 10, fontSize: 12, color: "var(--muted)" }}>No map link — contact sales</div>
-            }
+              : <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>No map link — contact sales</div>}
           </div>
         ))}
       </div>
@@ -846,56 +1195,30 @@ function MyJobsView({ jobs, role, onSelectJob }) {
 // ─── Distributor View ─────────────────────────────────────────────────────────
 function DistributorView({ jobs, onSelectJob }) {
   const [localData, setLocalData] = useState({});
-  const todayJobs = jobs.filter(j => {
+  const activeJobs = jobs.filter(j => {
     const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
     return d === today() || j.status === "part_ready" || j.status === "assigned";
   });
-
-  const toggle = (id, field) => {
-    setLocalData(p => ({ ...p, [id]: { ...(p[id] || {}), [field]: !(p[id]?.[field]) } }));
-  };
+  const toggle = (id, field) => setLocalData(p => ({ ...p, [id]: { ...(p[id] || {}), [field]: !(p[id]?.[field]) } }));
 
   return (
     <>
-      <div className="jobs-header">
-        <div className="jobs-title">Parts & Logistics</div>
-      </div>
-      {todayJobs.length === 0 && (
-        <div className="empty"><h3>No active orders</h3><p>Nothing to collect today.</p></div>
-      )}
-      {todayJobs.map(job => {
+      <div className="page-header"><div className="page-title">Parts & Logistics</div></div>
+      {activeJobs.length === 0 && <div className="empty"><h3>Nothing to collect</h3><p>No active orders today.</p></div>}
+      {activeJobs.map(job => {
         const ld = localData[job.id] || {};
         return (
           <div key={job.id} className="dist-card">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-              <h4>{job.customer_name} — {job.service_type} × {job.qty}</h4>
+              <div style={{ fontFamily: "var(--font-head)", fontWeight: 600, fontSize: 15 }}>{job.customer_name} — {job.service_type} × {job.qty}</div>
               <StatusPill status={job.status} />
             </div>
             <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>{job.service_details}</div>
-
-            <div className="dist-row">
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>Collect from supplier</div>
-                <div style={{ fontSize: 13 }}>{job.xero_ref ? `Ref: ${job.xero_ref}` : "No PO ref"}</div>
-              </div>
-            </div>
-            <div className="dist-row">
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)" }}>Deliver to</div>
-                <div style={{ fontSize: 13 }}>{job.assigned_truck} · Meet at {job.area}</div>
-              </div>
-            </div>
-            <div className="dist-row">
-              <span style={{ fontSize: 13 }}>Collected ✓</span>
-              <button className={`toggle-btn ${ld.collected ? "on" : "off"}`} onClick={() => toggle(job.id, "collected")} />
-            </div>
-            <div className="dist-row">
-              <span style={{ fontSize: 13 }}>Delivered to Truck ✓</span>
-              <button className={`toggle-btn ${ld.delivered ? "on" : "off"}`} onClick={() => toggle(job.id, "delivered")} />
-            </div>
-            <div style={{ marginTop: 10 }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => onSelectJob(job)}>View Full Job</button>
-            </div>
+            <div className="dist-row"><div><div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Collect from supplier</div><div style={{ fontSize: 13 }}>{job.xero_ref ? `Ref: ${job.xero_ref}` : "No PO ref yet"}</div></div></div>
+            <div className="dist-row"><div><div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Deliver to</div><div style={{ fontSize: 13 }}>{job.assigned_truck} · Meet at {job.area}</div></div></div>
+            <div className="dist-row"><span style={{ fontSize: 13, fontWeight: 500 }}>Collected ✓</span><button className={`toggle-btn ${ld.collected ? "on" : "off"}`} onClick={() => toggle(job.id, "collected")} /></div>
+            <div className="dist-row"><span style={{ fontSize: 13, fontWeight: 500 }}>Delivered to Truck ✓</span><button className={`toggle-btn ${ld.delivered ? "on" : "off"}`} onClick={() => toggle(job.id, "delivered")} /></div>
+            <div style={{ marginTop: 10 }}><button className="btn btn-ghost btn-sm" onClick={() => onSelectJob(job)}>View Full Job</button></div>
           </div>
         );
       })}
@@ -910,10 +1233,18 @@ export default function App() {
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState(false);
   const [jobs, setJobs] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [cars, setCars] = useState([]);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("schedule");
   const [selectedJob, setSelectedJob] = useState(null);
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [showNew, setShowNew] = useState(false);
+  const [showNewCustomer, setShowNewCustomer] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerCallback, setNewCustomerCallback] = useState(null);
+  const [showAddCar, setShowAddCar] = useState(false);
+  const [addCarTarget, setAddCarTarget] = useState(null);
   const [usingMock, setUsingMock] = useState(false);
 
   const login = () => {
@@ -924,25 +1255,59 @@ export default function App() {
   useEffect(() => {
     if (!authed) return;
     setLoading(true);
-    fetchJobs().then(data => {
-      const isMock = data.some(j => j.id?.startsWith("mock-"));
-      setUsingMock(isMock);
-      setJobs(data);
+    Promise.all([fetchJobs(), fetchCustomers(), fetchCars()]).then(([j, c, cr]) => {
+      setJobs(j);
+      setCustomers(c);
+      setCars(cr);
+      setUsingMock(j.some(x => x.id?.startsWith("mock-")));
       setLoading(false);
     });
   }, [authed]);
 
-  // Set default tab per role
   useEffect(() => {
     if (role === "technician") setTab("myjobs");
     else if (role === "distributor") setTab("distributor");
     else setTab("schedule");
+    setSelectedJob(null);
+    setSelectedCustomer(null);
   }, [role]);
 
   const handleJobUpdate = (updated) => {
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
     if (selectedJob?.id === updated.id) setSelectedJob(updated);
   };
+
+  const handleNewCustomer = (name, cb) => {
+    setNewCustomerName(name);
+    setNewCustomerCallback(() => cb);
+    setShowNewCustomer(true);
+  };
+
+  const handleCustomerCreated = (c) => {
+    setCustomers(prev => [c, ...prev]);
+    if (newCustomerCallback) newCustomerCallback(c);
+    setShowNewCustomer(false);
+  };
+
+  const handleAddCar = (customer) => {
+    setAddCarTarget(customer);
+    setShowAddCar(true);
+  };
+
+  const handleCarCreated = (car) => {
+    setCars(prev => [car, ...prev]);
+    setShowAddCar(false);
+  };
+
+  // Tab config per role
+  const allTabs = [
+    { key: "schedule",   label: "Schedule",        roles: ["sales", "purchaser"] },
+    { key: "history",    label: "History",         roles: ["sales", "purchaser"] },
+    { key: "customers",  label: "Customers",       roles: ["sales", "purchaser"] },
+    { key: "myjobs",     label: "My Jobs",         roles: ["technician"] },
+    { key: "distributor",label: "Parts & Logistics", roles: ["distributor"] },
+  ];
+  const tabs = allTabs.filter(t => t.roles.includes(role));
 
   if (!authed) {
     return (
@@ -954,16 +1319,10 @@ export default function App() {
             <p>Scheduling System · Internal</p>
             <div className="role-grid">
               {ROLES.map(r => (
-                <button key={r.key} className={`role-btn ${role === r.key ? "active" : ""}`} onClick={() => setRole(r.key)}>
-                  {r.label}
-                </button>
+                <button key={r.key} className={`role-btn ${role === r.key ? "active" : ""}`} onClick={() => setRole(r.key)}>{r.label}</button>
               ))}
             </div>
-            <input
-              type="password" placeholder="Team password"
-              value={pw} onChange={e => setPw(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && login()}
-            />
+            <input type="password" placeholder="Team password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && login()} />
             {pwErr && <div className="login-error">Incorrect password.</div>}
             <button className="btn btn-primary" style={{ width: "100%" }} onClick={login}>Enter</button>
           </div>
@@ -972,12 +1331,7 @@ export default function App() {
     );
   }
 
-  const tabs = [
-    { key: "schedule", label: "Schedule", roles: ["sales", "purchaser"] },
-    { key: "myjobs",   label: "My Jobs",  roles: ["technician"] },
-    { key: "distributor", label: "Parts & Logistics", roles: ["distributor"] },
-    { key: "schedule", label: "Schedule", roles: ["distributor"] },
-  ].filter((t, i, arr) => t.roles.includes(role) && arr.findIndex(x => x.key === t.key && x.roles.includes(role)) === i);
+  const goBack = () => { setSelectedJob(null); setSelectedCustomer(null); };
 
   return (
     <>
@@ -989,40 +1343,50 @@ export default function App() {
             <span className="badge-role">{role}</span>
             <nav className="nav-tabs">
               {tabs.map(t => (
-                <button key={t.key} className={`nav-tab ${tab === t.key ? "active" : ""}`} onClick={() => { setTab(t.key); setSelectedJob(null); }}>
+                <button key={t.key} className={`nav-tab ${tab === t.key ? "active" : ""}`}
+                  onClick={() => { setTab(t.key); setSelectedJob(null); setSelectedCustomer(null); }}>
                   {t.label}
                 </button>
               ))}
             </nav>
           </div>
           <div className="topbar-right">
-            {usingMock && <span style={{ fontSize: 11, color: "var(--accent)", border: "1px solid var(--accent)", borderRadius: 6, padding: "2px 8px" }}>Demo Data</span>}
+            {usingMock && <span style={{ fontSize: 11, color: "var(--accent)", border: "1px solid #FDE68A", background: "#FFFBEB", borderRadius: 6, padding: "2px 8px" }}>Demo Data</span>}
             <button className="btn-logout" onClick={() => { setAuthed(false); setPw(""); }}>Sign out</button>
           </div>
         </div>
 
         <div className="main">
           {loading && <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>Loading…</div>}
+
           {!loading && selectedJob && (
-            <JobDetail
-              job={selectedJob}
-              role={role}
-              onBack={() => setSelectedJob(null)}
-              onUpdate={handleJobUpdate}
-            />
+            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} />
           )}
-          {!loading && !selectedJob && tab === "schedule" && (
-            <ScheduleView
+
+          {!loading && !selectedJob && selectedCustomer && tab === "customers" && (
+            <CustomerProfileDetail
+              customer={selectedCustomer}
+              cars={cars}
               jobs={jobs}
-              role={role}
-              onSelectJob={setSelectedJob}
-              onNewJob={() => setShowNew(true)}
+              onBack={() => setSelectedCustomer(null)}
+              onSelectJob={(job) => { setSelectedJob(job); }}
+              onAddCar={handleAddCar}
             />
           )}
-          {!loading && !selectedJob && tab === "myjobs" && (
-            <MyJobsView jobs={jobs} role={role} onSelectJob={setSelectedJob} />
+
+          {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
+            <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => setShowNew(true)} />
           )}
-          {!loading && !selectedJob && tab === "distributor" && (
+          {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
+            <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "customers" && (
+            <CustomersView customers={customers} cars={cars} jobs={jobs} onSelectCustomer={setSelectedCustomer} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "myjobs" && (
+            <MyJobsView jobs={jobs} onSelectJob={setSelectedJob} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "distributor" && (
             <DistributorView jobs={jobs} onSelectJob={setSelectedJob} />
           )}
         </div>
@@ -1030,8 +1394,27 @@ export default function App() {
 
       {showNew && (
         <NewJobModal
+          customers={customers}
+          cars={cars}
           onClose={() => setShowNew(false)}
-          onCreated={(j) => { setJobs(prev => [j, ...prev]); }}
+          onCreated={j => setJobs(prev => [j, ...prev])}
+          onNewCustomer={handleNewCustomer}
+        />
+      )}
+
+      {showNewCustomer && (
+        <NewCustomerModal
+          initialName={newCustomerName}
+          onClose={() => setShowNewCustomer(false)}
+          onCreated={handleCustomerCreated}
+        />
+      )}
+
+      {showAddCar && addCarTarget && (
+        <AddCarModal
+          customer={addCarTarget}
+          onClose={() => setShowAddCar(false)}
+          onCreated={handleCarCreated}
         />
       )}
     </>
