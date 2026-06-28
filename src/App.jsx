@@ -23,6 +23,7 @@ const PASSWORD = "bnchr901";
 const TRUCKS = ["T1", "T2", "T4", "T5", "T6"];
 
 const STATUS_FLOW = [
+  { key: "draft",      label: "Draft",       color: "#94A3B8" },
   { key: "booked",     label: "Booked",      color: "#64748B" },
   { key: "part_ready", label: "Part Ready",  color: "#7C3AED" },
   { key: "assigned",   label: "Assigned",    color: "#2563EB" },
@@ -97,6 +98,63 @@ async function searchTires(q) {
     return MOCK_TIRES.filter(x => (`${x.brand} ${x.pattern} ${tireSize(x)}`).toLowerCase().includes(t));
   }
 }
+
+// ─── Truck config (active trucks + working hours, 24h) ────────────────────────
+const TRUCK_CONFIG = {
+  T1: { start: 11, end: 19 }, // 11am–7pm
+  T2: { start: 12, end: 20 }, // 12pm–8pm
+  T4: { start: 13, end: 21 }, // 1pm–9pm
+};
+const ACTIVE_TRUCKS = Object.keys(TRUCK_CONFIG);
+
+// Hour label e.g. 13 -> "1:00 PM"
+const hourLabel = (h) => {
+  const am = h < 12 || h === 24;
+  const hr = h % 12 === 0 ? 12 : h % 12;
+  return `${hr}:00 ${am ? "AM" : "PM"}`;
+};
+// All hours a truck works (array of integers)
+const truckHours = (truck) => {
+  const c = TRUCK_CONFIG[truck];
+  if (!c) return [];
+  const out = [];
+  for (let h = c.start; h < c.end; h++) out.push(h);
+  return out;
+};
+
+// ─── Labor (mirror of Tire System — keep in sync via shared contract) ─────────
+// Standard wheels vs center-lock (Porsche GT3 etc., torque wrench).
+const LABOR = {
+  standard: { 1: 15, 2: 15, 3: 20, 4: 20, 5: 25 },
+  centerlock: { 1: 25, 2: 25, 3: 40, 4: 40 },
+};
+function laborFor(qty, centerlock) {
+  const table = centerlock ? LABOR.centerlock : LABOR.standard;
+  const q = Number(qty) || 0;
+  return table[q] ?? table[4];
+}
+
+// ─── Slot helpers ─────────────────────────────────────────────────────────────
+// A job occupies `duration` consecutive hours on its truck starting at start_hour.
+// Returns the set of hours a job covers.
+const jobHours = (job) => {
+  const start = Number(job.start_hour);
+  const dur = Number(job.duration) || 1;
+  if (!start && start !== 0) return [];
+  const out = [];
+  for (let h = start; h < start + dur; h++) out.push(h);
+  return out;
+};
+// Is a given truck+hour taken on a given date by any existing job (excluding one id)?
+const slotTaken = (jobs, truck, dateStr, hour, excludeId) => {
+  return jobs.some(j => {
+    if (j.id === excludeId) return false;
+    if (j.assigned_truck !== truck) return false;
+    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
+    if (d !== dateStr) return false;
+    return jobHours(j).includes(hour);
+  });
+};
 
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 const MOCK_CUSTOMERS = [
@@ -591,71 +649,153 @@ function ItemsBuilder({ items, setItems }) {
   );
 }
 
-// ─── New Job Modal ────────────────────────────────────────────────────────────
-function NewJobModal({ onClose, onCreated, customers, cars, onNewCustomer }) {
+// ─── Truck Slot Grid ──────────────────────────────────────────────────────────
+// One day, all active trucks as columns, 1h rows. Click a free slot to select a
+// start; the job spans `duration` consecutive hours. Shows booked slots.
+function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, onPick }) {
+  // union of all hours across active trucks, for row range
+  const allHours = [];
+  ACTIVE_TRUCKS.forEach(t => truckHours(t).forEach(h => { if (!allHours.includes(h)) allHours.push(h); }));
+  allHours.sort((a, b) => a - b);
+
+  // does selecting (truck,hour) fit without collision and within working hours?
+  const canFit = (truck, hour) => {
+    const hrs = truckHours(truck);
+    for (let h = hour; h < hour + duration; h++) {
+      if (!hrs.includes(h)) return false;                 // outside working hours
+      if (slotTaken(jobs, truck, dateStr, h, null)) return false; // collision
+    }
+    return true;
+  };
+
+  // is (truck,hour) part of the current selection span?
+  const inSelection = (truck, hour) =>
+    selectedTruck === truck && selectedHour != null &&
+    hour >= selectedHour && hour < selectedHour + duration;
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 360 }}>
+        <thead>
+          <tr>
+            <th style={{ ...slotCellBase, background: "var(--bg)", fontWeight: 700, width: 64 }}>Time</th>
+            {ACTIVE_TRUCKS.map(t => (
+              <th key={t} style={{ ...slotCellBase, background: "var(--bg)", fontWeight: 700 }}>
+                {t}
+                <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 500 }}>
+                  {hourLabel(TRUCK_CONFIG[t].start)}–{hourLabel(TRUCK_CONFIG[t].end)}
+                </div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {allHours.map(hour => (
+            <tr key={hour}>
+              <td style={{ ...slotCellBase, fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{hourLabel(hour)}</td>
+              {ACTIVE_TRUCKS.map(truck => {
+                const works = truckHours(truck).includes(hour);
+                if (!works) return <td key={truck} style={{ ...slotCellBase, background: "#F7F8FA" }} />;
+                const taken = slotTaken(jobs, truck, dateStr, hour, null);
+                const sel = inSelection(truck, hour);
+                const fits = canFit(truck, hour);
+                let bg = "var(--card)", color = "var(--text)", cursor = "pointer", label = "Free";
+                if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = "not-allowed"; label = "Booked"; }
+                else if (sel) { bg = "var(--accent)"; color = "#fff"; label = "Selected"; }
+                else if (!fits) { bg = "#FEF3C7"; color = "#92400E"; cursor = "not-allowed"; label = "—"; }
+                return (
+                  <td key={truck}
+                    onClick={() => !taken && fits && onPick(truck, hour)}
+                    style={{ ...slotCellBase, background: bg, color, cursor, fontSize: 11, fontWeight: sel ? 700 : 500 }}>
+                    {label}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
+        Selecting <strong>{duration}h</strong> · pick a green slot. Yellow = not enough consecutive free hours for {duration}h.
+      </div>
+    </div>
+  );
+}
+const slotCellBase = { border: "1px solid var(--border)", padding: "8px 6px", textAlign: "center" };
+
+// ─── New Order Modal (redesigned flow) ────────────────────────────────────────
+// 1) Mobile → autofill name + cars + addresses
+// 2) Service type → auto labor + items (with per-item match checkbox)
+// 3) Slot grid scheduling (truck + start hour, multi-hour duration)
+// 4) Admin (lead, payment, notes)  → submit as DRAFT
+function NewJobModal({ onClose, onCreated, customers, cars, jobs, onNewCustomer }) {
   const blank = {
     customer_name: "", customer_mobile: "", customer_id: null,
     area: "", block: "", street: "", house: "", map_link: "",
     car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
     service_type: "Tire Change & Balancing",
-    items: [],
-    assigned_truck: "T1", assigned_technician: "", lead_from: "WhatsApp", sales_agent: "",
+    items: [], centerlock: false, sales_match_confirmed: false,
+    assigned_truck: "T1", start_hour: null, duration: 1,
+    scheduled_date: today(),
+    lead_from: "WhatsApp", sales_agent: "",
     xero_ref: "", payment_through: "Link", payment_status: "pending", notes: "",
-    status: "booked", scheduled_at: new Date().toISOString().slice(0, 16),
+    status: "draft",
     checks: [false, false, false, false],
   };
   const [f, setF] = useState(blank);
+  const [mobileQ, setMobileQ] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [selectedCar, setSelectedCar] = useState(null);
   const [saving, setSaving] = useState(false);
 
   const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
+  const setItems = (updater) => setF(p => ({ ...p, items: typeof updater === "function" ? updater(p.items) : updater }));
+
+  // tire qty across items (for labor)
+  const tireQty = f.items.filter(it => it.kind === "tire").reduce((s, it) => s + (Number(it.qty) || 0), 0);
+  const laborCharge = f.service_type.includes("Tire") && tireQty > 0 ? laborFor(tireQty, f.centerlock) : 0;
+  const itemsSum = itemsTotal(f.items);
+  const grandTotal = itemsSum + laborCharge;
 
   const customerCars = selectedCustomer ? cars.filter(c => c.customer_id === selectedCustomer.id) : [];
 
-  const handleSelectCustomer = (c) => {
-    setSelectedCustomer(c);
-    setSelectedCar(null);
-    setF(p => ({
-      ...p,
-      customer_id: c.id,
-      customer_name: c.name,
-      customer_mobile: c.mobile,
-      area: c.area || p.area,
-      car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
-    }));
-  };
+  // mobile lookup
+  const mobileMatches = mobileQ.length < 3 ? [] : customers.filter(c => (c.mobile || "").includes(mobileQ));
 
-  const handleSelectCar = (car) => {
+  const selectCustomer = (c) => {
+    setSelectedCustomer(c); setSelectedCar(null); setMobileQ("");
+    setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, area: c.area || p.area,
+      car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null }));
+  };
+  const selectCar = (car) => {
     setSelectedCar(car);
-    setF(p => ({
-      ...p,
-      car_id: car.id,
-      car_brand: car.brand,
-      car_model: car.model,
-      car_year: car.year,
-      car_plate: car.plate,
-    }));
+    setF(p => ({ ...p, car_id: car.id, car_brand: car.brand, car_model: car.model, car_year: car.year, car_plate: car.plate }));
   };
-
-  const setItems = (updater) => setF(p => ({ ...p, items: typeof updater === "function" ? updater(p.items) : updater }));
-
   const clearCustomer = () => {
-    setSelectedCustomer(null);
-    setSelectedCar(null);
+    setSelectedCustomer(null); setSelectedCar(null);
     setF(p => ({ ...p, customer_id: null, customer_name: "", customer_mobile: "", car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null }));
   };
+  const pickSlot = (truck, hour) => setF(p => ({ ...p, assigned_truck: truck, start_hour: hour }));
+
+  const canSubmit = f.customer_name && f.customer_mobile && f.area && f.items.length > 0
+    && f.sales_match_confirmed && f.start_hour != null;
 
   const save = async () => {
-    if (!f.customer_name || !f.area || f.items.length === 0) return;
+    if (!canSubmit) return;
     setSaving(true);
+    const scheduledAt = new Date(`${f.scheduled_date}T${String(f.start_hour).padStart(2, "0")}:00:00`);
     const job = {
       ...f,
-      total: itemsTotal(f.items),
+      labor_charge: laborCharge,
+      total: grandTotal,
       qty: f.items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
       service_details: f.items.map(it => it.kind === "tire" ? `${it.size} ${it.brand}${it.pattern ? " " + it.pattern : ""}` : it.name).filter(Boolean).join(" + "),
-      scheduled_at: new Date(f.scheduled_at).toISOString(),
+      scheduled_at: scheduledAt.toISOString(),
       created_at: new Date().toISOString(),
+      parts_status: "pending",   // pending | collected | delivered
+      truck_status: "scheduled", // scheduled | arrived | processing | completed
+      item_checks: {},           // distributor per-item confirmations
+      tech_checks: {},           // technician per-item confirmations
     };
     const created = await createJob(job);
     onCreated(created);
@@ -667,21 +807,34 @@ function NewJobModal({ onClose, onCreated, customers, cars, onNewCustomer }) {
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-header">
-          <h3>New Job</h3>
+          <h3>New Order</h3>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
           <div className="form-grid">
 
-            {/* Customer search */}
-            <div className="form-section-title">Customer</div>
+            {/* 1 — Customer by mobile */}
+            <div className="form-section-title">1 · Customer</div>
             <div className="form-full">
               {!selectedCustomer ? (
-                <CustomerSearchBox
-                  customers={customers}
-                  onSelect={handleSelectCustomer}
-                  onCreateNew={(name) => onNewCustomer(name, handleSelectCustomer)}
-                />
+                <div className="search-wrap">
+                  <span className="search-icon">📱</span>
+                  <input className="search-input" placeholder="Type customer mobile…" value={mobileQ}
+                    onChange={e => setMobileQ(e.target.value)} inputMode="tel" />
+                  {mobileQ.length >= 3 && (
+                    <div className="search-dropdown">
+                      {mobileMatches.map(c => (
+                        <div key={c.id} className="search-item" onClick={() => selectCustomer(c)}>
+                          <div className="search-item-name">{c.name}</div>
+                          <div className="search-item-sub">{c.mobile} · {c.area}</div>
+                        </div>
+                      ))}
+                      <div className="search-new" onClick={() => onNewCustomer(mobileQ, selectCustomer)}>
+                        + New customer with mobile "{mobileQ}"
+                      </div>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="customer-found">
                   <div>
@@ -693,160 +846,130 @@ function NewJobModal({ onClose, onCreated, customers, cars, onNewCustomer }) {
               )}
             </div>
 
-            {/* Manual name/mobile if no customer selected */}
+            {/* Car picker (from customer's cars) */}
+            {selectedCustomer && customerCars.length > 0 && (
+              <div className="form-full">
+                <label style={miniLabel}>Vehicle</label>
+                <div className="car-picker">
+                  {customerCars.map(car => (
+                    <div key={car.id} className={`car-option ${selectedCar?.id === car.id ? "selected" : ""}`} onClick={() => selectCar(car)}>
+                      <div className={`car-option-radio ${selectedCar?.id === car.id ? "selected" : ""}`} />
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>{car.brand} {car.model} {car.year}</div>
+                        <div style={{ fontSize: 12, color: "var(--muted)" }}>{car.plate}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Manual customer/vehicle fields when needed */}
             {!selectedCustomer && (
               <>
-                <div className="form-field">
-                  <label>Name *</label>
-                  <input value={f.customer_name} onChange={set("customer_name")} placeholder="Ahmad Al-Salem" />
-                </div>
-                <div className="form-field">
-                  <label>Mobile</label>
-                  <input value={f.customer_mobile} onChange={set("customer_mobile")} placeholder="99001234" />
-                </div>
+                <div className="form-field"><label>Name *</label><input value={f.customer_name} onChange={set("customer_name")} placeholder="Ahmad Al-Salem" /></div>
+                <div className="form-field"><label>Mobile *</label><input value={f.customer_mobile} onChange={set("customer_mobile")} placeholder="99001234" /></div>
               </>
             )}
-
-            {/* Car picker */}
-            {selectedCustomer && (
-              <>
-                <div className="form-section-title">Vehicle</div>
-                <div className="form-full">
-                  {customerCars.length > 0 && (
-                    <div className="car-picker" style={{ marginBottom: 10 }}>
-                      {customerCars.map(car => (
-                        <div key={car.id} className={`car-option ${selectedCar?.id === car.id ? "selected" : ""}`} onClick={() => handleSelectCar(car)}>
-                          <div className={`car-option-radio ${selectedCar?.id === car.id ? "selected" : ""}`} />
-                          <div>
-                            <div style={{ fontWeight: 600, fontSize: 14 }}>{car.brand} {car.model} {car.year}</div>
-                            <div style={{ fontSize: 12, color: "var(--muted)" }}>{car.plate}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {!selectedCar && (
-                    <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>Or enter a new vehicle:</div>
-                  )}
-                </div>
-              </>
-            )}
-
-            {/* Vehicle fields */}
             {(!selectedCustomer || !selectedCar) && (
               <>
-                {!selectedCustomer && <div className="form-section-title">Vehicle</div>}
-                <div className="form-field">
-                  <label>Brand</label>
-                  <input value={f.car_brand} onChange={set("car_brand")} placeholder="Toyota" />
-                </div>
-                <div className="form-field">
-                  <label>Model</label>
-                  <input value={f.car_model} onChange={set("car_model")} placeholder="Land Cruiser" />
-                </div>
-                <div className="form-field">
-                  <label>Year</label>
-                  <input value={f.car_year} onChange={set("car_year")} placeholder="2023" />
-                </div>
-                <div className="form-field">
-                  <label>Plate</label>
-                  <input value={f.car_plate} onChange={set("car_plate")} placeholder="Kuwait · 12345" />
-                </div>
+                <div className="form-field"><label>Car Brand</label><input value={f.car_brand} onChange={set("car_brand")} placeholder="Toyota" /></div>
+                <div className="form-field"><label>Model</label><input value={f.car_model} onChange={set("car_model")} placeholder="Land Cruiser" /></div>
+                <div className="form-field"><label>Year</label><input value={f.car_year} onChange={set("car_year")} placeholder="2023" /></div>
+                <div className="form-field"><label>Plate</label><input value={f.car_plate} onChange={set("car_plate")} placeholder="Kuwait · 12345" /></div>
               </>
             )}
 
-            {/* Location */}
+            {/* Address */}
             <div className="form-section-title">Location</div>
-            <div className="form-field">
-              <label>Area *</label>
-              <input value={f.area} onChange={set("area")} placeholder="Salmiya" />
-            </div>
-            <div className="form-field">
-              <label>Block</label>
-              <input value={f.block} onChange={set("block")} placeholder="12" />
-            </div>
-            <div className="form-field">
-              <label>Street</label>
-              <input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" />
-            </div>
-            <div className="form-field">
-              <label>House #</label>
-              <input value={f.house} onChange={set("house")} placeholder="7A" />
-            </div>
-            <div className="form-field form-full">
-              <label>Google Map Link</label>
-              <input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" />
-            </div>
+            <div className="form-field"><label>Area *</label><input value={f.area} onChange={set("area")} placeholder="Salmiya" /></div>
+            <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
+            <div className="form-field"><label>Street</label><input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" /></div>
+            <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
+            <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
 
-            {/* Service / Items */}
-            <div className="form-section-title">Service Type & Items</div>
+            {/* 2 — Service + items + labor */}
+            <div className="form-section-title">2 · Service & Items</div>
             <div className="form-field">
-              <label>Primary Service Type</label>
+              <label>Service Type</label>
               <select value={f.service_type} onChange={set("service_type")}>
                 {SERVICE_TYPES.map(s => <option key={s}>{s}</option>)}
               </select>
             </div>
-            <div className="form-field" />
+            {f.service_type.includes("Tire") && (
+              <div className="form-field">
+                <label>Wheel Type (labor)</label>
+                <select value={f.centerlock ? "cl" : "std"} onChange={e => setF(p => ({ ...p, centerlock: e.target.value === "cl" }))}>
+                  <option value="std">Standard</option>
+                  <option value="cl">Center-lock (Porsche GT3…)</option>
+                </select>
+              </div>
+            )}
             <ItemsBuilder items={f.items} setItems={setItems} />
 
-            {/* Scheduling */}
-            <div className="form-section-title">Scheduling & Assignment</div>
-            <div className="form-field">
-              <label>Date & Time</label>
-              <input type="datetime-local" value={f.scheduled_at} onChange={set("scheduled_at")} />
-            </div>
-            <div className="form-field">
-              <label>Truck</label>
-              <select value={f.assigned_truck} onChange={set("assigned_truck")}>
-                {TRUCKS.map(t => <option key={t}>{t}</option>)}
-              </select>
-            </div>
-            <div className="form-field">
-              <label>Technician</label>
-              <input value={f.assigned_technician} onChange={set("assigned_technician")} placeholder="Fahad" />
-            </div>
-            <div className="form-field">
-              <label>Sales Agent</label>
-              <input value={f.sales_agent} onChange={set("sales_agent")} placeholder="Hussain" />
+            {/* Labor line + grand total */}
+            {laborCharge > 0 && (
+              <div className="form-full" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FFF7E8", border: "1px solid #FDE6B0", borderRadius: 8, padding: "8px 12px" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#92400E" }}>
+                  Labor — {f.centerlock ? "center-lock" : "standard"} · {tireQty} tire{tireQty !== 1 ? "s" : ""}
+                </span>
+                <span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {laborCharge.toFixed(3)}</span>
+              </div>
+            )}
+            <div className="form-full" style={{ display: "flex", justifyContent: "flex-end", gap: 12, alignItems: "baseline" }}>
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>Items {itemsSum.toFixed(3)} {laborCharge > 0 ? `+ Labor ${laborCharge.toFixed(3)}` : ""}</span>
+              <span style={{ fontFamily: "var(--font-head)", fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>Total KWD {grandTotal.toFixed(3)}</span>
             </div>
 
-            {/* Admin */}
-            <div className="form-section-title">Payment & Admin</div>
+            {/* Sales match confirmation gate */}
+            <label className="form-full" style={{ display: "flex", gap: 10, alignItems: "flex-start", background: f.sales_match_confirmed ? "#F0FDF4" : "var(--bg)", border: `1px solid ${f.sales_match_confirmed ? "var(--success)" : "var(--border)"}`, borderRadius: 8, padding: "10px 12px", cursor: "pointer" }}>
+              <input type="checkbox" checked={f.sales_match_confirmed} onChange={e => setF(p => ({ ...p, sales_match_confirmed: e.target.checked }))} style={{ marginTop: 2 }} />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>I'm sure the tires / products match the customer's car. <span style={{ color: "var(--danger)" }}>*</span></span>
+            </label>
+
+            {/* 3 — Scheduling slot grid */}
+            <div className="form-section-title">3 · Scheduling</div>
             <div className="form-field">
-              <label>Lead From</label>
-              <select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select>
+              <label>Date</label>
+              <input type="date" value={f.scheduled_date} onChange={e => setF(p => ({ ...p, scheduled_date: e.target.value, start_hour: null }))} />
             </div>
             <div className="form-field">
-              <label>Payment Through</label>
-              <select value={f.payment_through} onChange={set("payment_through")}>
-                {["Link","Tabby","Warranty","Cash","KNET"].map(s => <option key={s}>{s}</option>)}
+              <label>Duration (hours)</label>
+              <select value={f.duration} onChange={e => setF(p => ({ ...p, duration: Number(e.target.value), start_hour: null }))}>
+                {[1, 2, 3].map(d => <option key={d} value={d}>{d} hour{d > 1 ? "s" : ""}</option>)}
               </select>
             </div>
-            <div className="form-field">
-              <label>Payment Status</label>
-              <select value={f.payment_status} onChange={set("payment_status")}>
-                <option value="pending">Pending</option>
-                <option value="paid">Paid</option>
-              </select>
+            <div className="form-full">
+              <TruckSlotGrid jobs={jobs} dateStr={f.scheduled_date} duration={f.duration}
+                selectedTruck={f.start_hour != null ? f.assigned_truck : null} selectedHour={f.start_hour} onPick={pickSlot} />
+              {f.start_hour != null && (
+                <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600, color: "var(--success)" }}>
+                  ✓ {f.assigned_truck} · {hourLabel(f.start_hour)}–{hourLabel(f.start_hour + f.duration)} on {f.scheduled_date}
+                </div>
+              )}
             </div>
-            <div className="form-field">
-              <label>Xero PO Ref</label>
-              <input value={f.xero_ref} onChange={set("xero_ref")} placeholder="PO-2026-0041" />
-            </div>
-            <div className="form-field form-full">
-              <label>Notes</label>
-              <textarea value={f.notes} onChange={set("notes")} placeholder="Tesla jack pads, gate code, special instructions…" />
-            </div>
+
+            {/* 4 — Admin */}
+            <div className="form-section-title">4 · Admin</div>
+            <div className="form-field"><label>Lead From</label><select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select></div>
+            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Warranty","Cash","KNET"].map(s => <option key={s}>{s}</option>)}</select></div>
+            <div className="form-field"><label>Sales Agent</label><input value={f.sales_agent} onChange={set("sales_agent")} placeholder="Hussain" /></div>
+            <div className="form-field"><label>Xero PO Ref</label><input value={f.xero_ref} onChange={set("xero_ref")} placeholder="PO-2026-0041" /></div>
+            <div className="form-field form-full"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="Gate code, special instructions…" /></div>
           </div>
         </div>
         <div className="modal-footer">
+          <span style={{ fontSize: 12, color: "var(--muted)", marginRight: "auto", alignSelf: "center" }}>
+            {!canSubmit && "Fill customer, items, match-confirm, and pick a slot to submit."}
+          </span>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Create Job"}</button>
+          <button className="btn btn-primary" onClick={save} disabled={!canSubmit || saving}>{saving ? "Saving…" : "Submit as Draft"}</button>
         </div>
       </div>
     </div>
   );
 }
+const miniLabel = { fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 };
 
 // ─── New Customer Modal ───────────────────────────────────────────────────────
 function NewCustomerModal({ initialName, onClose, onCreated }) {
@@ -899,29 +1022,28 @@ function NewCustomerModal({ initialName, onClose, onCreated }) {
   );
 }
 
-// ─── Job Detail ───────────────────────────────────────────────────────────────
+// ─── Status helpers for the new model ─────────────────────────────────────────
+const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
+
+// ─── Job Detail (with triggers) ───────────────────────────────────────────────
 function JobDetail({ job, onBack, onUpdate, role }) {
   const [j, setJ] = useState(job);
 
-  const advanceStatus = async () => {
-    const nx = nextStatus(j.status);
-    if (!nx) return;
-    const patch = { status: nx.key };
-    setJ(p => ({ ...p, ...patch }));
+  const patchJob = async (patch) => {
+    const next = { ...j, ...patch };
+    setJ(next);
     await updateJob(j.id, patch);
-    onUpdate({ ...j, ...patch });
+    onUpdate(next);
   };
 
-  const toggleCheck = async (idx) => {
+  const toggleCheck = (idx) => {
     if (idx > 0 && !j.checks[idx - 1]) return;
-    const checks = [...j.checks];
+    const checks = [...(j.checks || [false, false, false, false])];
     checks[idx] = !checks[idx];
-    setJ(p => ({ ...p, checks }));
-    await updateJob(j.id, { checks });
-    onUpdate({ ...j, checks });
+    patchJob({ checks });
   };
 
-  const nx = nextStatus(j.status);
+  const isPaid = j.payment_status === "paid";
   const flowIdx = STATUS_FLOW.findIndex(s => s.key === j.status);
 
   return (
@@ -937,7 +1059,7 @@ function JobDetail({ job, onBack, onUpdate, role }) {
           <StatusPill status={j.status} />
         </div>
         <div className="detail-grid">
-          <div className="detail-field"><label>Time</label><p>{fmtDate(j.scheduled_at)} at {fmtTime(j.scheduled_at)}</p></div>
+          <div className="detail-field"><label>Time</label><p>{fmtDate(j.scheduled_at)} at {fmtTime(j.scheduled_at)}{j.duration ? ` · ${j.duration}h` : ""}</p></div>
           <div className="detail-field"><label>Truck / Tech</label><p>{j.assigned_truck} · {j.assigned_technician || "—"}</p></div>
           <div className="detail-field"><label>Location</label><p>{j.area}, Block {j.block}, St {j.street}, {j.house}</p></div>
           <div className="detail-field"><label>Map</label><p>{j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer">Open Maps ↗</a> : "—"}</p></div>
@@ -946,19 +1068,14 @@ function JobDetail({ job, onBack, onUpdate, role }) {
           <div className="detail-field"><label>Service</label><p>{j.service_type}</p></div>
           <div className="detail-field"><label>Total</label><p style={{ color: "var(--accent)", fontWeight: 700 }}>KWD {Number(j.total || 0).toFixed(3)}</p></div>
           <div className="detail-field" style={{ gridColumn: "1/-1" }}>
-            <label>Items ({(j.items || []).length})</label>
+            <label>Items ({(j.items || []).length}){j.labor_charge ? ` + labor ${Number(j.labor_charge).toFixed(3)}` : ""}</label>
             {(j.items && j.items.length) ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
                 {j.items.map(it => (
                   <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px" }}>
                     <div>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>
-                        {it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${it.size}` : it.name}
-                      </div>
-                      <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                        {it.qty} × KWD {Number(it.unit_price).toFixed(3)}
-                        {it.kind === "tire" && it.tire_id ? ` · catalog id ${String(it.tire_id).slice(0, 8)}…` : ""}
-                      </div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${it.size}` : it.name}</div>
+                      <div style={{ fontSize: 12, color: "var(--muted)" }}>{it.qty} × KWD {Number(it.unit_price).toFixed(3)}{it.kind === "tire" && it.tire_id ? ` · catalog id ${String(it.tire_id).slice(0, 8)}…` : ""}</div>
                     </div>
                     <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</div>
                   </div>
@@ -967,45 +1084,47 @@ function JobDetail({ job, onBack, onUpdate, role }) {
             ) : <p>{j.service_details || "—"}</p>}
           </div>
           {j.notes && <div className="detail-field" style={{ gridColumn: "1/-1" }}><label>Notes</label><p style={{ color: "#B45309", fontWeight: 500 }}>⚠ {j.notes}</p></div>}
-          <div className="detail-field"><label>Payment</label><p>{j.payment_through} · <span style={{ color: j.payment_status === "paid" ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span></p></div>
+          <div className="detail-field"><label>Payment</label><p>{j.payment_through} · <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span></p></div>
           <div className="detail-field"><label>Xero PO Ref</label><p>{j.xero_ref || "—"}</p></div>
-          <div className="detail-field"><label>Sales Agent</label><p>{j.sales_agent || "—"}</p></div>
+          <div className="detail-field"><label>Parts</label><p>{j.parts_status || "pending"}</p></div>
+          <div className="detail-field"><label>Truck Status</label><p>{j.truck_status || "scheduled"}</p></div>
         </div>
       </div>
 
-      {/* Status flow */}
-      <div className="card">
-        <div className="card-header">
-          <h3>Status Flow</h3>
-          {nx && <button className="btn btn-primary btn-sm" onClick={advanceStatus}>Advance → {nx.label}</button>}
-        </div>
-        <div className="card-body">
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {STATUS_FLOW.map((s, i) => (
-              <span key={s.key} style={{
-                padding: "4px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
-                background: i < flowIdx ? "#F0FDF4" : i === flowIdx ? s.color + "18" : "var(--bg)",
-                color: i < flowIdx ? "var(--success)" : i === flowIdx ? s.color : "var(--muted)",
-                border: `1px solid ${i === flowIdx ? s.color + "44" : "var(--border)"}`,
-              }}>
-                {i < flowIdx ? "✓ " : ""}{s.label}
-              </span>
-            ))}
+      {/* Triggers (sales/purchaser) */}
+      {(role === "sales" || role === "purchaser") && (
+        <div className="card">
+          <div className="card-header"><h3>Order Triggers</h3></div>
+          <div className="card-body" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className={`btn ${isPaid ? "btn-success" : "btn-ghost"}`}
+              onClick={() => patchJob({ payment_status: isPaid ? "pending" : "paid", status: isPaid ? j.status : (j.status === "draft" ? "booked" : j.status) })}>
+              {isPaid ? "✓ Paid" : "Mark Paid"}
+            </button>
+            <button className="btn btn-ghost" disabled={!isPaid}
+              onClick={() => patchJob({ status: "part_ready" })}
+              title={!isPaid ? "Mark paid first" : ""}>
+              Trigger: Parts Ready → Distributor
+            </button>
+            <button className="btn btn-ghost" disabled={j.status === "draft" || !isPaid}
+              onClick={() => patchJob({ status: "assigned" })}>
+              Trigger: Show to Technicians
+            </button>
           </div>
+          {!isPaid && <div style={{ padding: "0 16px 14px", fontSize: 12, color: "var(--danger)" }}>Payment gate: order stays draft until marked paid.</div>}
         </div>
-      </div>
+      )}
 
-      {/* 4-Check system */}
+      {/* 4-check (reference) */}
       <div className="card">
         <div className="card-header">
           <h3>4-Check Verification</h3>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>{j.checks.filter(Boolean).length}/4 complete</span>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{(j.checks || []).filter(Boolean).length}/4</span>
         </div>
         <div className="card-body">
           <div className="checks-list">
             {CHECK_LABELS.map((label, i) => {
-              const done = j.checks[i];
-              const locked = i > 0 && !j.checks[i - 1];
+              const done = (j.checks || [])[i];
+              const locked = i > 0 && !(j.checks || [])[i - 1];
               return (
                 <div key={i} className={`check-item ${done ? "done" : ""} ${locked ? "locked" : ""}`} onClick={() => !locked && toggleCheck(i)}>
                   <div className={`check-circle ${done ? "done" : ""}`}>{done ? "✓" : ""}</div>
@@ -1091,6 +1210,162 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
         ))}
       </div>
     </>
+  );
+}
+
+// ─── Distributor Dashboard ────────────────────────────────────────────────────
+// Shows part_ready orders. Per-item: match-checkbox + Collected; once all collected,
+// Delivered unlocks. Persists to DB (parts_status, item_checks).
+function DistributorView({ jobs, onUpdate }) {
+  const active = jobs.filter(j => j.status === "part_ready" || (j.parts_status && j.parts_status !== "delivered" && ["part_ready","assigned"].includes(j.status)));
+
+  return (
+    <>
+      <div className="page-header"><div className="page-title">Parts & Logistics</div></div>
+      {active.length === 0 && <div className="empty"><h3>Nothing to collect</h3><p>Orders appear here when Sales triggers "Parts Ready".</p></div>}
+      {active.map(job => (
+        <DistributorCard key={job.id} job={job} onUpdate={onUpdate} />
+      ))}
+    </>
+  );
+}
+
+function DistributorCard({ job, onUpdate }) {
+  const [j, setJ] = useState(job);
+  const items = (j.items || []).filter(it => it.kind === "tire" || it.kind === "service");
+  const checks = j.item_checks || {};
+  const collected = j.collected_items || {};
+
+  const patch = async (p) => { const next = { ...j, ...p }; setJ(next); await updateJob(j.id, p); onUpdate(next); };
+
+  const toggleMatch = (id) => patch({ item_checks: { ...checks, [id]: !checks[id] } });
+  const markCollected = (id) => {
+    if (!checks[id]) return; // must confirm match first
+    patch({ collected_items: { ...collected, [id]: true } });
+  };
+  const allCollected = items.length > 0 && items.every(it => collected[it.id]);
+  const markDelivered = () => { if (allCollected) patch({ parts_status: "delivered" }); };
+  // when all collected, reflect parts_status
+  const partsStatus = j.parts_status === "delivered" ? "delivered" : (allCollected ? "collected" : "pending");
+
+  return (
+    <div className="dist-card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+        <div style={{ fontFamily: "var(--font-head)", fontWeight: 600, fontSize: 15 }}>{j.customer_name} — {j.service_type}</div>
+        <span className="status-pill" style={{ background: partsStatus === "delivered" ? "#DCFCE7" : partsStatus === "collected" ? "#FEF3C7" : "var(--bg)", color: partsStatus === "delivered" ? "#15803D" : partsStatus === "collected" ? "#92400E" : "var(--muted)" }}>{partsStatus}</span>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>Truck {j.assigned_truck} · {fmtDate(j.scheduled_at)} {fmtTime(j.scheduled_at)} · {j.area}</div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>{j.xero_ref ? `PO Ref: ${j.xero_ref}` : "No PO ref"}</div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.map(it => (
+          <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: collected[it.id] ? "#F0FDF4" : "var(--card)" }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+              {it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${it.size}${it.year ? " · " + it.year : ""}` : it.name} × {it.qty}
+            </div>
+            {it.kind === "tire" && it.supplier && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Supplier: {it.supplier}</div>}
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, fontWeight: 600, marginBottom: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!checks[it.id]} onChange={() => toggleMatch(it.id)} />
+              I'm sure this product matches the customer's car
+            </label>
+            {!collected[it.id]
+              ? <button className="btn btn-ghost btn-sm" disabled={!checks[it.id]} onClick={() => markCollected(it.id)} title={!checks[it.id] ? "Confirm match first" : ""}>Mark Collected</button>
+              : <span style={{ fontSize: 12, color: "var(--success)", fontWeight: 700 }}>✓ Collected</span>}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center" }}>
+        <button className="btn btn-primary btn-sm" disabled={!allCollected || j.parts_status === "delivered"} onClick={markDelivered}>
+          {j.parts_status === "delivered" ? "✓ Delivered to Truck" : "Mark Delivered to Truck"}
+        </button>
+        {!allCollected && <span style={{ fontSize: 11, color: "var(--muted)" }}>Collect all items to enable delivery.</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─── Technician Dashboard (per truck) ─────────────────────────────────────────
+function MyJobsView({ jobs, onUpdate, onSelectJob }) {
+  const [myTruck, setMyTruck] = useState(ACTIVE_TRUCKS[0]);
+  const myJobs = jobs
+    .filter(j => j.assigned_truck === myTruck && j.status === "assigned")
+    .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
+    .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+
+  return (
+    <>
+      <div className="page-header">
+        <div className="page-title">My Jobs — {fmtDate(new Date().toISOString())}</div>
+        <select className="filter-select" value={myTruck} onChange={e => setMyTruck(e.target.value)}>
+          {ACTIVE_TRUCKS.map(t => <option key={t}>{t}</option>)}
+        </select>
+      </div>
+      {myJobs.length === 0 && <div className="empty"><h3>No jobs today</h3><p>All clear for {myTruck}.</p></div>}
+      <div className="job-cards">
+        {myJobs.map((job, i) => <TechJobCard key={job.id} job={job} index={i} onUpdate={onUpdate} />)}
+      </div>
+    </>
+  );
+}
+
+function TechJobCard({ job, index, onUpdate }) {
+  const [j, setJ] = useState(job);
+  const [open, setOpen] = useState(false);
+  const items = j.items || [];
+  const tchecks = j.tech_checks || {};
+  const patch = async (p) => { const next = { ...j, ...p }; setJ(next); await updateJob(j.id, p); onUpdate(next); };
+
+  const startJob = () => { setOpen(true); if (j.truck_status !== "processing") patch({ truck_status: "processing" }); };
+  const arrived = () => patch({ truck_status: "arrived" });
+  const toggleMatch = (id) => patch({ tech_checks: { ...tchecks, [id]: !tchecks[id] } });
+  const allMatched = items.length > 0 && items.every(it => tchecks[it.id]);
+  const complete = () => { if (allMatched) patch({ truck_status: "completed", status: "done" }); };
+
+  const ts = j.truck_status || "scheduled";
+
+  return (
+    <div className="my-job-card">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div className="my-job-num">#{index + 1}</div>
+        <span className="status-pill" style={{ background: ts === "completed" ? "#DCFCE7" : ts === "processing" ? "#FEF3C7" : ts === "arrived" ? "#DBEAFE" : "var(--bg)", color: ts === "completed" ? "#15803D" : ts === "processing" ? "#92400E" : ts === "arrived" ? "#1D4ED8" : "var(--muted)" }}>{ts}</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 14 }}>
+        <p><strong>{j.customer_name}</strong> · <a href={`tel:${j.customer_mobile}`} style={{ color: "var(--accent)" }}>{j.customer_mobile}</a></p>
+        <p style={{ color: "var(--muted)" }}>⏰ {fmtTime(j.scheduled_at)}{j.duration ? ` · ${j.duration}h` : ""}</p>
+        <p>📍 {j.area}, Block {j.block}, St {j.street}, {j.house}</p>
+        <p>🚗 {j.car_brand} {j.car_model} {j.car_year} · {j.car_plate || "—"}</p>
+        {j.notes && <p style={{ color: "#B45309" }}>⚠ {j.notes}</p>}
+      </div>
+      {j.map_link && <a className="map-btn" href={j.map_link} target="_blank" rel="noreferrer">📍 Open in Maps</a>}
+
+      <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {ts === "scheduled" && <button className="btn btn-ghost btn-sm" onClick={arrived}>Mark Arrived</button>}
+        {(ts === "scheduled" || ts === "arrived") && <button className="btn btn-primary btn-sm" onClick={startJob}>Start Job</button>}
+        {ts === "processing" && <button className="btn btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide" : "Show"} Service Details</button>}
+      </div>
+
+      {/* Service details revealed on Start Job */}
+      {open && (
+        <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 8 }}>Items — confirm each matches the car</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {items.map(it => (
+              <label key={it.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", background: tchecks[it.id] ? "#F0FDF4" : "var(--bg)", cursor: "pointer" }}>
+                <input type="checkbox" checked={!!tchecks[it.id]} onChange={() => toggleMatch(it.id)} style={{ marginTop: 2 }} />
+                <span style={{ fontSize: 13 }}>
+                  <strong>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${it.size}` : it.name}</strong> × {it.qty}
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>I'm sure this matches the customer's car</div>
+                </span>
+              </label>
+            ))}
+          </div>
+          <button className="btn btn-success btn-sm" style={{ marginTop: 12 }} disabled={!allMatched} onClick={complete} title={!allMatched ? "Confirm all items match first" : ""}>
+            {allMatched ? "Complete Job" : `Confirm all ${items.length} items to complete`}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1270,7 +1545,7 @@ function AddCarModal({ customer, onClose, onCreated }) {
 }
 
 // ─── Customers View ───────────────────────────────────────────────────────────
-function CustomersView({ customers, cars, jobs, onSelectCustomer }) {
+function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer }) {
   const [search, setSearch] = useState("");
 
   const filtered = customers.filter(c =>
@@ -1281,9 +1556,12 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer }) {
     <>
       <div className="page-header">
         <div className="page-title">Customers ({customers.length})</div>
-        <div className="search-wrap" style={{ width: 260 }}>
-          <span className="search-icon">🔍</span>
-          <input className="search-input" placeholder="Search name or mobile…" value={search} onChange={e => setSearch(e.target.value)} />
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <div className="search-wrap" style={{ width: 240 }}>
+            <span className="search-icon">🔍</span>
+            <input className="search-input" placeholder="Search name or mobile…" value={search} onChange={e => setSearch(e.target.value)} />
+          </div>
+          <button className="btn btn-primary" onClick={onNewCustomer}>+ New Customer</button>
         </div>
       </div>
 
@@ -1322,82 +1600,6 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer }) {
   );
 }
 
-// ─── My Jobs View ─────────────────────────────────────────────────────────────
-function MyJobsView({ jobs, onSelectJob }) {
-  const [myTruck, setMyTruck] = useState("T2");
-  const myJobs = jobs
-    .filter(j => j.assigned_truck === myTruck)
-    .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
-    .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
-
-  return (
-    <>
-      <div className="page-header">
-        <div className="page-title">My Jobs — {fmtDate(new Date().toISOString())}</div>
-        <select className="filter-select" value={myTruck} onChange={e => setMyTruck(e.target.value)}>
-          {TRUCKS.map(t => <option key={t}>{t}</option>)}
-        </select>
-      </div>
-      {myJobs.length === 0 && <div className="empty"><h3>No jobs today</h3><p>All clear for {myTruck}.</p></div>}
-      <div className="job-cards">
-        {myJobs.map((job, i) => (
-          <div key={job.id} className="my-job-card" onClick={() => onSelectJob(job)}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <div className="my-job-num">#{i + 1}</div>
-              <StatusPill status={job.status} />
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 14 }}>
-              <p><strong>{job.customer_name}</strong> · <a href={`tel:${job.customer_mobile}`} style={{ color: "var(--accent)" }}>{job.customer_mobile}</a></p>
-              <p style={{ color: "var(--muted)" }}>⏰ {fmtTime(job.scheduled_at)}</p>
-              <p>📍 {job.area}, Block {job.block}, St {job.street}, {job.house}</p>
-              <p>🚗 {job.car_brand} {job.car_model} {job.car_year} · {job.car_plate || "—"}</p>
-              <p>🔧 {job.service_type}{job.items && job.items.length ? ` · ${job.items.length} item${job.items.length !== 1 ? "s" : ""}` : ""}</p>
-              {job.service_details && <p style={{ color: "var(--muted)", fontSize: 13 }}>{job.service_details}</p>}
-              {job.notes && <p style={{ color: "#B45309", marginTop: 4 }}>⚠ {job.notes}</p>}
-            </div>
-            {job.map_link
-              ? <a className="map-btn" href={job.map_link} target="_blank" rel="noreferrer">📍 Open in Maps</a>
-              : <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)" }}>No map link — contact sales</div>}
-          </div>
-        ))}
-      </div>
-    </>
-  );
-}
-
-// ─── Distributor View ─────────────────────────────────────────────────────────
-function DistributorView({ jobs, onSelectJob }) {
-  const [localData, setLocalData] = useState({});
-  const activeJobs = jobs.filter(j => {
-    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
-    return d === today() || j.status === "part_ready" || j.status === "assigned";
-  });
-  const toggle = (id, field) => setLocalData(p => ({ ...p, [id]: { ...(p[id] || {}), [field]: !(p[id]?.[field]) } }));
-
-  return (
-    <>
-      <div className="page-header"><div className="page-title">Parts & Logistics</div></div>
-      {activeJobs.length === 0 && <div className="empty"><h3>Nothing to collect</h3><p>No active orders today.</p></div>}
-      {activeJobs.map(job => {
-        const ld = localData[job.id] || {};
-        return (
-          <div key={job.id} className="dist-card">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-              <div style={{ fontFamily: "var(--font-head)", fontWeight: 600, fontSize: 15 }}>{job.customer_name} — {job.service_type}</div>
-              <StatusPill status={job.status} />
-            </div>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>{job.service_details}</div>
-            <div className="dist-row"><div><div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Collect from supplier</div><div style={{ fontSize: 13 }}>{job.xero_ref ? `Ref: ${job.xero_ref}` : "No PO ref yet"}</div></div></div>
-            <div className="dist-row"><div><div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Deliver to</div><div style={{ fontSize: 13 }}>{job.assigned_truck} · Meet at {job.area}</div></div></div>
-            <div className="dist-row"><span style={{ fontSize: 13, fontWeight: 500 }}>Collected ✓</span><button className={`toggle-btn ${ld.collected ? "on" : "off"}`} onClick={() => toggle(job.id, "collected")} /></div>
-            <div className="dist-row"><span style={{ fontSize: 13, fontWeight: 500 }}>Delivered to Truck ✓</span><button className={`toggle-btn ${ld.delivered ? "on" : "off"}`} onClick={() => toggle(job.id, "delivered")} /></div>
-            <div style={{ marginTop: 10 }}><button className="btn btn-ghost btn-sm" onClick={() => onSelectJob(job)}>View Full Job</button></div>
-          </div>
-        );
-      })}
-    </>
-  );
-}
 
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export default function App() {
@@ -1553,13 +1755,13 @@ export default function App() {
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "customers" && (
-            <CustomersView customers={customers} cars={cars} jobs={jobs} onSelectCustomer={setSelectedCustomer} />
+            <CustomersView customers={customers} cars={cars} jobs={jobs} onSelectCustomer={setSelectedCustomer} onNewCustomer={() => { setNewCustomerName(""); setNewCustomerCallback(null); setShowNewCustomer(true); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "myjobs" && (
-            <MyJobsView jobs={jobs} onSelectJob={setSelectedJob} />
+            <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "distributor" && (
-            <DistributorView jobs={jobs} onSelectJob={setSelectedJob} />
+            <DistributorView jobs={jobs} onUpdate={handleJobUpdate} />
           )}
         </div>
       </div>
@@ -1568,6 +1770,7 @@ export default function App() {
         <NewJobModal
           customers={customers}
           cars={cars}
+          jobs={jobs}
           onClose={() => setShowNew(false)}
           onCreated={j => setJobs(prev => [j, ...prev])}
           onNewCustomer={handleNewCustomer}
