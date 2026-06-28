@@ -65,6 +65,39 @@ const nextStatus = (key) => {
   return idx < STATUS_FLOW.length - 1 ? STATUS_FLOW[idx + 1] : null;
 };
 
+// ─── Tire Catalog (READ-ONLY from shared tires table) ─────────────────────────
+const MOCK_TIRES = [
+  { id: "mt-1", brand: "Michelin", pattern: "Pilot Sport 4", width: 215, aspect: 60, rim: 16, year: "2025", price: 38, cost: 28, supplier: "Kuwait Automotive", country: "Japan", in_stock: true },
+  { id: "mt-2", brand: "Pirelli", pattern: "P Zero", width: 295, aspect: 40, rim: 21, year: "2025", price: 95, cost: 70, supplier: "Behbehani (Pirelli)", country: "Germany", in_stock: true },
+  { id: "mt-3", brand: "Michelin", pattern: "Primacy", width: 275, aspect: 55, rim: 20, year: "2024", price: 55, cost: 42, supplier: "Kuwait Automotive", country: "USA", in_stock: false },
+  { id: "mt-4", brand: "RoadX", pattern: "RXMotion", width: 225, aspect: 55, rim: 18, year: "2026", price: 32, cost: 20, supplier: "Abbas Ghuloom", country: "China", in_stock: true },
+];
+const tireSize = (t) => `${t.width}/${t.aspect}R${t.rim}`;
+const uid = () => `it-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+const itemsTotal = (items) => (items || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
+
+async function searchTires(q) {
+  const term = (q || "").trim();
+  if (term.length < 2) return [];
+  try {
+    const m = term.match(/(\d{3})\s*\/?\s*(\d{2})?\s*r?\s*(\d{2})?/i);
+    let path = "/tires?select=id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,in_stock&limit=40";
+    if (m && m[1]) {
+      path += `&width=eq.${m[1]}`;
+      if (m[2]) path += `&aspect=eq.${m[2]}`;
+      if (m[3]) path += `&rim=eq.${m[3]}`;
+    } else {
+      path += `&or=(brand.ilike.*${term}*,pattern.ilike.*${term}*)`;
+    }
+    path += "&order=price.asc";
+    const d = await sb(path);
+    return d && d.length ? d : MOCK_TIRES.filter(x => (`${x.brand} ${x.pattern} ${tireSize(x)}`).toLowerCase().includes(term.toLowerCase()));
+  } catch {
+    const t = term.toLowerCase();
+    return MOCK_TIRES.filter(x => (`${x.brand} ${x.pattern} ${tireSize(x)}`).toLowerCase().includes(t));
+  }
+}
+
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 const MOCK_CUSTOMERS = [
   { id: "mc-1", name: "Ahmad Al-Salem",   mobile: "99001234", area: "Salmiya",    notes: "VIP — Porsche fleet" },
@@ -84,8 +117,11 @@ const MOCK_JOBS = [
     area: "Salmiya", block: "12", street: "Hamad Al-Mubarak", house: "14",
     map_link: "https://maps.google.com/?q=29.3375,48.0838",
     car_brand: "Toyota", car_model: "Land Cruiser", car_year: "2022", car_plate: "Kuwait · 12345 · Private",
-    service_type: "Tire Change & Balancing", service_details: "215/60R16 Michelin Pilot Sport 4 · Japan 2025",
-    qty: 4, item_price: 38, total: 172,
+    service_type: "Tire Change & Balancing", service_details: "215/60R16 Michelin Pilot Sport 4", qty: 4, total: 172,
+    items: [
+      { id: "i1a", kind: "tire", tire_id: "mt-1", brand: "Michelin", pattern: "Pilot Sport 4", size: "215/60R16", year: "2025", cost: 28, supplier: "Kuwait Automotive", qty: 4, unit_price: 38 },
+      { id: "i1b", kind: "service", name: "Wheel Alignment", qty: 1, unit_price: 20 },
+    ],
     assigned_truck: "T2", assigned_technician: "Fahad", status: "assigned",
     scheduled_at: new Date().toISOString(), lead_from: "WhatsApp", sales_agent: "Hussain",
     xero_ref: "PO-2026-0041", payment_through: "Link", payment_status: "paid",
@@ -97,8 +133,10 @@ const MOCK_JOBS = [
     customer_name: "Sara Al-Rashidi", customer_mobile: "66778899",
     area: "Rumaithiya", block: "3", street: "Al-Khaleej", house: "7A", map_link: "",
     car_brand: "Porsche", car_model: "Cayenne", car_year: "2023", car_plate: "Kuwait · 77321 · Private",
-    service_type: "Tire Change & Balancing", service_details: "295/40R21 Pirelli P Zero · Germany 2025",
-    qty: 2, item_price: 95, total: 200,
+    service_type: "Tire Change & Balancing", service_details: "295/40R21 Pirelli P Zero", qty: 2, total: 190,
+    items: [
+      { id: "i2a", kind: "tire", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "295/40R21", year: "2025", cost: 70, supplier: "Behbehani (Pirelli)", qty: 2, unit_price: 95 },
+    ],
     assigned_truck: "T4", assigned_technician: "Omar", status: "booked",
     scheduled_at: new Date(Date.now() + 3600000 * 3).toISOString(), lead_from: "Signal", sales_agent: "Alaa",
     xero_ref: "", payment_through: "Tabby", payment_status: "pending",
@@ -110,8 +148,8 @@ const MOCK_JOBS = [
     customer_name: "Ahmad Al-Salem", customer_mobile: "99001234",
     area: "Salmiya", block: "12", street: "Hamad Al-Mubarak", house: "14", map_link: "",
     car_brand: "Porsche", car_model: "Cayenne", car_year: "2023", car_plate: "Kuwait · 84000 · Private",
-    service_type: "Oil & Filter", service_details: "Mobil 1 5W-40 Full Synthetic",
-    qty: 1, item_price: 25, total: 25,
+    service_type: "Oil & Filter", service_details: "Mobil 1 5W-40 Full Synthetic", qty: 1, total: 25,
+    items: [ { id: "i3a", kind: "service", name: "Oil & Filter (Mobil 1 5W-40)", qty: 1, unit_price: 25 } ],
     assigned_truck: "T1", assigned_technician: "Fahad", status: "paid",
     scheduled_at: new Date(Date.now() - 86400000 * 5).toISOString(), lead_from: "WhatsApp", sales_agent: "Hussain",
     xero_ref: "PO-2026-0038", payment_through: "Link", payment_status: "paid",
@@ -123,8 +161,10 @@ const MOCK_JOBS = [
     customer_name: "Khalid Al-Mutairi", customer_mobile: "55443322",
     area: "Hawalli", block: "5", street: "Tunis", house: "22", map_link: "",
     car_brand: "GMC", car_model: "Yukon", car_year: "2021", car_plate: "Kuwait · 33210 · Private",
-    service_type: "Tire Change & Balancing", service_details: "275/55R20 Michelin Primacy · USA 2024",
-    qty: 4, item_price: 55, total: 220,
+    service_type: "Tire Change & Balancing", service_details: "275/55R20 Michelin Primacy", qty: 4, total: 220,
+    items: [
+      { id: "i4a", kind: "tire", tire_id: "mt-3", brand: "Michelin", pattern: "Primacy", size: "275/55R20", year: "2024", cost: 42, supplier: "Kuwait Automotive", qty: 4, unit_price: 55 },
+    ],
     assigned_truck: "T5", assigned_technician: "Saad", status: "paid",
     scheduled_at: new Date(Date.now() - 86400000 * 12).toISOString(), lead_from: "WhatsApp", sales_agent: "Yousef",
     xero_ref: "PO-2026-0031", payment_through: "Link", payment_status: "paid",
@@ -429,14 +469,136 @@ function CustomerSearchBox({ customers, onSelect, onCreateNew }) {
   );
 }
 
+// ─── Tire Catalog Picker ──────────────────────────────────────────────────────
+function TireCatalogPicker({ onPick }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  useEffect(() => {
+    if (q.trim().length < 2) { setResults([]); return; }
+    setLoading(true);
+    const id = setTimeout(async () => {
+      const r = await searchTires(q);
+      setResults(r); setLoading(false); setOpen(true);
+    }, 250);
+    return () => clearTimeout(id);
+  }, [q]);
+
+  return (
+    <div ref={ref} className="search-wrap">
+      <span className="search-icon">🔍</span>
+      <input className="search-input" placeholder="Search catalog by size (215/60R18) or brand…"
+        value={q} onChange={e => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => results.length && setOpen(true)} />
+      {open && q.trim().length >= 2 && (
+        <div className="search-dropdown">
+          {loading && <div className="search-item"><div className="search-item-sub">Searching catalog…</div></div>}
+          {!loading && results.length === 0 && (
+            <div className="search-item"><div className="search-item-sub">No tires found — add a manual item instead.</div></div>
+          )}
+          {results.map(t => (
+            <div key={t.id} className="search-item" onClick={() => { onPick(t); setOpen(false); setQ(""); }}>
+              <div className="search-item-name">{t.brand}{t.pattern ? " " + t.pattern : ""}</div>
+              <div className="search-item-sub">
+                {tireSize(t)}{t.year ? " · " + t.year : ""}{t.country ? " · " + t.country : ""}
+                {" · "}<strong style={{ color: "var(--accent)" }}>KWD {Number(t.price).toFixed(3)}</strong>
+                {t.in_stock ? <span style={{ color: "var(--success)", marginLeft: 6 }}>● in stock</span>
+                            : <span style={{ color: "var(--danger)", marginLeft: 6 }}>● out</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Job Items Builder ────────────────────────────────────────────────────────
+function ItemsBuilder({ items, setItems }) {
+  const addTire = (t) => setItems(prev => [...prev, {
+    id: uid(), kind: "tire", tire_id: t.id,
+    brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
+    year: t.year, cost: t.cost, supplier: t.supplier,
+    qty: 4, unit_price: Number(t.price) || 0,
+  }]);
+  const addService = () => setItems(prev => [...prev, {
+    id: uid(), kind: "service", name: "", qty: 1, unit_price: 0,
+  }]);
+  const upd = (id, field, val) => setItems(prev => prev.map(it => it.id === id ? { ...it, [field]: val } : it));
+  const remove = (id) => setItems(prev => prev.filter(it => it.id !== id));
+
+  return (
+    <div className="form-full">
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+        {items.length === 0 && (
+          <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>No items yet. Add a tire from the catalog or a manual service below.</div>
+        )}
+        {items.map(it => (
+          <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: it.kind === "tire" ? "#FEFBF3" : "var(--bg)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                {it.kind === "tire" ? (
+                  <>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>🔗 {it.brand} {it.pattern}</div>
+                    <div style={{ fontSize: 12, color: "var(--muted)" }}>{it.size}{it.year ? " · " + it.year : ""} · catalog id {String(it.tire_id).slice(0, 8)}…</div>
+                  </>
+                ) : (
+                  <input className="filter-input" style={{ width: "100%" }} placeholder="Service name (Oil & Filter, Battery…)"
+                    value={it.name} onChange={e => upd(it.id, "name", e.target.value)} />
+                )}
+              </div>
+              <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", borderColor: "var(--border)" }} onClick={() => remove(it.id)}>✕</button>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Qty</label>
+                <input type="number" min={1} className="filter-input" style={{ width: 70 }} value={it.qty} onChange={e => upd(it.id, "qty", e.target.value)} />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Unit Price (KD)</label>
+                <input type="number" className="filter-input" style={{ width: 110 }} value={it.unit_price} onChange={e => upd(it.id, "unit_price", e.target.value)} />
+              </div>
+              <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Line Total</div>
+                <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <TireCatalogPicker onPick={addTire} />
+        </div>
+        <button className="btn btn-ghost btn-sm" onClick={addService}>+ Manual service</button>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+        <div style={{ textAlign: "right" }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", marginRight: 10 }}>Job Total</span>
+          <span style={{ fontFamily: "var(--font-head)", fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>KWD {itemsTotal(items).toFixed(3)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── New Job Modal ────────────────────────────────────────────────────────────
 function NewJobModal({ onClose, onCreated, customers, cars, onNewCustomer }) {
   const blank = {
     customer_name: "", customer_mobile: "", customer_id: null,
     area: "", block: "", street: "", house: "", map_link: "",
     car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
-    service_type: "Tire Change & Balancing", service_details: "", qty: 1,
-    item_price: "", total: "",
+    service_type: "Tire Change & Balancing",
+    items: [],
     assigned_truck: "T1", assigned_technician: "", lead_from: "WhatsApp", sales_agent: "",
     xero_ref: "", payment_through: "Link", payment_status: "pending", notes: "",
     status: "booked", scheduled_at: new Date().toISOString().slice(0, 16),
@@ -476,6 +638,8 @@ function NewJobModal({ onClose, onCreated, customers, cars, onNewCustomer }) {
     }));
   };
 
+  const setItems = (updater) => setF(p => ({ ...p, items: typeof updater === "function" ? updater(p.items) : updater }));
+
   const clearCustomer = () => {
     setSelectedCustomer(null);
     setSelectedCar(null);
@@ -483,9 +647,16 @@ function NewJobModal({ onClose, onCreated, customers, cars, onNewCustomer }) {
   };
 
   const save = async () => {
-    if (!f.customer_name || !f.area || !f.service_type) return;
+    if (!f.customer_name || !f.area || f.items.length === 0) return;
     setSaving(true);
-    const job = { ...f, scheduled_at: new Date(f.scheduled_at).toISOString(), created_at: new Date().toISOString() };
+    const job = {
+      ...f,
+      total: itemsTotal(f.items),
+      qty: f.items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
+      service_details: f.items.map(it => it.kind === "tire" ? `${it.size} ${it.brand}${it.pattern ? " " + it.pattern : ""}` : it.name).filter(Boolean).join(" + "),
+      scheduled_at: new Date(f.scheduled_at).toISOString(),
+      created_at: new Date().toISOString(),
+    };
     const created = await createJob(job);
     onCreated(created);
     setSaving(false);
@@ -607,30 +778,16 @@ function NewJobModal({ onClose, onCreated, customers, cars, onNewCustomer }) {
               <input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" />
             </div>
 
-            {/* Service */}
-            <div className="form-section-title">Service</div>
+            {/* Service / Items */}
+            <div className="form-section-title">Service Type & Items</div>
             <div className="form-field">
-              <label>Type *</label>
+              <label>Primary Service Type</label>
               <select value={f.service_type} onChange={set("service_type")}>
                 {SERVICE_TYPES.map(s => <option key={s}>{s}</option>)}
               </select>
             </div>
-            <div className="form-field">
-              <label>Qty</label>
-              <input type="number" value={f.qty} onChange={set("qty")} min={1} />
-            </div>
-            <div className="form-field form-full">
-              <label>Item Details</label>
-              <input value={f.service_details} onChange={set("service_details")} placeholder="215/60R16 Michelin Pilot Sport 4 · Japan 2025" />
-            </div>
-            <div className="form-field">
-              <label>Item Price (KD)</label>
-              <input type="number" value={f.item_price} onChange={set("item_price")} placeholder="38" />
-            </div>
-            <div className="form-field">
-              <label>Total (KD)</label>
-              <input type="number" value={f.total} onChange={set("total")} placeholder="172" />
-            </div>
+            <div className="form-field" />
+            <ItemsBuilder items={f.items} setItems={setItems} />
 
             {/* Scheduling */}
             <div className="form-section-title">Scheduling & Assignment</div>
@@ -786,9 +943,29 @@ function JobDetail({ job, onBack, onUpdate, role }) {
           <div className="detail-field"><label>Map</label><p>{j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer">Open Maps ↗</a> : "—"}</p></div>
           <div className="detail-field"><label>Mobile</label><p><a href={`tel:${j.customer_mobile}`}>{j.customer_mobile}</a></p></div>
           <div className="detail-field"><label>Lead From</label><p>{j.lead_from}</p></div>
-          <div className="detail-field"><label>Service</label><p>{j.service_type} × {j.qty}</p></div>
+          <div className="detail-field"><label>Service</label><p>{j.service_type}</p></div>
           <div className="detail-field"><label>Total</label><p style={{ color: "var(--accent)", fontWeight: 700 }}>KWD {Number(j.total || 0).toFixed(3)}</p></div>
-          <div className="detail-field" style={{ gridColumn: "1/-1" }}><label>Item Details</label><p>{j.service_details || "—"}</p></div>
+          <div className="detail-field" style={{ gridColumn: "1/-1" }}>
+            <label>Items ({(j.items || []).length})</label>
+            {(j.items && j.items.length) ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+                {j.items.map(it => (
+                  <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px" }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>
+                        {it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${it.size}` : it.name}
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                        {it.qty} × KWD {Number(it.unit_price).toFixed(3)}
+                        {it.kind === "tire" && it.tire_id ? ` · catalog id ${String(it.tire_id).slice(0, 8)}…` : ""}
+                      </div>
+                    </div>
+                    <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</div>
+                  </div>
+                ))}
+              </div>
+            ) : <p>{j.service_details || "—"}</p>}
+          </div>
           {j.notes && <div className="detail-field" style={{ gridColumn: "1/-1" }}><label>Notes</label><p style={{ color: "#B45309", fontWeight: 500 }}>⚠ {j.notes}</p></div>}
           <div className="detail-field"><label>Payment</label><p>{j.payment_through} · <span style={{ color: j.payment_status === "paid" ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span></p></div>
           <div className="detail-field"><label>Xero PO Ref</label><p>{j.xero_ref || "—"}</p></div>
@@ -850,8 +1027,6 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
   const [filterDate, setFilterDate] = useState(today());
   const [search, setSearch] = useState("");
 
-  const activeJobs = jobs.filter(j => !DONE_STATUSES.includes(j.status) || filterStatus !== "all");
-
   const filtered = jobs.filter(j => {
     if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
     if (filterStatus !== "all" && j.status !== filterStatus) return false;
@@ -899,14 +1074,14 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
             <div className="job-card-top">
               <div>
                 <div className="job-card-name">{job.customer_name}</div>
-                <div className="job-card-service">{job.service_type} × {job.qty} · {job.car_brand} {job.car_model}</div>
+                <div className="job-card-service">{job.service_type} · {job.car_brand} {job.car_model}</div>
               </div>
               <StatusPill status={job.status} />
             </div>
             <div className="job-card-meta">
               <span className="tag tag-truck">{job.assigned_truck}</span>
               <span className="tag tag-time">{fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}</span>
-              {job.total && <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span>}
+              {job.total ? <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span> : null}
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{job.area}</span>
               {job.payment_status === "paid"
                 ? <span style={{ fontSize: 11, color: "var(--success)", fontWeight: 700 }}>✓ Paid</span>
@@ -972,7 +1147,7 @@ function HistoryView({ jobs, onSelectJob }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
             <div>
               <div style={{ fontWeight: 600, fontSize: 14 }}>{job.customer_name}</div>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>{job.service_type} × {job.qty} · {job.car_brand} {job.car_model}</div>
+              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>{job.service_type} · {job.car_brand} {job.car_model}</div>
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{fmtDateTime(job.scheduled_at)} · {job.assigned_truck} · {job.sales_agent}</div>
             </div>
             <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -1011,7 +1186,6 @@ function CustomerProfileDetail({ customer, cars, jobs, onBack, onSelectJob, onAd
         {customer.notes && <div style={{ fontSize: 13, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px" }}>⚠ {customer.notes}</div>}
       </div>
 
-      {/* Cars */}
       <div className="card">
         <div className="card-header">
           <h3>Vehicles ({customerCars.length})</h3>
@@ -1031,7 +1205,6 @@ function CustomerProfileDetail({ customer, cars, jobs, onBack, onSelectJob, onAd
         </div>
       </div>
 
-      {/* Service history */}
       <div className="card">
         <div className="card-header"><h3>Service History</h3></div>
         <div className="card-body">
@@ -1040,7 +1213,7 @@ function CustomerProfileDetail({ customer, cars, jobs, onBack, onSelectJob, onAd
             <div key={job.id} className="history-job-card" onClick={() => onSelectJob(job)} style={{ marginBottom: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div>
-                  <div style={{ fontWeight: 600 }}>{job.service_type} × {job.qty}</div>
+                  <div style={{ fontWeight: 600 }}>{job.service_type}</div>
                   <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{job.car_brand} {job.car_model} · {fmtDate(job.scheduled_at)}</div>
                   <div style={{ fontSize: 12, color: "var(--muted)" }}>{job.service_details}</div>
                 </div>
@@ -1178,7 +1351,7 @@ function MyJobsView({ jobs, onSelectJob }) {
               <p style={{ color: "var(--muted)" }}>⏰ {fmtTime(job.scheduled_at)}</p>
               <p>📍 {job.area}, Block {job.block}, St {job.street}, {job.house}</p>
               <p>🚗 {job.car_brand} {job.car_model} {job.car_year} · {job.car_plate || "—"}</p>
-              <p>🔧 {job.service_type} × {job.qty}</p>
+              <p>🔧 {job.service_type}{job.items && job.items.length ? ` · ${job.items.length} item${job.items.length !== 1 ? "s" : ""}` : ""}</p>
               {job.service_details && <p style={{ color: "var(--muted)", fontSize: 13 }}>{job.service_details}</p>}
               {job.notes && <p style={{ color: "#B45309", marginTop: 4 }}>⚠ {job.notes}</p>}
             </div>
@@ -1210,7 +1383,7 @@ function DistributorView({ jobs, onSelectJob }) {
         return (
           <div key={job.id} className="dist-card">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-              <div style={{ fontFamily: "var(--font-head)", fontWeight: 600, fontSize: 15 }}>{job.customer_name} — {job.service_type} × {job.qty}</div>
+              <div style={{ fontFamily: "var(--font-head)", fontWeight: 600, fontSize: 15 }}>{job.customer_name} — {job.service_type}</div>
               <StatusPill status={job.status} />
             </div>
             <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>{job.service_details}</div>
@@ -1299,7 +1472,6 @@ export default function App() {
     setShowAddCar(false);
   };
 
-  // Tab config per role
   const allTabs = [
     { key: "schedule",   label: "Schedule",        roles: ["sales", "purchaser"] },
     { key: "history",    label: "History",         roles: ["sales", "purchaser"] },
