@@ -81,6 +81,157 @@ const itemsTotal = (items) => (items || []).reduce((s, it) => s + (Number(it.qty
 const miniLabel = { fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 };
 const slotCellBase = { border: "1px solid var(--border)", padding: "8px 6px", textAlign: "center" };
 
+// ─── Truck Day View: single-column timeline for ONE truck on a date ───────────
+// Pick truck + date → see that truck's working hours, booked slots filled,
+// free slots tappable. A job spans `duration` consecutive hours from the start.
+function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, excludeId }) {
+  if (!truck || !TRUCK_CONFIG[truck]) {
+    return <div style={{ fontSize: 13, color: "var(--muted)", padding: "12px 0" }}>Select a truck to see its schedule.</div>;
+  }
+  const hours = truckHours(truck);
+
+  const canFit = (hour) => {
+    for (let h = hour; h < hour + duration; h++) {
+      if (!hours.includes(h)) return false;
+      if (slotTaken(jobs, truck, dateStr, h, excludeId)) return false;
+    }
+    return true;
+  };
+  const inSelection = (hour) => selectedHour != null && hour >= selectedHour && hour < selectedHour + duration;
+
+  // which job occupies a given hour (for showing customer on booked slots)
+  const jobAt = (hour) => jobs.find(j => {
+    if (j.id === excludeId) return false;
+    if (j.assigned_truck !== truck) return false;
+    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
+    if (d !== dateStr) return false;
+    return jobHours(j).includes(hour);
+  });
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ fontWeight: 700, fontFamily: "var(--font-head)" }}>
+          {truck} <span style={{ fontSize: 12, fontWeight: 500, color: "var(--muted)" }}>· {hourLabel(TRUCK_CONFIG[truck].start)}–{hourLabel(TRUCK_CONFIG[truck].end)}</span>
+        </div>
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>Selecting {duration}h</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {hours.map(hour => {
+          const taken = slotTaken(jobs, truck, dateStr, hour, excludeId);
+          const sel = inSelection(hour);
+          const fits = canFit(hour);
+          const occ = taken ? jobAt(hour) : null;
+          let bg = "var(--card)", color = "var(--text)", cursor = "pointer", border = "1px solid var(--border)";
+          let right = "Free";
+          if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = "not-allowed"; border = "1px solid #FCA5A5"; right = occ ? (occ.customer_name || "Booked") : "Booked"; }
+          else if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; right = "Selected"; }
+          else if (!fits) { bg = "#FEF9EE"; color = "#92400E"; cursor = "not-allowed"; right = "—"; }
+          return (
+            <div key={hour}
+              onClick={() => !taken && fits && onPick(truck, hour)}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 8, background: bg, color, cursor, border, fontSize: 13, fontWeight: sel ? 700 : 500 }}>
+              <span style={{ fontWeight: 600 }}>{hourLabel(hour)}</span>
+              <span style={{ fontSize: 12 }}>{right}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+        Tap a green slot to start a {duration}h job. Red = booked, faded = not enough consecutive free hours.
+      </div>
+    </div>
+  );
+}
+
+// ─── Truck selector pills ─────────────────────────────────────────────────────
+function TruckPills({ value, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {ACTIVE_TRUCKS.map(t => (
+        <button key={t} type="button" onClick={() => onChange(t)}
+          className={`btn btn-sm ${value === t ? "btn-primary" : "btn-ghost"}`}
+          style={{ minWidth: 92 }}>
+          {t} <span style={{ fontSize: 10, opacity: .8, marginLeft: 4 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00","")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00","")}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Reschedule Modal ─────────────────────────────────────────────────────────
+function RescheduleModal({ job, jobs, onClose, onSaved }) {
+  const [truck, setTruck] = useState(job.assigned_truck || ACTIVE_TRUCKS[0]);
+  const [dateStr, setDateStr] = useState(job.scheduled_date || (job.scheduled_at ? new Date(job.scheduled_at).toISOString().split("T")[0] : today()));
+  const [duration, setDuration] = useState(Number(job.duration) || 1);
+  const [startHour, setStartHour] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const midJob = job.truck_status === "processing" || job.truck_status === "completed";
+
+  const pick = (tk, hour) => { setTruck(tk); setStartHour(hour); };
+
+  const save = async () => {
+    if (startHour == null) return;
+    setSaving(true);
+    const scheduledAt = new Date(`${dateStr}T${String(startHour).padStart(2, "0")}:00:00`);
+    const patch = {
+      assigned_truck: truck, start_hour: startHour, duration,
+      scheduled_date: dateStr, scheduled_at: scheduledAt.toISOString(),
+    };
+    await updateJob(job.id, patch);
+    onSaved({ ...job, ...patch });
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 460 }}>
+        <div className="modal-header">
+          <h3>Reschedule — {job.customer_name}</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          {midJob && (
+            <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#92400E", marginBottom: 12 }}>
+              ⚠ This job is already <strong>{job.truck_status}</strong>. Rescheduling now is unusual — proceed only if you're sure.
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div>
+              <label style={miniLabel}>Truck</label>
+              <TruckPills value={truck} onChange={(t) => { setTruck(t); setStartHour(null); }} />
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <label style={miniLabel}>Date</label>
+                <input type="date" className="filter-input" style={{ width: "100%" }} value={dateStr} onChange={e => { setDateStr(e.target.value); setStartHour(null); }} />
+              </div>
+              <div style={{ width: 120 }}>
+                <label style={miniLabel}>Duration</label>
+                <select className="filter-input" style={{ width: "100%" }} value={duration} onChange={e => { setDuration(Number(e.target.value)); setStartHour(null); }}>
+                  {[1, 2, 3].map(d => <option key={d} value={d}>{d} hour{d > 1 ? "s" : ""}</option>)}
+                </select>
+              </div>
+            </div>
+            <TruckDayView jobs={jobs} truck={truck} dateStr={dateStr} duration={duration} selectedHour={startHour} onPick={pick} excludeId={job.id} />
+            {startHour != null && (
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--success)" }}>
+                ✓ New: {truck} · {hourLabel(startHour)}–{hourLabel(startHour + duration)} on {dateStr}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={startHour == null || saving}>{saving ? "Saving…" : "Save New Time"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 async function searchTires(q) {
   const term = (q || "").trim();
   if (term.length < 2) return [];
@@ -163,40 +314,139 @@ const slotTaken = (jobs, truck, dateStr, hour, excludeId) => {
 // ─── Kuwait areas → governorate (6 governorates) ──────────────────────────────
 // Used for clean, consistent area data + auto-derived governorate for reporting.
 const KW_AREAS = {
-  // Al Asimah (Capital)
-  "Kuwait City": "Al Asimah", "Sharq": "Al Asimah", "Mirqab": "Al Asimah", "Jibla": "Al Asimah",
-  "Dasma": "Al Asimah", "Daiya": "Al Asimah", "Abdullah Al-Salem": "Al Asimah", "Mansouriya": "Al Asimah",
-  "Qadsiya": "Al Asimah", "Faiha": "Al Asimah", "Shamiya": "Al Asimah", "Kaifan": "Al Asimah",
-  "Khaldiya": "Al Asimah", "Adailiya": "Al Asimah", "Rawda": "Al Asimah", "Yarmouk": "Al Asimah",
-  "Surra": "Al Asimah", "Qortuba": "Al Asimah", "Nuzha": "Al Asimah", "Doha": "Al Asimah",
-  "Sulaibikhat": "Al Asimah", "Shuwaikh": "Al Asimah", "Jaber Al-Ahmad": "Al Asimah", "North West Sulaibikhat": "Al Asimah",
+  // Al Asimah
+  "Khaldiya": "Al Asimah",
+  "Dasma": "Al Asimah",
+  "Da'iya": "Al Asimah",
+  "Doha": "Al Asimah",
+  "Rawda": "Al Asimah",
+  "Surra": "Al Asimah",
+  "Shamiya": "Al Asimah",
+  "Sharq": "Al Asimah",
+  "Shuwaikh": "Al Asimah",
+  "Sulaibikhat": "Al Asimah",
+  "Sawaber": "Al Asimah",
+  "Adailiya": "Al Asimah",
+  "Faiha": "Al Asimah",
+  "Qadisiya": "Al Asimah",
+  "Qibla": "Al Asimah",
+  "Mirqab": "Al Asimah",
+  "Mansouriya": "Al Asimah",
+  "Nuzha": "Al Asimah",
+  "Yarmouk": "Al Asimah",
+  "Bneid Al - Gar": "Al Asimah",
+  "Hadaeq Al-Soor": "Al Asimah",
+  "Dasman": "Al Asimah",
+  "Abdullah Al - salem": "Al Asimah",
+  "Garnata": "Al Asimah",
+  "Failaka": "Al Asimah",
+  "Qurtuba": "Al Asimah",
+  "Kaifan": "Al Asimah",
+  "Jaber Al - Ahmad": "Al Asimah",
+  "Maaskar Al-Mubarakiya": "Al Asimah",
   // Hawalli
-  "Hawalli": "Hawalli", "Salmiya": "Hawalli", "Rumaithiya": "Hawalli", "Bayan": "Hawalli",
-  "Mishref": "Hawalli", "Salwa": "Hawalli", "Jabriya": "Hawalli", "Maidan Hawalli": "Hawalli",
-  "Nugra": "Hawalli", "Hateen": "Hawalli", "Shaab": "Hawalli", "Zahra": "Hawalli",
-  "Salam": "Hawalli", "Siddiq": "Hawalli", "Mubarak Al-Abdullah": "Hawalli", "Bidaa": "Hawalli",
+  "Jabriya": "Hawalli",
+  "Rumaithiya": "Hawalli",
+  "Zahra": "Hawalli",
+  "Salmiya": "Hawalli",
+  "Salam": "Hawalli",
+  "Shaab": "Hawalli",
+  "Shuhada'a": "Hawalli",
+  "Sadiq": "Hawalli",
+  "Mubarakiya": "Hawalli",
+  "Bayan": "Hawalli",
+  "Hateen": "Hawalli",
+  "Hawally": "Hawalli",
+  "Salwa": "Hawalli",
+  "Mubarak Al - Abdullah Al - Jaber": "Hawalli",
+  "Mishref": "Hawalli",
   // Farwaniya
-  "Farwaniya": "Farwaniya", "Khaitan": "Farwaniya", "Jleeb Al-Shuyoukh": "Farwaniya", "Andalus": "Farwaniya",
-  "Ardiya": "Farwaniya", "Rabiya": "Farwaniya", "Rai": "Farwaniya", "Sabah Al-Nasser": "Farwaniya",
-  "Firdous": "Farwaniya", "Omariya": "Farwaniya", "Abraq Khaitan": "Farwaniya", "Riggae": "Farwaniya",
-  "Dajeej": "Farwaniya", "Ishbiliya": "Farwaniya",
+  "Eshbilya": "Farwaniya",
+  "Andalous": "Farwaniya",
+  "Rabia": "Farwaniya",
+  "Rihab": "Farwaniya",
+  "Riggae": "Farwaniya",
+  "Rai": "Farwaniya",
+  "Shadadiya": "Farwaniya",
+  "Dhajeej": "Farwaniya",
+  "Ardiya": "Farwaniya",
+  "Omariya": "Farwaniya",
+  "Firdous": "Farwaniya",
+  "Al - Farwaniyah": "Farwaniya",
+  "Jleeb Al - Shuyoukh": "Farwaniya",
+  "Khaitan": "Farwaniya",
+  "Sabah Al - Nasser": "Farwaniya",
+  "Abdullah Al - Mubarak": "Farwaniya",
   // Mubarak Al-Kabeer
-  "Mubarak Al-Kabeer": "Mubarak Al-Kabeer", "Qurain": "Mubarak Al-Kabeer", "Adan": "Mubarak Al-Kabeer",
-  "Qusour": "Mubarak Al-Kabeer", "Abu Futaira": "Mubarak Al-Kabeer", "Funaitees": "Mubarak Al-Kabeer",
-  "Sabah Al-Salem": "Mubarak Al-Kabeer", "Messila": "Mubarak Al-Kabeer", "Wista": "Mubarak Al-Kabeer",
-  "Mubarak Al-Kabeer South": "Mubarak Al-Kabeer",
+  "Adan": "Mubarak Al-Kabeer",
+  "Funaitees": "Mubarak Al-Kabeer",
+  "Qurain": "Mubarak Al-Kabeer",
+  "Qosour": "Mubarak Al-Kabeer",
+  "Messayl": "Mubarak Al-Kabeer",
+  "Messila": "Mubarak Al-Kabeer",
+  "Abu Al - Hasania": "Mubarak Al-Kabeer",
+  "Abu Fatira": "Mubarak Al-Kabeer",
+  "Sabah Al - salem": "Mubarak Al-Kabeer",
+  "Subhan": "Mubarak Al-Kabeer",
+  "Gharb Abu Fatira Al-Herafiya": "Mubarak Al-Kabeer",
+  "Mubarak Al - Kabeer": "Mubarak Al-Kabeer",
   // Ahmadi
-  "Ahmadi": "Ahmadi", "Fahaheel": "Ahmadi", "Mangaf": "Ahmadi", "Abu Halifa": "Ahmadi",
-  "Fintas": "Ahmadi", "Mahboula": "Ahmadi", "Riqqa": "Ahmadi", "Hadiya": "Ahmadi",
-  "Sabahiya": "Ahmadi", "Jaber Al-Ali": "Ahmadi", "Wafra": "Ahmadi", "Egaila": "Ahmadi",
-  "Fahad Al-Ahmad": "Ahmadi", "Ali Sabah Al-Salem": "Ahmadi", "Khairan": "Ahmadi", "Sabah Al-Ahmad": "Ahmadi",
+  "Ahmadi": "Ahmadi",
+  "Khiran": "Ahmadi",
+  "Riqqa": "Ahmadi",
+  "Shuaiba": "Ahmadi",
+  "Sabahiya": "Ahmadi",
+  "Dhaher": "Ahmadi",
+  "Egaila": "Ahmadi",
+  "Fahaheel": "Ahmadi",
+  "Fintas": "Ahmadi",
+  "Mangaf": "Ahmadi",
+  "Mahboula": "Ahmadi",
+  "Wafra": "Ahmadi",
+  "Abu Halifa": "Ahmadi",
+  "Jaber Al - Ali": "Ahmadi",
+  "Ali Sabah Al - Salem": "Ahmadi",
+  "Fahad Al - Ahmad": "Ahmadi",
+  "Sabah Al - Ahmad": "Ahmadi",
+  "Sabah Al - Ahmad Al-Bahriya": "Ahmadi",
+  "Mina Abdullah": "Ahmadi",
+  "Hadiya": "Ahmadi",
   // Jahra
-  "Jahra": "Jahra", "Saad Al-Abdullah": "Jahra", "Naeem": "Jahra", "Qasr": "Jahra",
-  "Oyoun": "Jahra", "Waha": "Jahra", "Taima": "Jahra", "Nasseem": "Jahra",
-  "Sulaibiya": "Jahra", "Amghara": "Jahra", "Abdali": "Jahra",
+  "Jahra": "Jahra",
+  "Sulaibiya": "Jahra",
+  "Abdaly": "Jahra",
+  "A'youn": "Jahra",
+  "Qasr": "Jahra",
+  "Qeirawan": "Jahra",
+  "Mutla": "Jahra",
+  "Naseem": "Jahra",
+  "Na'eem": "Jahra",
+  "Nah'da": "Jahra",
+  "Waha": "Jahra",
+  "Amghara": "Jahra",
+  "Taima": "Jahra",
+  "Suad Al - Abdullah": "Jahra",
 };
 const KW_AREA_NAMES = Object.keys(KW_AREAS).sort();
 const govFor = (area) => KW_AREAS[area] || "";
+
+// ─── Kuwait named streets by governorate (official; most KW streets are numbers) ─
+// 'Main' roads (highways) are shown for every governorate.
+const KW_MAIN_STREETS = ["AL _ Maghreb", "Abdul Aziz Bin Abdul Al - Rahman Al - Saud", "Airport", "Arabian Gulf", "Cairo", "Damascus", "Esa Bin Sulman Al - Khalifa", "Faisal Bin Abdul Aziz", "Ghazali", "Ghous", "Jahra", "Jamal Abdul Nasser", "Mohammed Bin Al - Qasim", "Riyadh", "The Custodian of The Two Holy Mosques King Fahad Ibn Abdul Aziz Road"];
+const KW_STREETS_BY_GOV = {
+  "Al Asimah": ["AI - Edreesi", "Abdul Al - Rahman Al - Dhakhil", "Abdul Al - Rahman Yousif Al - Bader", "Abdul Aziz Abdul Mehsin Al - Rashed", "Abdul Aziz Abdullah Al - Sarawy", "Abdul Aziz Bin Abdullah Bin Baz", "Abdul Aziz Ebrahim Al - Meshl", "Abdul Aziz Hamad Al - Sagher", "Abdul Aziz Mohammed Al - Duaij", "Abdul Aziz Yousif Al - Mzaini", "Abdul Hameed Abdul Abdul Aziz Al - Sane", "Abdul Latif Sulaiman Al - Othman", "Abdul Minem Riyad", "Abdul Qader Al - Hussaini", "Abdul Wahab Hussain Al - Qurtas", "Abdullah Al - Ahmed", "Abdullah Al - Khalaf Al - Saeed", "Abdullah Al - Khalifa Al - Sabah", "Abdullah Al - Mijrin Al - Roomi", "Abdullah Al - Mubarak", "Abdullah Al - Nouri", "Abdullah Al - salem", "Abdullah Mohammed Al - Hajeri", "Abdullah Zakariya Al - Anasri", "Abu Al - Asswad Al - Do’aly", "Abu Al - Faraj Al - Asfahani", "Abu Ayob Al - Anssari", "Abu Bakr Al - siddeeq", "Abu Hayyan Al - Tawheedy", "Abu Moussa Al - Asha’ary", "Abu Obaidah Abu Al - Jarah", "Abu Tammam", "Abu Yousif Al - Qadi", "Aden", "Ahmed Al - Estath", "Ahmed Al - Ganim", "Ahmed Al - Hindi", "Ahmed Al - Jaber", "Ahmed Bin Abdul Aziz Al - Anssary", "Ahmed Lottfi Al - sayed", "Ahmed Shawki", "Akkah", "Al - Arabi", "Al - Baha’a Zuhair", "Al - Baroodi", "Al - Emam Al - Hassan Bin Ali Bin Abi Talib", "Al - Emam Al - Hassein Bin Ali Bin Abi Talib", "Al - Khaleel Bin Ahmed", "Al - Ma’arri", "Al - Nabi’gha Al - Thebiani", "Al - No’man Bin Basheer", "Al - Oroba", "Al - Salhiya", "Al - Shareef Al - Radi", "Al - Tabarri", "Ali Al - Salem", "Ali Bin Abi Talib", "Ali Sulaiman Abu Khail", "Amadi", "Ammar Bin Yasser", "Amna Bint Wahab", "Amorria", "Anbarri", "Arafat", "Assma’ Bint Abu Bakr Al - Siddeeq", "Aukadh", "Aumayah", "Azd", "Azhar", "Babel", "Bader", "Balqees", "Belal Bin Rabah", "Bludan", "Bo Asseya", "Bukhary", "Burgan", "Dasma", "Da’iya", "Doha", "Duwaihi Bin Rumaih", "Ebn Abbas", "Ebn Al - Arqam", "Ebn Al - Atheer", "Ebn Al - Haythem", "Ebn Battota", "Ebn Ceena", "Ebn Hani", "Ebn Hazm", "Ebn Katheer", "Ebn Mandhour", "Ebn Mesbah", "Ebrahim Al - Mudhaf", "Esa Abdul Rahman Al - Asousi", "Escandariya", "Eshbilya", "Eyas Bin", "Fahad Al - Salem", "Faiha,", "Failaka", "Farazdaq", "Furat", "Garnata", "Gazza", "Ghassan", "Hakah", "Hamad Al - Khalifa Al - Humaeda", "Hamad Al - Saghir", "Hamza Bin Abdul Mutalib", "Haram Bin Senan", "Hassan Bin Thabit", "Hateen", "Hathramout", "Hisham Bin Abdul Malik", "Hunain", "Jaber Al - Mubarak", "Jahedh", "Jamal Addin Al - Afggani", "Jameel Bin Muamar", "Jareer", "Jassim Bodai", "Jassim Mohammed Al - Wazzan", "Jazaeir", "Jehad", "Kadhma", "Kanana", "Karama", "Khalid Ayoob Bandar", "Khalid Ebn Al - Waleed", "Khawla Bint Al - Azwar", "Komait", "Koofa", "Lo’lo’a", "Maan Bin Za’ida", "Maisaloun", "Mamoun", "Manfalouti", "Mangaf", "Mansour", "Marakish", "Marjan", "Marqash", "Masoudi", "Mazzini", "Mina", "Mohalab", "Mohammed Abdu", "Mohammed Abdul Mehsin Al - Kharafi", "Mohammed Bin Hamad Bin La’boun", "Mohammed Ibn Hagan", "Mohammed Rafie Marafie", "Mohammed Thinayyan Al - Ghanim", "Mohammed Yousif Al - Adasani", "Mubarak Al - Kabeer", "Mubarakiya", "Muktaffi", "Muroaa", "Mutawakkil", "Najda", "Nasser", "Nasser Ibrahim Al - Sagabi", "Neel", "Nusf Al - Yousif Al - Nuaf", "Nuzha", "Om Al - Qeween", "Oman", "Omar Al - Mukhtar", "Omar Bin Abdul Aziz", "Omar Bin Al - Khatab", "Omar Bin Habira", "Omru’o Al - Qays", "Orass", "Osama Bin Mongith", "Othman Bin Affan", "Por Sa’eed", "Qadisiya", "Qortubi", "Quds", "Quraiysh", "Qurtuba", "Qussai Bin Kilab", "Rab,ah Al - Adewya", "Raed", "Raffaee", "Rasheed", "Rashid Bin Ahmed Al - Romi", "Rashid Burusli", "Rawdhatain", "Rebat", "Salah Al - Deen Al - Ayobi", "Salam", "Salih Abdul Rahman Al - Abdaly", "Sami Ahmed Al - Munayyes", "Sami Qasim Al - Meshri", "Sanaa’", "Sayed Ali Sayed Sulaiman Al - Refai", "Sa’ad Bin Ebada", "Sebaway", "Seif Al - Dawlah Al -Hamadani", "Shabbi", "Shahba’a", "Shamiya", "Shamlan Bin Seif", "Shamlan Bin Yousif", "Shebani", "Shuhada’a", "Shuwaikh", "Soor", "Souk Al - Gharabally", "Sukayna Bint Al - Hussein", "Sultan Al Kulaib", "Surra", "Suwais", "Tarabluss", "Tariq Bin Ziyad", "Telmesani", "Thaalbi", "Wahran", "Watia", "Wazzan", "Wehda", "Yamen", "Yosif Bin Tashqeen", "Yousif Abdul Aziz Al - Fleaj", "Yousif Al - Adhma", "Yousif Al - Roomi", "Yousif Al - Sabeeh", "Zabadani", "Zahra’"],
+  "Hawalli": ["Abdul Kareem Al - Khattabi", "AbdulAl - Rahman Al - Ghafigi", "Abdullah Abdul Latif Al - Othman", "Abdullah Al - Fadala", "Abdullah Al - Faraj", "Abdullah Bin Al - Zubair", "Abdullah Bin Masoud", "Abdullah Mshari Al - Roudan", "Abu Hanifah", "Abu Horeira", "Abu Thar Al - Ghafari", "Ahmed Bin Hanbal", "Ahmed Bin Tolon", "Al - Awazim", "Al - Dhahak Bin Qays", "Al - Hassan Al - Basri", "Al - Masjed Al - Aqssa", "Al - Muthana", "Al - Mu’gheera Bin Sho’ba", "Al - Zubair Bin Al - Awam", "Ali Thnayan Al - Othainah", "Amman", "Amro Bin Al - Aas", "Baghdad", "Bahrain", "Beirut", "Belajat", "Dimna", "Ebn Al - Khateeb", "Ebn Khaldoon", "Ebn Roshd", "Ebn Salam", "Ebrahim Mohammed Al - Mazidi", "Esa Al - Qatami", "Hamad Al - Khalid", "Hamad Al - Mubarak", "Haroon Al - Rasheed", "Hassan Al - Banna", "Hilal Al - Mutairi", "Hira’a", "Hmoud Al - Nasser", "Jaber Bin Hayyan", "Khalid Bin Abdul Aziz", "Khansa", "Kindi", "Luthan", "Maath Bin Jabal", "Malik Bin Anas", "Manama", "Mohammed Wasmi Al - Wasmi", "Motanabbi", "Mousa Al - Abdul Razzaq", "Mousa Bin Nusair", "Musaed Al - Azmi", "Mus’ab Bin Al - Zubair", "Mutamad", "Mutasim", "Mutaz", "Nafie Bin Al - Azraq", "Nah’da", "Naser Al - Bader", "Nasser Al - Mobarak", "Ohod", "Osama Bin Zaid", "Qatar", "Qotaiba Bin Muslim", "Rabee’a", "Saba’", "Salem Al - Mubarak", "Salwa", "Sati’ Al - Husari", "Sayed Yaseen Al -Tabtabai", "Sa’eed Bin Al - Mesayeb", "Shaab", "Shafae", "Shaheen Al - Ghanim", "Sharahbeel Bin Hasna", "Sulaiman Al - Adsani", "Suraqa Bin Malik", "Ta’awn", "Thahabi", "Thaqeef", "Tunis", "Wasel Bin Atta", "Yarmouk", "Yathrib", "Yousif Al - Bader", "Yousif Bin Homoud", "Yousif Bin Isa Al - Qanaei", "Zaba’", "Zerqa’a Al - Yammama"],
+  "Farwaniya": ["Abdulah Mohammed Al - Khaldi", "Abdullah Bin Al - Mugafa’", "Abu Dhabi", "Al - Alla’ Al - Jarood", "Al - Waleed Bin Abdul Malik", "Ardon", "Ebn Sereen", "Ebn Tofail", "Ebn Zaher", "Ebrahim Bin Adham", "Ebrahim Bin Al - Aghlab", "Firdous", "Habeeb Al - Monawer", "Khalid Egab Al - Ashhab", "Mazin Bin Malik", "Muscat", "Omariya", "Rabia", "Saud Bin Abdul Aziz", "Zaid Al - Khail"],
+  "Mubarak Al-Kabeer": [],
+  "Ahmadi": ["Abdul Malik Bin Marwan", "Abu Firas Al - Hamadany", "Abu Mihjin Al - Thaqafy", "Al - Ahnaf Bin Qays", "Al - Daboos", "Al - Kassaei", "Awadh Mohammed Al - Khedher", "Balatt Al - Shuhadaa", "Bani Rabi’aa", "Dubai", "Ebn Malik", "Ebn Taymiya", "Ebrahim Al - Mousseli", "Faisal Al - Malik Al - Sabah", "Hadiya", "Hatem Al - Ta’ai", "Homoud Abdul Aziz Al - Sinan", "Ka’ab Bin Zuhair", "Malik Bin Al - Raib", "Mecca", "Mohammed Abdul Mehsin Al - Duaij", "Mohammed Iqbal", "Mudhar Bin Nazar", "Mutlaq Fahad Al - Adwani", "Ras Al - Khaima", "Razi", "Riqqa", "Sabahiya", "Sahil", "Turfa Bin Al - Abd"],
+  "Jahra": ["Abdaly", "Abdullah Bin Jad’an", "Abu Al - Boqa Al - Ak,bari", "Ahw’ass", "Ain Jaloot", "Al - Baghllany", "Al - Hajaj Bin Yousif Al - Thaqafi", "Al - Najashi", "Amro Bin Kalthoum", "Assma’i", "Attraf", "Bakri", "Bayrooni", "Bisher Bin Abi Awana", "Dihya Al - Kalbi", "Do’bell Al - Khozai", "Ebn Abd Rabbah", "Ebn Al - Roomi", "Ebn Bassam", "Ebn Hijer", "Hajib Bin Zorara", "Khalaf Al - Ahmar", "Louay Bin Ghalib", "Mahdi", "Marzouq Al - Met’eb", "Maskeen Al - Darmi", "Muhalhal Bin Rabiaa", "Murshid Al -Tawala Al - Shimmary", "Nsser Bin Sayyar", "Qiss Bin Sa’eda", "Sa’eed Bin Jubair", "Sha’bi", "Slayil", "Sulaibiya", "Suyoti"],
+};
+// streets for an area = its governorate's streets + main roads
+const streetsForArea = (area) => {
+  const gov = govFor(area);
+  const base = KW_STREETS_BY_GOV[gov] || [];
+  return [...base, ...KW_MAIN_STREETS];
+};
 
 // ─── Car brands (Kuwait-relevant) + common models ─────────────────────────────
 const CAR_DATA = {
@@ -271,7 +521,7 @@ const MOCK_JOBS = [
       { id: "i1a", kind: "tire", tire_id: "mt-1", brand: "Michelin", pattern: "Pilot Sport 4", size: "215/60R16", year: "2025", cost: 28, supplier: "Kuwait Automotive", qty: 4, unit_price: 38 },
       { id: "i1b", kind: "service", name: "Wheel Alignment", qty: 1, unit_price: 20 },
     ],
-    assigned_truck: "T2", assigned_technician: "Fahad", status: "assigned",
+    assigned_truck: "T2", assigned_technician: "Fahad", status: "assigned", parts_released: true, techs_released: true,
     scheduled_at: new Date().toISOString(), lead_from: "WhatsApp", sales_agent: "Hussain",
     xero_ref: "PO-2026-0041", payment_through: "Link", payment_status: "paid",
     checks: [true, false, false, false], notes: "Tesla wall charger — park carefully",
@@ -286,7 +536,7 @@ const MOCK_JOBS = [
     items: [
       { id: "i2a", kind: "tire", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "295/40R21", year: "2025", cost: 70, supplier: "Behbehani (Pirelli)", qty: 2, unit_price: 95 },
     ],
-    assigned_truck: "T4", assigned_technician: "Omar", status: "booked",
+    assigned_truck: "T4", assigned_technician: "Omar", status: "booked", parts_released: true, techs_released: false,
     scheduled_at: new Date(Date.now() + 3600000 * 3).toISOString(), lead_from: "Signal", sales_agent: "Alaa",
     xero_ref: "", payment_through: "Tabby", payment_status: "pending",
     checks: [false, false, false, false], notes: "",
@@ -950,6 +1200,8 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
       created_at: new Date().toISOString(),
       parts_status: "pending",   // pending | collected | delivered
       truck_status: "scheduled", // scheduled | arrived | processing | completed
+      parts_released: false,     // independent: distributor sees it
+      techs_released: false,     // independent: technicians see it
       item_checks: {},           // distributor per-item confirmations
       tech_checks: {},           // technician per-item confirmations
     };
@@ -1075,7 +1327,7 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
                 <div className="form-field"><label>Area *</label><ComboBox value={f.area} onChange={(v) => setF(p => ({ ...p, area: v, governorate: govFor(v) || p.governorate }))} options={KW_AREA_NAMES} placeholder="Salmiya" /></div>
                 <div className="form-field"><label>Governorate</label><input value={f.governorate || govFor(f.area)} readOnly placeholder="auto" style={{ background: "#F3F4F6", color: "var(--muted)" }} /></div>
                 <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
-                <div className="form-field"><label>Street</label><input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" /></div>
+                <div className="form-field"><label>Street</label><ComboBox value={f.street} onChange={(v) => setF(p => ({ ...p, street: v }))} options={streetsForArea(f.area)} placeholder="33 or name" /></div>
                 <div className="form-field"><label>Lane (Jadda)</label><input value={f.lane} onChange={set("lane")} placeholder="optional" /></div>
                 <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
                 <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
@@ -1123,6 +1375,10 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
 
             {/* 3 — Scheduling slot grid */}
             <div className="form-section-title">3 · Scheduling</div>
+            <div className="form-full">
+              <label style={miniLabel}>Truck</label>
+              <TruckPills value={f.assigned_truck} onChange={(t) => setF(p => ({ ...p, assigned_truck: t, start_hour: null }))} />
+            </div>
             <div className="form-field">
               <label>Date</label>
               <input type="date" value={f.scheduled_date} onChange={e => setF(p => ({ ...p, scheduled_date: e.target.value, start_hour: null }))} />
@@ -1134,8 +1390,8 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
               </select>
             </div>
             <div className="form-full">
-              <TruckSlotGrid jobs={jobs} dateStr={f.scheduled_date} duration={f.duration}
-                selectedTruck={f.start_hour != null ? f.assigned_truck : null} selectedHour={f.start_hour} onPick={pickSlot} />
+              <TruckDayView jobs={jobs} truck={f.assigned_truck} dateStr={f.scheduled_date} duration={f.duration}
+                selectedHour={f.start_hour} onPick={pickSlot} excludeId={null} />
               {f.start_hour != null && (
                 <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600, color: "var(--success)" }}>
                   ✓ {f.assigned_truck} · {hourLabel(f.start_hour)}–{hourLabel(f.start_hour + f.duration)} on {f.scheduled_date}
@@ -1207,7 +1463,7 @@ function AddressRowsEditor({ rows, setRows }) {
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "60px 1fr 70px 60px", gap: 6, marginBottom: 6 }}>
             <input className="filter-input" placeholder="Block" value={r.block} onChange={e => upd(i, "block", e.target.value)} />
-            <input className="filter-input" placeholder="Street" value={r.street} onChange={e => upd(i, "street", e.target.value)} />
+            <div style={{ gridColumn: "span 1" }}><ComboBox value={r.street} onChange={(v) => upd(i, "street", v)} options={streetsForArea(r.area)} placeholder="Street" /></div>
             <input className="filter-input" placeholder="Lane" value={r.lane || ""} onChange={e => upd(i, "lane", e.target.value)} />
             <input className="filter-input" placeholder="House" value={r.house} onChange={e => upd(i, "house", e.target.value)} />
           </div>
@@ -1282,8 +1538,8 @@ function NewCustomerModal({ initialName, initialMobile, onClose, onCreated }) {
 // ─── Status helpers for the new model ─────────────────────────────────────────
 const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 
-// ─── Job Detail (with triggers) ───────────────────────────────────────────────
-function JobDetail({ job, onBack, onUpdate, role }) {
+// ─── Job Detail (with order actions) ─────────────────────────────────────────
+function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
   const [j, setJ] = useState(job);
 
   const patchJob = async (patch) => {
@@ -1313,7 +1569,10 @@ function JobDetail({ job, onBack, onUpdate, role }) {
             <h2>{j.customer_name}</h2>
             <div className="detail-hero-sub">{j.car_brand} {j.car_model} {j.car_year} · {j.car_plate || "—"}</div>
           </div>
-          <StatusPill status={j.status} />
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {role === "sales" && <button className="btn btn-ghost btn-sm" onClick={() => onReschedule(j)}>↻ Reschedule</button>}
+            <StatusPill status={j.status} />
+          </div>
         </div>
         <div className="detail-grid">
           <div className="detail-field"><label>Time</label><p>{fmtDate(j.scheduled_at)} at {fmtTime(j.scheduled_at)}{j.duration ? ` · ${j.duration}h` : ""}</p></div>
@@ -1348,26 +1607,16 @@ function JobDetail({ job, onBack, onUpdate, role }) {
         </div>
       </div>
 
-      {/* Triggers (sales/purchaser) */}
+      {/* Order actions (sales/purchaser) */}
       {(role === "sales" || role === "purchaser") && (
         <div className="card">
-          <div className="card-header"><h3>Order Triggers</h3></div>
-          <div className="card-body" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button className={`btn ${isPaid ? "btn-success" : "btn-ghost"}`}
-              onClick={() => patchJob({ payment_status: isPaid ? "pending" : "paid", status: isPaid ? j.status : (j.status === "draft" ? "booked" : j.status) })}>
-              {isPaid ? "✓ Paid" : "Mark Paid"}
-            </button>
-            <button className="btn btn-ghost" disabled={!isPaid}
-              onClick={() => patchJob({ status: "part_ready" })}
-              title={!isPaid ? "Mark paid first" : ""}>
-              Trigger: Parts Ready → Distributor
-            </button>
-            <button className="btn btn-ghost" disabled={j.status === "draft" || !isPaid}
-              onClick={() => patchJob({ status: "assigned" })}>
-              Trigger: Show to Technicians
-            </button>
+          <div className="card-header"><h3>Order Actions</h3></div>
+          <div className="card-body">
+            <OrderActions job={j} onAction={(patch) => patchJob(patch)} />
+            <div style={{ marginTop: 10, fontSize: 12, color: "var(--muted)" }}>
+              Payment: <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span> · Distributor: {j.parts_released ? "released" : "not yet"} · Technicians: {j.techs_released ? "released" : "not yet"} · Parts: {j.parts_status || "pending"} · Truck: {j.truck_status || "scheduled"}
+            </div>
           </div>
-          {!isPaid && <div style={{ padding: "0 16px 14px", fontSize: 12, color: "var(--danger)" }}>Payment gate: order stays draft until marked paid.</div>}
         </div>
       )}
 
@@ -1397,7 +1646,32 @@ function JobDetail({ job, onBack, onUpdate, role }) {
 }
 
 // ─── Schedule View ────────────────────────────────────────────────────────────
-function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
+// ─── Order Actions: status buttons reused on list rows + job detail ───────────
+// No payment gate (per ops decision) — all actions available any time.
+// Payment status stays visible so it's never hidden, just not enforced.
+function OrderActions({ job, onAction, compact }) {
+  const isPaid = job.payment_status === "paid";
+  const btn = compact ? "btn btn-sm" : "btn";
+  const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
+  return (
+    <div style={{ display: "flex", gap: compact ? 6 : 10, flexWrap: "wrap", alignItems: "center" }}>
+      <button className={`${btn} ${isPaid ? "btn-success" : "btn-ghost"}`}
+        onClick={stop(() => onAction({ payment_status: isPaid ? "pending" : "paid", status: isPaid ? job.status : (job.status === "draft" ? "booked" : job.status) }))}>
+        {isPaid ? "✓ Paid" : "Mark Paid"}
+      </button>
+      <button className={`${btn} ${job.parts_released ? "btn-success" : "btn-ghost"}`}
+        onClick={stop(() => onAction({ parts_released: !job.parts_released }))}>
+        {job.parts_released ? "✓ Parts Ready" : "Parts Ready"}
+      </button>
+      <button className={`${btn} ${job.techs_released ? "btn-success" : "btn-ghost"}`}
+        onClick={stop(() => onAction({ techs_released: !job.techs_released }))}>
+        {job.techs_released ? "✓ With Technicians" : "Show Technicians"}
+      </button>
+    </div>
+  );
+}
+
+function ScheduleView({ jobs, onSelectJob, onNewJob, onReschedule, onAction, role }) {
   const [filterTruck, setFilterTruck] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterDate, setFilterDate] = useState(today());
@@ -1456,13 +1730,22 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
             </div>
             <div className="job-card-meta">
               <span className="tag tag-truck">{job.assigned_truck}</span>
-              <span className="tag tag-time">{fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}</span>
+              <span className="tag tag-time">{fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}</span>
               {job.total ? <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span> : null}
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{job.area}</span>
               {job.payment_status === "paid"
                 ? <span style={{ fontSize: 11, color: "var(--success)", fontWeight: 700 }}>✓ Paid</span>
                 : <span style={{ fontSize: 11, color: "var(--danger)", fontWeight: 600 }}>Unpaid</span>}
+              {role === "sales" && (
+                <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }}
+                  onClick={(e) => { e.stopPropagation(); onReschedule(job); }}>↻ Reschedule</button>
+              )}
             </div>
+            {(role === "sales" || role === "purchaser") && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                <OrderActions job={job} compact onAction={(patch) => onAction(job, patch)} />
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -1474,12 +1757,12 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, role }) {
 // Shows part_ready orders. Per-item: match-checkbox + Collected; once all collected,
 // Delivered unlocks. Persists to DB (parts_status, item_checks).
 function DistributorView({ jobs, onUpdate }) {
-  const active = jobs.filter(j => j.status === "part_ready" || (j.parts_status && j.parts_status !== "delivered" && ["part_ready","assigned"].includes(j.status)));
+  const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered");
 
   return (
     <>
       <div className="page-header"><div className="page-title">Parts & Logistics</div></div>
-      {active.length === 0 && <div className="empty"><h3>Nothing to collect</h3><p>Orders appear here when Sales triggers "Parts Ready".</p></div>}
+      {active.length === 0 && <div className="empty"><h3>Nothing to collect</h3><p>Orders appear here when Sales marks "Parts Ready".</p></div>}
       {active.map(job => (
         <DistributorCard key={job.id} job={job} onUpdate={onUpdate} />
       ))}
@@ -1546,7 +1829,7 @@ function DistributorCard({ job, onUpdate }) {
 function MyJobsView({ jobs, onUpdate, onSelectJob }) {
   const [myTruck, setMyTruck] = useState(ACTIVE_TRUCKS[0]);
   const myJobs = jobs
-    .filter(j => j.assigned_truck === myTruck && j.status === "assigned")
+    .filter(j => j.assigned_truck === myTruck && j.techs_released)
     .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
     .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
 
@@ -1847,7 +2130,7 @@ function AddAddressModal({ customer, onClose, onCreated }) {
             <div className="form-field"><label>Area *</label><ComboBox value={f.area} onChange={(v) => setF(p => ({ ...p, area: v, governorate: govFor(v) || p.governorate }))} options={KW_AREA_NAMES} placeholder="Salmiya" /></div>
             <div className="form-field"><label>Governorate</label><input value={f.governorate || govFor(f.area)} readOnly placeholder="auto" style={{ background: "#F3F4F6", color: "var(--muted)" }} /></div>
             <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
-            <div className="form-field"><label>Street</label><input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" /></div>
+            <div className="form-field"><label>Street</label><ComboBox value={f.street} onChange={(v) => setF(p => ({ ...p, street: v }))} options={streetsForArea(f.area)} placeholder="33 or name" /></div>
             <div className="form-field"><label>Lane (Jadda)</label><input value={f.lane} onChange={set("lane")} placeholder="optional" /></div>
             <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
             <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
@@ -1933,6 +2216,7 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [showNew, setShowNew] = useState(false);
+  const [rescheduleJob, setRescheduleJob] = useState(null);
   const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
   const [newCustomerMobile, setNewCustomerMobile] = useState("");
@@ -1972,6 +2256,12 @@ export default function App() {
   const handleJobUpdate = (updated) => {
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
     if (selectedJob?.id === updated.id) setSelectedJob(updated);
+  };
+
+  const handleJobAction = async (job, patch) => {
+    const next = { ...job, ...patch };
+    handleJobUpdate(next);
+    await updateJob(job.id, patch);
   };
 
   const handleNewCustomer = (mobile, cb) => {
@@ -2068,7 +2358,7 @@ export default function App() {
           {loading && <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>Loading…</div>}
 
           {!loading && selectedJob && (
-            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} />
+            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onAction={handleJobAction} />
           )}
 
           {!loading && !selectedJob && selectedCustomer && tab === "customers" && (
@@ -2085,7 +2375,7 @@ export default function App() {
           )}
 
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
-            <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => setShowNew(true)} />
+            <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => setShowNew(true)} onReschedule={setRescheduleJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
@@ -2101,6 +2391,15 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {rescheduleJob && (
+        <RescheduleModal
+          job={rescheduleJob}
+          jobs={jobs}
+          onClose={() => setRescheduleJob(null)}
+          onSaved={(updated) => { handleJobUpdate(updated); setRescheduleJob(null); }}
+        />
+      )}
 
       {showNew && (
         <NewJobModal
