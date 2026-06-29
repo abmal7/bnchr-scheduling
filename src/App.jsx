@@ -37,11 +37,26 @@ const STATUS_FLOW = [
 const DONE_STATUSES = ["done", "invoiced", "paid"];
 
 const CHECK_LABELS = [
-  "Sales — size, specs, customer photos confirmed",
-  "Distributor (C1) — physical tires verified before loading",
-  "Track team — tires + equipment verified before departure",
-  "On-site — tires checked against vehicle before installation",
+  "Sales — confirmed tires/products match the car (at order)",
+  "Distributor — verified tires before loading",
+  "Track team — verified collected items match the order (at arrival)",
+  "Track team — verified tires match the customer's car (before fitting)",
 ];
+// Derive the 4 verification checks from real actions (read-only audit trail).
+function deriveChecks(job) {
+  const items = (job.items || []);
+  const itemCk = job.item_checks || {};
+  const techCk = job.tech_checks || {};
+  // #1 sales confirmed match at order submission
+  const c1 = !!job.sales_match_confirmed;
+  // #2 distributor confirmed every item matches (before loading)
+  const c2 = items.length > 0 && items.every(it => itemCk[it.id]);
+  // #3 track team confirmed collected items match the order (at arrival)
+  const c3 = !!job.tech_arrival_match;
+  // #4 track team confirmed tires match the car (before fitting)
+  const c4 = items.length > 0 && items.every(it => techCk[it.id]);
+  return [c1, c2, c3, c4];
+}
 
 const SERVICE_TYPES = [
   "Tire Change & Balancing","Oil & Filter","Battery Change",
@@ -1202,6 +1217,7 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
       truck_status: "scheduled", // scheduled | arrived | processing | completed
       parts_released: false,     // independent: distributor sees it
       techs_released: false,     // independent: technicians see it
+      tech_arrival_match: false, // track team arrival verification (#3)
       item_checks: {},           // distributor per-item confirmations
       tech_checks: {},           // technician per-item confirmations
     };
@@ -1549,13 +1565,6 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
     onUpdate(next);
   };
 
-  const toggleCheck = (idx) => {
-    if (idx > 0 && !j.checks[idx - 1]) return;
-    const checks = [...(j.checks || [false, false, false, false])];
-    checks[idx] = !checks[idx];
-    patchJob({ checks });
-  };
-
   const isPaid = j.payment_status === "paid";
   const flowIdx = STATUS_FLOW.findIndex(s => s.key === j.status);
 
@@ -1620,19 +1629,19 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
         </div>
       )}
 
-      {/* 4-check (reference) */}
+      {/* 4-check verification — read-only audit trail, auto-filled from real actions */}
       <div className="card">
         <div className="card-header">
           <h3>4-Check Verification</h3>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>{(j.checks || []).filter(Boolean).length}/4</span>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{deriveChecks(j).filter(Boolean).length}/4 verified</span>
         </div>
         <div className="card-body">
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>Auto-filled as each party verifies in their own step. Not manually editable.</div>
           <div className="checks-list">
             {CHECK_LABELS.map((label, i) => {
-              const done = (j.checks || [])[i];
-              const locked = i > 0 && !(j.checks || [])[i - 1];
+              const done = deriveChecks(j)[i];
               return (
-                <div key={i} className={`check-item ${done ? "done" : ""} ${locked ? "locked" : ""}`} onClick={() => !locked && toggleCheck(i)}>
+                <div key={i} className={`check-item ${done ? "done" : ""}`} style={{ cursor: "default" }}>
                   <div className={`check-circle ${done ? "done" : ""}`}>{done ? "✓" : ""}</div>
                   <div className="check-text"><span className="check-num">#{i + 1}</span>{label}</div>
                 </div>
@@ -1885,10 +1894,21 @@ function TechJobCard({ job, index, onUpdate }) {
         {ts === "processing" && <button className="btn btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide" : "Show"} Service Details</button>}
       </div>
 
+      {/* Arrival verification (#3) — collected items match the order */}
+      {(ts === "arrived" || ts === "processing" || ts === "completed") && (
+        <label style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", border: `1px solid ${j.tech_arrival_match ? "var(--success)" : "var(--border)"}`, borderRadius: 8, padding: "8px 12px", background: j.tech_arrival_match ? "#F0FDF4" : "var(--bg)", cursor: "pointer" }}>
+          <input type="checkbox" checked={!!j.tech_arrival_match} onChange={() => patch({ tech_arrival_match: !j.tech_arrival_match })} style={{ marginTop: 2 }} />
+          <span style={{ fontSize: 13 }}>
+            <strong>On arrival:</strong> I'm sure the collected tires/products match this order
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>Verification check #3</div>
+          </span>
+        </label>
+      )}
+
       {/* Service details revealed on Start Job */}
       {open && (
         <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 8 }}>Items — confirm each matches the car</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 8 }}>Before fitting (#4) — confirm each tire matches the car</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {items.map(it => (
               <label key={it.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", background: tchecks[it.id] ? "#F0FDF4" : "var(--bg)", cursor: "pointer" }}>
