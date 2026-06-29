@@ -99,7 +99,7 @@ const slotCellBase = { border: "1px solid var(--border)", padding: "8px 6px", te
 // ─── Truck Day View: single-column timeline for ONE truck on a date ───────────
 // Pick truck + date → see that truck's working hours, booked slots filled,
 // free slots tappable. A job spans `duration` consecutive hours from the start.
-function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, excludeId }) {
+function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, excludeId, onJobClick }) {
   if (!truck || !TRUCK_CONFIG[truck]) {
     return <div style={{ fontSize: 13, color: "var(--muted)", padding: "12px 0" }}>Select a truck to see its schedule.</div>;
   }
@@ -126,7 +126,8 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ fontWeight: 700, fontFamily: "var(--font-head)" }}>
+        <div style={{ fontWeight: 700, fontFamily: "var(--font-head)", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(truck).solid, display: "inline-block" }} />
           {truck} <span style={{ fontSize: 12, fontWeight: 500, color: "var(--muted)" }}>· {hourLabel(TRUCK_CONFIG[truck].start)}–{hourLabel(TRUCK_CONFIG[truck].end)}</span>
         </div>
         <span style={{ fontSize: 11, color: "var(--muted)" }}>Selecting {duration}h</span>
@@ -139,12 +140,12 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
           const occ = taken ? jobAt(hour) : null;
           let bg = "var(--card)", color = "var(--text)", cursor = "pointer", border = "1px solid var(--border)";
           let right = "Free";
-          if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = "not-allowed"; border = "1px solid #FCA5A5"; right = occ ? (occ.customer_name || "Booked") : "Booked"; }
+          if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = onJobClick ? "pointer" : "not-allowed"; border = "1px solid #FCA5A5"; right = occ ? slotLabel(occ, " · ") : "Booked"; }
           else if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; right = "Selected"; }
           else if (!fits) { bg = "#FEF9EE"; color = "#92400E"; cursor = "not-allowed"; right = "—"; }
           return (
             <div key={hour}
-              onClick={() => !taken && fits && onPick(truck, hour)}
+              onClick={() => { if (taken) { if (occ && onJobClick) onJobClick(occ); } else if (fits) onPick(truck, hour); }}
               style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 8, background: bg, color, cursor, border, fontSize: 13, fontWeight: sel ? 700 : 500 }}>
               <span style={{ fontWeight: 600 }}>{hourLabel(hour)}</span>
               <span style={{ fontSize: 12 }}>{right}</span>
@@ -163,13 +164,17 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
 function TruckPills({ value, onChange }) {
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      {ACTIVE_TRUCKS.map(t => (
-        <button key={t} type="button" onClick={() => onChange(t)}
-          className={`btn btn-sm ${value === t ? "btn-primary" : "btn-ghost"}`}
-          style={{ minWidth: 92 }}>
-          {t} <span style={{ fontSize: 10, opacity: .8, marginLeft: 4 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00","")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00","")}</span>
-        </button>
-      ))}
+      {ACTIVE_TRUCKS.map(t => {
+        const c = truckColor(t);
+        const active = value === t;
+        return (
+          <button key={t} type="button" onClick={() => onChange(t)}
+            className="btn btn-sm"
+            style={{ minWidth: 92, background: active ? c.solid : c.bg, color: active ? "#fff" : c.text, border: `1px solid ${c.solid}`, fontWeight: active ? 700 : 600 }}>
+            {t} <span style={{ fontSize: 10, opacity: .85, marginLeft: 4 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00","")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00","")}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -277,6 +282,17 @@ const TRUCK_CONFIG = {
 };
 const ACTIVE_TRUCKS = Object.keys(TRUCK_CONFIG);
 
+// Truck colors (all 6 defined; only active trucks render). { solid, bg, text }
+const TRUCK_COLORS = {
+  T1: { solid: "#EAB308", bg: "#FEF9C3", text: "#854D0E" }, // yellow
+  T2: { solid: "#F97316", bg: "#FFEDD5", text: "#9A3412" }, // orange
+  T3: { solid: "#16A34A", bg: "#DCFCE7", text: "#166534" }, // green
+  T4: { solid: "#2563EB", bg: "#DBEAFE", text: "#1E40AF" }, // blue
+  T5: { solid: "#9333EA", bg: "#F3E8FF", text: "#6B21A8" }, // purple
+  T6: { solid: "#DC2626", bg: "#FEE2E2", text: "#991B1B" }, // red
+};
+const truckColor = (t) => TRUCK_COLORS[t] || { solid: "#64748B", bg: "#F1F5F9", text: "#334155" };
+
 // Hour label e.g. 13 -> "1:00 PM"
 const hourLabel = (h) => {
   const am = h < 12 || h === 24;
@@ -325,6 +341,19 @@ const slotTaken = (jobs, truck, dateStr, hour, excludeId) => {
     return jobHours(j).includes(hour);
   });
 };
+// Short service label for tight slot cells
+const shortService = (s) => {
+  if (!s) return "Service";
+  if (/tire/i.test(s)) return "Tires";
+  if (/oil/i.test(s)) return "Oil";
+  if (/battery/i.test(s)) return "Battery";
+  if (/brake/i.test(s)) return "Brakes";
+  if (/align/i.test(s)) return "Align";
+  if (/tune/i.test(s)) return "Tune-up";
+  return s.length > 10 ? s.slice(0, 10) + "…" : s;
+};
+// Booked-slot label: service · mobile · area
+const slotLabel = (j, sep) => [shortService(j.service_type), j.customer_mobile || "", j.area || ""].filter(Boolean).join(sep);
 
 // ─── Kuwait areas → governorate (6 governorates) ──────────────────────────────
 // Used for clean, consistent area data + auto-derived governorate for reporting.
@@ -1066,37 +1095,41 @@ function ItemsBuilder({ items, setItems }) {
 // ─── Truck Slot Grid ──────────────────────────────────────────────────────────
 // One day, all active trucks as columns, 1h rows. Click a free slot to select a
 // start; the job spans `duration` consecutive hours. Shows booked slots.
-function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, onPick }) {
+function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, onPick, onJobClick, excludeId }) {
   // union of all hours across active trucks, for row range
   const allHours = [];
   ACTIVE_TRUCKS.forEach(t => truckHours(t).forEach(h => { if (!allHours.includes(h)) allHours.push(h); }));
   allHours.sort((a, b) => a - b);
 
-  // does selecting (truck,hour) fit without collision and within working hours?
   const canFit = (truck, hour) => {
     const hrs = truckHours(truck);
     for (let h = hour; h < hour + duration; h++) {
-      if (!hrs.includes(h)) return false;                 // outside working hours
-      if (slotTaken(jobs, truck, dateStr, h, null)) return false; // collision
+      if (!hrs.includes(h)) return false;
+      if (slotTaken(jobs, truck, dateStr, h, excludeId)) return false;
     }
     return true;
   };
-
-  // is (truck,hour) part of the current selection span?
   const inSelection = (truck, hour) =>
     selectedTruck === truck && selectedHour != null &&
     hour >= selectedHour && hour < selectedHour + duration;
+  const jobAt = (truck, hour) => jobs.find(j => {
+    if (j.id === excludeId) return false;
+    if (j.assigned_truck !== truck) return false;
+    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
+    if (d !== dateStr) return false;
+    return jobHours(j).includes(hour);
+  });
 
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 360 }}>
         <thead>
           <tr>
-            <th style={{ ...slotCellBase, background: "var(--bg)", fontWeight: 700, width: 64 }}>Time</th>
+            <th style={{ ...slotCellBase, background: "var(--bg)", fontWeight: 700, width: 56 }}>Time</th>
             {ACTIVE_TRUCKS.map(t => (
-              <th key={t} style={{ ...slotCellBase, background: "var(--bg)", fontWeight: 700 }}>
+              <th key={t} style={{ ...slotCellBase, background: truckColor(t).solid, color: "#fff", fontWeight: 700 }}>
                 {t}
-                <div style={{ fontSize: 9, color: "var(--muted)", fontWeight: 500 }}>
+                <div style={{ fontSize: 9, color: "rgba(255,255,255,.85)", fontWeight: 500 }}>
                   {hourLabel(TRUCK_CONFIG[t].start)}–{hourLabel(TRUCK_CONFIG[t].end)}
                 </div>
               </th>
@@ -1110,17 +1143,18 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
               {ACTIVE_TRUCKS.map(truck => {
                 const works = truckHours(truck).includes(hour);
                 if (!works) return <td key={truck} style={{ ...slotCellBase, background: "#F7F8FA" }} />;
-                const taken = slotTaken(jobs, truck, dateStr, hour, null);
+                const taken = slotTaken(jobs, truck, dateStr, hour, excludeId);
                 const sel = inSelection(truck, hour);
                 const fits = canFit(truck, hour);
+                const occ = taken ? jobAt(truck, hour) : null;
                 let bg = "var(--card)", color = "var(--text)", cursor = "pointer", label = "Free";
-                if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = "not-allowed"; label = "Booked"; }
+                if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = onJobClick ? "pointer" : "not-allowed"; label = occ ? slotLabel(occ, "\n") : "Booked"; }
                 else if (sel) { bg = "var(--accent)"; color = "#fff"; label = "Selected"; }
                 else if (!fits) { bg = "#FEF3C7"; color = "#92400E"; cursor = "not-allowed"; label = "—"; }
                 return (
                   <td key={truck}
-                    onClick={() => !taken && fits && onPick(truck, hour)}
-                    style={{ ...slotCellBase, background: bg, color, cursor, fontSize: 11, fontWeight: sel ? 700 : 500 }}>
+                    onClick={() => { if (taken) { if (occ && onJobClick) onJobClick(occ); } else if (fits) onPick(truck, hour); }}
+                    style={{ ...slotCellBase, background: bg, color, cursor, fontSize: 10, fontWeight: sel ? 700 : 500, whiteSpace: "pre-line", lineHeight: 1.25 }}>
                     {label}
                   </td>
                 );
@@ -1130,7 +1164,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
         </tbody>
       </table>
       <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
-        Selecting <strong>{duration}h</strong> · pick a green slot. Yellow = not enough consecutive free hours for {duration}h.
+        {onJobClick ? "Tap a booked slot to open the order, or an empty slot to start a new one. " : ""}Selecting <strong>{duration}h</strong>. Red = booked (area · name), yellow = won't fit.
       </div>
     </div>
   );
@@ -1141,15 +1175,15 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onNewCustomer }) {
+function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, prefill, onNewCustomer }) {
   const blank = {
     customer_name: "", customer_mobile: "", customer_id: null,
     area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "",
     car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
     service_type: "Tire Change & Balancing",
     items: [], centerlock: false, sales_match_confirmed: false,
-    assigned_truck: "T1", start_hour: null, duration: 1,
-    scheduled_date: today(),
+    assigned_truck: prefill?.truck || "T1", start_hour: prefill?.hour ?? null, duration: 1,
+    scheduled_date: prefill?.date || today(),
     lead_from: "WhatsApp", sales_agent: "",
     xero_ref: "", payment_through: "Link", payment_status: "pending", notes: "",
     status: "draft",
@@ -1162,6 +1196,7 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
   const [selectedAddr, setSelectedAddr] = useState(null);
   const [addrMode, setAddrMode] = useState("pick"); // pick | new
   const [carMode, setCarMode] = useState("pick"); // pick | new
+  const [schedView, setSchedView] = useState("truck"); // truck | all
   const [saving, setSaving] = useState(false);
 
   const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
@@ -1391,10 +1426,16 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
 
             {/* 3 — Scheduling slot grid */}
             <div className="form-section-title">3 · Scheduling</div>
-            <div className="form-full">
-              <label style={miniLabel}>Truck</label>
-              <TruckPills value={f.assigned_truck} onChange={(t) => setF(p => ({ ...p, assigned_truck: t, start_hour: null }))} />
+            <div className="form-full" style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+              <button type="button" className={`btn btn-sm ${schedView === "truck" ? "btn-primary" : "btn-ghost"}`} onClick={() => setSchedView("truck")}>Per-truck</button>
+              <button type="button" className={`btn btn-sm ${schedView === "all" ? "btn-primary" : "btn-ghost"}`} onClick={() => setSchedView("all")}>All trucks</button>
             </div>
+            {schedView === "truck" && (
+              <div className="form-full">
+                <label style={miniLabel}>Truck</label>
+                <TruckPills value={f.assigned_truck} onChange={(t) => setF(p => ({ ...p, assigned_truck: t, start_hour: null }))} />
+              </div>
+            )}
             <div className="form-field">
               <label>Date</label>
               <input type="date" value={f.scheduled_date} onChange={e => setF(p => ({ ...p, scheduled_date: e.target.value, start_hour: null }))} />
@@ -1406,8 +1447,14 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
               </select>
             </div>
             <div className="form-full">
-              <TruckDayView jobs={jobs} truck={f.assigned_truck} dateStr={f.scheduled_date} duration={f.duration}
-                selectedHour={f.start_hour} onPick={pickSlot} excludeId={null} />
+              {schedView === "truck" ? (
+                <TruckDayView jobs={jobs} truck={f.assigned_truck} dateStr={f.scheduled_date} duration={f.duration}
+                  selectedHour={f.start_hour} onPick={pickSlot} excludeId={null} />
+              ) : (
+                <TruckSlotGrid jobs={jobs} dateStr={f.scheduled_date} duration={f.duration}
+                  selectedTruck={f.start_hour != null ? f.assigned_truck : null} selectedHour={f.start_hour}
+                  onPick={pickSlot} excludeId={null} />
+              )}
               {f.start_hour != null && (
                 <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600, color: "var(--success)" }}>
                   ✓ {f.assigned_truck} · {hourLabel(f.start_hour)}–{hourLabel(f.start_hour + f.duration)} on {f.scheduled_date}
@@ -1680,11 +1727,12 @@ function OrderActions({ job, onAction, compact }) {
   );
 }
 
-function ScheduleView({ jobs, onSelectJob, onNewJob, onReschedule, onAction, role }) {
+function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
   const [filterTruck, setFilterTruck] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterDate, setFilterDate] = useState(today());
   const [search, setSearch] = useState("");
+  const [boardView, setBoardView] = useState("list"); // list | board
 
   const filtered = jobs.filter(j => {
     if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
@@ -1709,6 +1757,10 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onReschedule, onAction, rol
       <div className="page-header">
         <div className="page-title">Schedule</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button className={`btn btn-sm ${boardView === "list" ? "btn-primary" : "btn-ghost"}`} onClick={() => setBoardView("list")}>List</button>
+            <button className={`btn btn-sm ${boardView === "board" ? "btn-primary" : "btn-ghost"}`} onClick={() => setBoardView("board")}>Day Board</button>
+          </div>
           <div className="filters">
             <input className="filter-input" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 140 }} />
             <input type="date" className="filter-select" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
@@ -1726,6 +1778,28 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onReschedule, onAction, rol
         </div>
       </div>
 
+      {boardView === "board" && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header">
+            <h3>Day Board — {filterDate || today()}</h3>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>all trucks · tap a job to open, empty slot to book</span>
+          </div>
+          <div className="card-body">
+            <TruckSlotGrid
+              jobs={jobs}
+              dateStr={filterDate || today()}
+              duration={1}
+              selectedTruck={null}
+              selectedHour={null}
+              onJobClick={onSelectJob}
+              onPick={(truck, hour) => onNewJobAt && onNewJobAt(truck, hour, filterDate || today())}
+              excludeId={null}
+            />
+          </div>
+        </div>
+      )}
+
+      {boardView === "list" && (
       <div className="job-cards">
         {filtered.length === 0 && <div className="empty"><h3>No jobs</h3><p>Adjust filters or create a new job.</p></div>}
         {filtered.map(job => (
@@ -1738,7 +1812,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onReschedule, onAction, rol
               <StatusPill status={job.status} />
             </div>
             <div className="job-card-meta">
-              <span className="tag tag-truck">{job.assigned_truck}</span>
+              <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text }}>{job.assigned_truck}</span>
               <span className="tag tag-time">{fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}</span>
               {job.total ? <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span> : null}
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{job.area}</span>
@@ -1758,6 +1832,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onReschedule, onAction, rol
           </div>
         ))}
       </div>
+      )}
     </>
   );
 }
@@ -2236,6 +2311,7 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [showNew, setShowNew] = useState(false);
+  const [prefillSlot, setPrefillSlot] = useState(null);
   const [rescheduleJob, setRescheduleJob] = useState(null);
   const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
@@ -2395,7 +2471,7 @@ export default function App() {
           )}
 
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
-            <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => setShowNew(true)} onReschedule={setRescheduleJob} onAction={handleJobAction} />
+            <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
@@ -2427,7 +2503,8 @@ export default function App() {
           cars={cars}
           addresses={addresses}
           jobs={jobs}
-          onClose={() => setShowNew(false)}
+          prefill={prefillSlot}
+          onClose={() => { setShowNew(false); setPrefillSlot(null); }}
           onCreated={j => setJobs(prev => [j, ...prev])}
           onNewCustomer={handleNewCustomer}
         />
