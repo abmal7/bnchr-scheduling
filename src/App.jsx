@@ -170,7 +170,7 @@ function TruckPills({ value, onChange }) {
         return (
           <button key={t} type="button" onClick={() => onChange(t)}
             className="btn btn-sm"
-            style={{ minWidth: 92, background: active ? c.solid : c.bg, color: active ? "#fff" : c.text, border: `1px solid ${c.solid}`, fontWeight: active ? 700 : 600 }}>
+            style={{ minWidth: 92, background: c.bg, color: c.text, border: `${active ? 2 : 1}px solid ${c.solid}`, boxShadow: active ? `inset 0 -3px 0 ${c.solid}` : "none", fontWeight: active ? 700 : 600 }}>
             {t} <span style={{ fontSize: 10, opacity: .85, marginLeft: 4 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00","")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00","")}</span>
           </button>
         );
@@ -284,12 +284,12 @@ const ACTIVE_TRUCKS = Object.keys(TRUCK_CONFIG);
 
 // Truck colors (all 6 defined; only active trucks render). { solid, bg, text }
 const TRUCK_COLORS = {
-  T1: { solid: "#EAB308", bg: "#FEF9C3", text: "#854D0E" }, // yellow
-  T2: { solid: "#F97316", bg: "#FFEDD5", text: "#9A3412" }, // orange
-  T3: { solid: "#16A34A", bg: "#DCFCE7", text: "#166534" }, // green
-  T4: { solid: "#2563EB", bg: "#DBEAFE", text: "#1E40AF" }, // blue
-  T5: { solid: "#9333EA", bg: "#F3E8FF", text: "#6B21A8" }, // purple
-  T6: { solid: "#DC2626", bg: "#FEE2E2", text: "#991B1B" }, // red
+  T1: { solid: "#C9A227", bg: "#FAF6E9", text: "#7A6212" }, // yellow (muted gold)
+  T2: { solid: "#D98A4E", bg: "#FBF0E8", text: "#8A4F25" }, // orange (muted terracotta)
+  T3: { solid: "#5B9A6E", bg: "#EDF5EF", text: "#3A6249" }, // green (muted sage)
+  T4: { solid: "#5B7FB0", bg: "#EDF1F7", text: "#3A5378" }, // blue (muted slate-blue)
+  T5: { solid: "#8E7BB0", bg: "#F2EFF7", text: "#5C4D78" }, // purple (muted lavender)
+  T6: { solid: "#C06C6C", bg: "#F8EDED", text: "#8A4444" }, // red (muted clay)
 };
 const truckColor = (t) => TRUCK_COLORS[t] || { solid: "#64748B", bg: "#F1F5F9", text: "#334155" };
 
@@ -354,6 +354,16 @@ const shortService = (s) => {
 };
 // Booked-slot label: service · mobile · area
 const slotLabel = (j, sep) => [shortService(j.service_type), j.customer_mobile || "", j.area || ""].filter(Boolean).join(sep);
+// Compact items summary for list rows: "4× Michelin Pilot Sport 4 · Oil & Filter"
+const itemsSummary = (job) => {
+  const items = job.items || [];
+  if (!items.length) return job.service_details || "";
+  return items.map(it => {
+    const qty = Number(it.qty) || 1;
+    const name = it.kind === "tire" ? `${it.brand}${it.pattern ? " " + it.pattern : ""}` : (it.name || "Item");
+    return `${qty}× ${name}`;
+  }).join(" · ");
+};
 
 // ─── Kuwait areas → governorate (6 governorates) ──────────────────────────────
 // Used for clean, consistent area data + auto-derived governorate for reporting.
@@ -1127,9 +1137,9 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
           <tr>
             <th style={{ ...slotCellBase, background: "var(--bg)", fontWeight: 700, width: 56 }}>Time</th>
             {ACTIVE_TRUCKS.map(t => (
-              <th key={t} style={{ ...slotCellBase, background: truckColor(t).solid, color: "#fff", fontWeight: 700 }}>
+              <th key={t} style={{ ...slotCellBase, background: truckColor(t).bg, color: truckColor(t).text, fontWeight: 700, borderBottom: `3px solid ${truckColor(t).solid}` }}>
                 {t}
-                <div style={{ fontSize: 9, color: "rgba(255,255,255,.85)", fontWeight: 500 }}>
+                <div style={{ fontSize: 9, color: truckColor(t).text, opacity: .75, fontWeight: 500 }}>
                   {hourLabel(TRUCK_CONFIG[t].start)}–{hourLabel(TRUCK_CONFIG[t].end)}
                 </div>
               </th>
@@ -1806,8 +1816,12 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
           <div key={job.id} className="job-card" onClick={() => onSelectJob(job)}>
             <div className="job-card-top">
               <div>
-                <div className="job-card-name">{job.customer_name}</div>
+                <div className="job-card-name">
+                  {job.customer_name}
+                  {job.customer_mobile && <a href={`tel:${job.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ marginLeft: 8, fontSize: 13, fontWeight: 500, color: "var(--accent)" }}>{job.customer_mobile}</a>}
+                </div>
                 <div className="job-card-service">{job.service_type} · {job.car_brand} {job.car_model}</div>
+                {itemsSummary(job) && <div className="job-card-service" style={{ marginTop: 2, color: "var(--text)" }}>📦 {itemsSummary(job)}</div>}
               </div>
               <StatusPill status={job.status} />
             </div>
