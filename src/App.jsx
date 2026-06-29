@@ -160,6 +160,87 @@ const slotTaken = (jobs, truck, dateStr, hour, excludeId) => {
   });
 };
 
+// ─── Kuwait areas → governorate (6 governorates) ──────────────────────────────
+// Used for clean, consistent area data + auto-derived governorate for reporting.
+const KW_AREAS = {
+  // Al Asimah (Capital)
+  "Kuwait City": "Al Asimah", "Sharq": "Al Asimah", "Mirqab": "Al Asimah", "Jibla": "Al Asimah",
+  "Dasma": "Al Asimah", "Daiya": "Al Asimah", "Abdullah Al-Salem": "Al Asimah", "Mansouriya": "Al Asimah",
+  "Qadsiya": "Al Asimah", "Faiha": "Al Asimah", "Shamiya": "Al Asimah", "Kaifan": "Al Asimah",
+  "Khaldiya": "Al Asimah", "Adailiya": "Al Asimah", "Rawda": "Al Asimah", "Yarmouk": "Al Asimah",
+  "Surra": "Al Asimah", "Qortuba": "Al Asimah", "Nuzha": "Al Asimah", "Doha": "Al Asimah",
+  "Sulaibikhat": "Al Asimah", "Shuwaikh": "Al Asimah", "Jaber Al-Ahmad": "Al Asimah", "North West Sulaibikhat": "Al Asimah",
+  // Hawalli
+  "Hawalli": "Hawalli", "Salmiya": "Hawalli", "Rumaithiya": "Hawalli", "Bayan": "Hawalli",
+  "Mishref": "Hawalli", "Salwa": "Hawalli", "Jabriya": "Hawalli", "Maidan Hawalli": "Hawalli",
+  "Nugra": "Hawalli", "Hateen": "Hawalli", "Shaab": "Hawalli", "Zahra": "Hawalli",
+  "Salam": "Hawalli", "Siddiq": "Hawalli", "Mubarak Al-Abdullah": "Hawalli", "Bidaa": "Hawalli",
+  // Farwaniya
+  "Farwaniya": "Farwaniya", "Khaitan": "Farwaniya", "Jleeb Al-Shuyoukh": "Farwaniya", "Andalus": "Farwaniya",
+  "Ardiya": "Farwaniya", "Rabiya": "Farwaniya", "Rai": "Farwaniya", "Sabah Al-Nasser": "Farwaniya",
+  "Firdous": "Farwaniya", "Omariya": "Farwaniya", "Abraq Khaitan": "Farwaniya", "Riggae": "Farwaniya",
+  "Dajeej": "Farwaniya", "Ishbiliya": "Farwaniya",
+  // Mubarak Al-Kabeer
+  "Mubarak Al-Kabeer": "Mubarak Al-Kabeer", "Qurain": "Mubarak Al-Kabeer", "Adan": "Mubarak Al-Kabeer",
+  "Qusour": "Mubarak Al-Kabeer", "Abu Futaira": "Mubarak Al-Kabeer", "Funaitees": "Mubarak Al-Kabeer",
+  "Sabah Al-Salem": "Mubarak Al-Kabeer", "Messila": "Mubarak Al-Kabeer", "Wista": "Mubarak Al-Kabeer",
+  "Mubarak Al-Kabeer South": "Mubarak Al-Kabeer",
+  // Ahmadi
+  "Ahmadi": "Ahmadi", "Fahaheel": "Ahmadi", "Mangaf": "Ahmadi", "Abu Halifa": "Ahmadi",
+  "Fintas": "Ahmadi", "Mahboula": "Ahmadi", "Riqqa": "Ahmadi", "Hadiya": "Ahmadi",
+  "Sabahiya": "Ahmadi", "Jaber Al-Ali": "Ahmadi", "Wafra": "Ahmadi", "Egaila": "Ahmadi",
+  "Fahad Al-Ahmad": "Ahmadi", "Ali Sabah Al-Salem": "Ahmadi", "Khairan": "Ahmadi", "Sabah Al-Ahmad": "Ahmadi",
+  // Jahra
+  "Jahra": "Jahra", "Saad Al-Abdullah": "Jahra", "Naeem": "Jahra", "Qasr": "Jahra",
+  "Oyoun": "Jahra", "Waha": "Jahra", "Taima": "Jahra", "Nasseem": "Jahra",
+  "Sulaibiya": "Jahra", "Amghara": "Jahra", "Abdali": "Jahra",
+};
+const KW_AREA_NAMES = Object.keys(KW_AREAS).sort();
+const govFor = (area) => KW_AREAS[area] || "";
+
+// ─── Car brands (Kuwait-relevant) + common models ─────────────────────────────
+const CAR_DATA = {
+  "Toyota": ["Land Cruiser", "Prado", "Camry", "Corolla", "Hilux", "Fortuner", "RAV4", "Avalon", "Yaris", "FJ Cruiser", "Sequoia", "Tundra", "Highlander", "Rush", "Land Cruiser 70"],
+  "Lexus": ["LX", "GX", "RX", "ES", "LS", "NX", "IS", "LC", "UX", "RC"],
+  "Nissan": ["Patrol", "Altima", "Maxima", "X-Trail", "Pathfinder", "Sunny", "Sentra", "Kicks", "Armada", "Patrol Safari", "Navara", "Murano"],
+  "Mercedes-Benz": ["C-Class", "E-Class", "S-Class", "G-Class", "GLE", "GLS", "GLC", "GLA", "A-Class", "CLA", "AMG GT", "Maybach"],
+  "BMW": ["3 Series", "5 Series", "7 Series", "X5", "X6", "X7", "X3", "X4", "M3", "M5", "i7", "8 Series"],
+  "Porsche": ["911", "Cayenne", "Macan", "Panamera", "Taycan", "718 Cayman", "718 Boxster"],
+  "GMC": ["Yukon", "Sierra", "Acadia", "Terrain", "Yukon XL", "Denali"],
+  "Chevrolet": ["Tahoe", "Suburban", "Silverado", "Camaro", "Malibu", "Captiva", "Impala", "Corvette", "Traverse", "Blazer"],
+  "Ford": ["F-150", "Explorer", "Expedition", "Mustang", "Edge", "Escape", "Taurus", "Bronco", "Ranger"],
+  "Honda": ["Accord", "Civic", "CR-V", "Pilot", "City", "HR-V", "Odyssey"],
+  "Hyundai": ["Sonata", "Elantra", "Tucson", "Santa Fe", "Accent", "Palisade", "Creta", "Azera", "Genesis"],
+  "Kia": ["Sportage", "Sorento", "Optima", "Cerato", "Telluride", "Carnival", "Seltos", "Cadenza", "Picanto"],
+  "Mitsubishi": ["Pajero", "Montero Sport", "Lancer", "ASX", "L200", "Attrage", "Outlander"],
+  "Cadillac": ["Escalade", "XT5", "XT6", "CT5", "CT6", "XT4"],
+  "Land Rover": ["Range Rover", "Range Rover Sport", "Range Rover Vogue", "Defender", "Discovery", "Range Rover Velar", "Evoque"],
+  "Jeep": ["Wrangler", "Grand Cherokee", "Cherokee", "Compass", "Gladiator", "Renegade"],
+  "Dodge": ["Charger", "Challenger", "Durango", "Ram 1500"],
+  "Audi": ["A4", "A6", "A8", "Q5", "Q7", "Q8", "Q3", "RS Q8", "e-tron"],
+  "Volkswagen": ["Golf", "Passat", "Tiguan", "Touareg", "Teramont", "Jetta"],
+  "Infiniti": ["QX80", "QX60", "QX50", "Q50", "QX70"],
+  "Mazda": ["CX-9", "CX-5", "Mazda6", "Mazda3", "CX-30", "MX-5"],
+  "Bentley": ["Bentayga", "Continental GT", "Flying Spur"],
+  "Rolls-Royce": ["Cullinan", "Ghost", "Phantom", "Wraith", "Dawn"],
+  "Ferrari": ["Roma", "812", "F8", "SF90", "Purosangue", "296"],
+  "Lamborghini": ["Urus", "Huracan", "Aventador", "Revuelto"],
+  "Maserati": ["Levante", "Ghibli", "Quattroporte", "Grecale", "MC20"],
+  "Tesla": ["Model S", "Model 3", "Model X", "Model Y", "Cybertruck"],
+  "Suzuki": ["Vitara", "Jimny", "Swift", "Ciaz", "Baleno", "Grand Vitara"],
+  "Volvo": ["XC90", "XC60", "XC40", "S90", "S60"],
+  "Peugeot": ["3008", "5008", "508", "2008"],
+  "Renault": ["Koleos", "Duster", "Megane", "Talisman"],
+  "Chery": ["Tiggo 8", "Tiggo 7", "Arrizo 6", "Tiggo 4"],
+  "MG": ["MG5", "MG6", "HS", "RX5", "ZS", "GT"],
+  "Genesis": ["GV80", "GV70", "G80", "G90", "GV60"],
+  "Jetour": ["X70", "X90", "Dashing", "T2"],
+  "Geely": ["Coolray", "Azkarra", "Emgrand", "Tugella", "Monjaro"],
+};
+const CAR_BRANDS = Object.keys(CAR_DATA).sort();
+const modelsFor = (brand) => CAR_DATA[brand] || [];
+const carYears = (() => { const y = []; const now = new Date().getFullYear() + 1; for (let v = now; v >= 1990; v--) y.push(String(v)); return y; })();
+
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 const MOCK_CUSTOMERS = [
   { id: "mc-1", name: "Ahmad Al-Salem",   mobile: "99001234", area: "Salmiya",    notes: "VIP — Porsche fleet" },
@@ -173,9 +254,9 @@ const MOCK_CARS = [
   { id: "mcar-4", customer_id: "mc-3", brand: "GMC",     model: "Yukon",        year: "2021", plate: "Kuwait · 33210 · Private" },
 ];
 const MOCK_ADDRESSES = [
-  { id: "ma-1", customer_id: "mc-1", label: "Home", area: "Salmiya", block: "12", street: "Hamad Al-Mubarak", house: "14", map_link: "https://maps.google.com/?q=29.3375,48.0838" },
-  { id: "ma-2", customer_id: "mc-1", label: "Office", area: "Sharq", block: "3", street: "Ahmad Al-Jaber", house: "Tower 5", map_link: "" },
-  { id: "ma-3", customer_id: "mc-2", label: "Home", area: "Rumaithiya", block: "3", street: "Al-Khaleej", house: "7A", map_link: "" },
+  { id: "ma-1", customer_id: "mc-1", label: "Home", area: "Salmiya", governorate: "Hawalli", block: "12", street: "Hamad Al-Mubarak", house: "14", map_link: "https://maps.google.com/?q=29.3375,48.0838" },
+  { id: "ma-2", customer_id: "mc-1", label: "Office", area: "Sharq", block: "3", street: "Ahmad Al-Jaber", lane: "5", house: "Tower 5", map_link: "" },
+  { id: "ma-3", customer_id: "mc-2", label: "Home", area: "Rumaithiya", governorate: "Hawalli", block: "3", street: "Al-Khaleej", house: "7A", map_link: "" },
   { id: "ma-4", customer_id: "mc-3", label: "Home", area: "Hawalli", block: "5", street: "Tunis", house: "22", map_link: "" },
 ];
 const MOCK_JOBS = [
@@ -262,20 +343,20 @@ async function updateJob(id, patch) {
   try { await sb(`/jobs?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
 }
 async function createCustomer(c) {
-  try { const r = await sb("/customers", { method: "POST", body: JSON.stringify(c) }); return r?.[0] || { ...c, id: `lc-${Date.now()}` }; }
-  catch { return { ...c, id: `lc-${Date.now()}` }; }
+  try { const r = await sb("/customers", { method: "POST", body: JSON.stringify(c) }); return r?.[0] || { ...c, id: `lc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
+  catch { return { ...c, id: `lc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
 }
 async function createCar(car) {
-  try { const r = await sb("/customer_cars", { method: "POST", body: JSON.stringify(car) }); return r?.[0] || { ...car, id: `lcar-${Date.now()}` }; }
-  catch { return { ...car, id: `lcar-${Date.now()}` }; }
+  try { const r = await sb("/customer_cars", { method: "POST", body: JSON.stringify(car) }); return r?.[0] || { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
+  catch { return { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
 }
 async function fetchAddresses() {
   try { const d = await sb("/customer_addresses?select=*"); return d || []; }
   catch { return MOCK_ADDRESSES; }
 }
 async function createAddress(a) {
-  try { const r = await sb("/customer_addresses", { method: "POST", body: JSON.stringify(a) }); return r?.[0] || { ...a, id: `laddr-${Date.now()}` }; }
-  catch { return { ...a, id: `laddr-${Date.now()}` }; }
+  try { const r = await sb("/customer_addresses", { method: "POST", body: JSON.stringify(a) }); return r?.[0] || { ...a, id: `laddr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
+  catch { return { ...a, id: `laddr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
 }
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
@@ -499,6 +580,56 @@ function StyleTag() {
 function StatusPill({ status }) {
   const m = statusMeta(status);
   return <span className="status-pill" style={{ background: m.color + "18", color: m.color, border: `1px solid ${m.color}33` }}>{m.label}</span>;
+}
+
+// ─── ComboBox: autocomplete that suggests from a list but allows custom input ─
+function ComboBox({ value, onChange, options, placeholder, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const typed = q !== "" ? q : (value || "");
+  const filtered = (options || []).filter(o => o.toLowerCase().includes((q || "").toLowerCase())).slice(0, 60);
+  const exact = (options || []).some(o => o.toLowerCase() === (typed || "").toLowerCase());
+
+  const pick = (o) => { onChange(o); setQ(""); setOpen(false); };
+
+  return (
+    <div ref={ref} className="search-wrap">
+      <input
+        className="filter-input"
+        style={{ width: "100%" }}
+        placeholder={placeholder}
+        disabled={disabled}
+        value={open ? q : (value || "")}
+        onChange={(e) => { setQ(e.target.value); onChange(e.target.value); if (!open) setOpen(true); }}
+        onFocus={() => { setQ(value || ""); setOpen(true); }}
+      />
+      {open && !disabled && (
+        <div className="search-dropdown" style={{ maxHeight: 220 }}>
+          {filtered.length === 0 && (
+            <div className="search-item"><div className="search-item-sub">No matches — your text will be saved as-is.</div></div>
+          )}
+          {filtered.map(o => (
+            <div key={o} className="search-item" onClick={() => pick(o)}>
+              <div className="search-item-name" style={{ fontSize: 14 }}>{o}</div>
+            </div>
+          ))}
+          {typed && !exact && (
+            <div className="search-new" onClick={() => pick(typed)}>
+              + Use "{typed}" (custom)
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Customer Search Box ──────────────────────────────────────────────────────
@@ -748,7 +879,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onNewCustomer }) {
   const blank = {
     customer_name: "", customer_mobile: "", customer_id: null,
-    area: "", block: "", street: "", house: "", map_link: "",
+    area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "",
     car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
     service_type: "Tire Change & Balancing",
     items: [], centerlock: false, sales_match_confirmed: false,
@@ -765,6 +896,7 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
   const [selectedCar, setSelectedCar] = useState(null);
   const [selectedAddr, setSelectedAddr] = useState(null);
   const [addrMode, setAddrMode] = useState("pick"); // pick | new
+  const [carMode, setCarMode] = useState("pick"); // pick | new
   const [saving, setSaving] = useState(false);
 
   const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
@@ -783,17 +915,17 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
   const mobileMatches = mobileQ.length < 3 ? [] : customers.filter(c => (c.mobile || "").includes(mobileQ));
 
   const selectCustomer = (c) => {
-    setSelectedCustomer(c); setSelectedCar(null); setSelectedAddr(null); setAddrMode("pick"); setMobileQ("");
+    setSelectedCustomer(c); setSelectedCar(null); setSelectedAddr(null); setAddrMode("pick"); setCarMode("pick"); setMobileQ("");
     setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, area: c.area || p.area,
       car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null }));
   };
   const selectCar = (car) => {
-    setSelectedCar(car);
+    setSelectedCar(car); setCarMode("pick");
     setF(p => ({ ...p, car_id: car.id, car_brand: car.brand, car_model: car.model, car_year: car.year, car_plate: car.plate }));
   };
   const selectAddr = (a) => {
     setSelectedAddr(a); setAddrMode("pick");
-    setF(p => ({ ...p, area: a.area, block: a.block, street: a.street, house: a.house, map_link: a.map_link || "" }));
+    setF(p => ({ ...p, area: a.area, governorate: a.governorate || govFor(a.area), block: a.block, street: a.street, lane: a.lane || "", house: a.house, map_link: a.map_link || "" }));
   };
   const clearCustomer = () => {
     setSelectedCustomer(null); setSelectedCar(null);
@@ -870,8 +1002,16 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
               )}
             </div>
 
-            {/* Car picker (from customer's cars) */}
-            {selectedCustomer && customerCars.length > 0 && (
+            {/* Manual name/mobile when no customer selected */}
+            {!selectedCustomer && (
+              <>
+                <div className="form-field"><label>Name *</label><input value={f.customer_name} onChange={set("customer_name")} placeholder="Ahmad Al-Salem" /></div>
+                <div className="form-field"><label>Mobile *</label><input value={f.customer_mobile} onChange={set("customer_mobile")} placeholder="99001234" /></div>
+              </>
+            )}
+
+            {/* Vehicle picker (from customer's cars) */}
+            {selectedCustomer && customerCars.length > 0 && carMode === "pick" && (
               <div className="form-full">
                 <label style={miniLabel}>Vehicle</label>
                 <div className="car-picker">
@@ -885,21 +1025,21 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
                     </div>
                   ))}
                 </div>
+                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => { setCarMode("new"); setSelectedCar(null); setF(p => ({ ...p, car_id: null, car_brand: "", car_model: "", car_year: "", car_plate: "" })); }}>+ Use a new car</button>
               </div>
             )}
 
-            {/* Manual customer/vehicle fields when needed */}
-            {!selectedCustomer && (
+            {/* Manual vehicle fields (no saved cars, or adding new) */}
+            {(!selectedCustomer || customerCars.length === 0 || carMode === "new") && (
               <>
-                <div className="form-field"><label>Name *</label><input value={f.customer_name} onChange={set("customer_name")} placeholder="Ahmad Al-Salem" /></div>
-                <div className="form-field"><label>Mobile *</label><input value={f.customer_mobile} onChange={set("customer_mobile")} placeholder="99001234" /></div>
-              </>
-            )}
-            {(!selectedCustomer || !selectedCar) && (
-              <>
-                <div className="form-field"><label>Car Brand</label><input value={f.car_brand} onChange={set("car_brand")} placeholder="Toyota" /></div>
-                <div className="form-field"><label>Model</label><input value={f.car_model} onChange={set("car_model")} placeholder="Land Cruiser" /></div>
-                <div className="form-field"><label>Year</label><input value={f.car_year} onChange={set("car_year")} placeholder="2023" /></div>
+                {selectedCustomer && customerCars.length > 0 && carMode === "new" && (
+                  <div className="form-full" style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setCarMode("pick")}>← Back to saved cars</button>
+                  </div>
+                )}
+                <div className="form-field"><label>Car Brand</label><ComboBox value={f.car_brand} onChange={(v) => setF(p => ({ ...p, car_brand: v, car_model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
+                <div className="form-field"><label>Year</label><ComboBox value={f.car_year} onChange={(v) => setF(p => ({ ...p, car_year: v }))} options={carYears} placeholder="2023" /></div>
+                <div className="form-field"><label>Model</label><ComboBox value={f.car_model} onChange={(v) => setF(p => ({ ...p, car_model: v }))} options={modelsFor(f.car_brand)} placeholder="Land Cruiser" /></div>
                 <div className="form-field"><label>Plate</label><input value={f.car_plate} onChange={set("car_plate")} placeholder="Kuwait · 12345" /></div>
               </>
             )}
@@ -916,12 +1056,12 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
                       <div className={`car-option-radio ${selectedAddr?.id === a.id ? "selected" : ""}`} />
                       <div>
                         <div style={{ fontWeight: 600, fontSize: 14 }}>{a.label || "Address"} — {a.area}</div>
-                        <div style={{ fontSize: 12, color: "var(--muted)" }}>Block {a.block}, St {a.street}, {a.house}{a.map_link ? " · 📍" : ""}</div>
+                        <div style={{ fontSize: 12, color: "var(--muted)" }}>Block {a.block}, St {a.street}{a.lane ? ", Lane " + a.lane : ""}, {a.house}{a.map_link ? " · 📍" : ""}</div>
                       </div>
                     </div>
                   ))}
                 </div>
-                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => { setAddrMode("new"); setSelectedAddr(null); setF(p => ({ ...p, area: "", block: "", street: "", house: "", map_link: "" })); }}>+ Use a new address</button>
+                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => { setAddrMode("new"); setSelectedAddr(null); setF(p => ({ ...p, area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "" })); }}>+ Use a new address</button>
               </div>
             )}
             {/* Manual address fields (no saved addrs, or adding new) */}
@@ -932,9 +1072,11 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
                     <button className="btn btn-ghost btn-sm" onClick={() => setAddrMode("pick")}>← Back to saved addresses</button>
                   </div>
                 )}
-                <div className="form-field"><label>Area *</label><input value={f.area} onChange={set("area")} placeholder="Salmiya" /></div>
+                <div className="form-field"><label>Area *</label><ComboBox value={f.area} onChange={(v) => setF(p => ({ ...p, area: v, governorate: govFor(v) || p.governorate }))} options={KW_AREA_NAMES} placeholder="Salmiya" /></div>
+                <div className="form-field"><label>Governorate</label><input value={f.governorate || govFor(f.area)} readOnly placeholder="auto" style={{ background: "#F3F4F6", color: "var(--muted)" }} /></div>
                 <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
                 <div className="form-field"><label>Street</label><input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" /></div>
+                <div className="form-field"><label>Lane (Jadda)</label><input value={f.lane} onChange={set("lane")} placeholder="optional" /></div>
                 <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
                 <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
               </>
@@ -1026,15 +1168,16 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, onN
 function CarRowsEditor({ rows, setRows }) {
   const add = () => setRows(p => [...p, { _tmp: uid(), brand: "", model: "", year: "", plate: "" }]);
   const upd = (i, k, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, [k]: v } : r));
+  const updBrand = (i, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, brand: v, model: "" } : r));
   const del = (i) => setRows(p => p.filter((_, idx) => idx !== i));
   return (
     <div className="form-full">
       <label style={miniLabel}>Vehicles</label>
       {rows.map((r, i) => (
-        <div key={r._tmp || r.id || i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 70px 1fr 32px", gap: 6, marginBottom: 6 }}>
-          <input className="filter-input" placeholder="Brand" value={r.brand} onChange={e => upd(i, "brand", e.target.value)} />
-          <input className="filter-input" placeholder="Model" value={r.model} onChange={e => upd(i, "model", e.target.value)} />
-          <input className="filter-input" placeholder="Year" value={r.year} onChange={e => upd(i, "year", e.target.value)} />
+        <div key={r._tmp || r.id || i} style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr 1fr 32px", gap: 6, marginBottom: 6 }}>
+          <ComboBox value={r.brand} onChange={(v) => updBrand(i, v)} options={CAR_BRANDS} placeholder="Brand" />
+          <ComboBox value={r.year} onChange={(v) => upd(i, "year", v)} options={carYears} placeholder="Year" />
+          <ComboBox value={r.model} onChange={(v) => upd(i, "model", v)} options={modelsFor(r.brand)} placeholder="Model" />
           <input className="filter-input" placeholder="Plate" value={r.plate} onChange={e => upd(i, "plate", e.target.value)} />
           <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => del(i)}>✕</button>
         </div>
@@ -1045,8 +1188,9 @@ function CarRowsEditor({ rows, setRows }) {
 }
 
 function AddressRowsEditor({ rows, setRows }) {
-  const add = () => setRows(p => [...p, { _tmp: uid(), label: "Home", area: "", block: "", street: "", house: "", map_link: "" }]);
+  const add = () => setRows(p => [...p, { _tmp: uid(), label: "Home", area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "" }]);
   const upd = (i, k, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, [k]: v } : r));
+  const updArea = (i, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, area: v, governorate: govFor(v) || r.governorate } : r));
   const del = (i) => setRows(p => p.filter((_, idx) => idx !== i));
   return (
     <div className="form-full">
@@ -1057,10 +1201,14 @@ function AddressRowsEditor({ rows, setRows }) {
             <input className="filter-input" placeholder="Label (Home, Office…)" value={r.label} onChange={e => upd(i, "label", e.target.value)} style={{ width: 160 }} />
             <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => del(i)}>✕</button>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 1fr 70px", gap: 6, marginBottom: 6 }}>
-            <input className="filter-input" placeholder="Area" value={r.area} onChange={e => upd(i, "area", e.target.value)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 6 }}>
+            <ComboBox value={r.area} onChange={(v) => updArea(i, v)} options={KW_AREA_NAMES} placeholder="Area" />
+            <input className="filter-input" placeholder="Governorate (auto)" value={r.governorate || govFor(r.area)} readOnly style={{ background: "#F3F4F6", color: "var(--muted)" }} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "60px 1fr 70px 60px", gap: 6, marginBottom: 6 }}>
             <input className="filter-input" placeholder="Block" value={r.block} onChange={e => upd(i, "block", e.target.value)} />
             <input className="filter-input" placeholder="Street" value={r.street} onChange={e => upd(i, "street", e.target.value)} />
+            <input className="filter-input" placeholder="Lane" value={r.lane || ""} onChange={e => upd(i, "lane", e.target.value)} />
             <input className="filter-input" placeholder="House" value={r.house} onChange={e => upd(i, "house", e.target.value)} />
           </div>
           <input className="filter-input" style={{ width: "100%" }} placeholder="Google Map link" value={r.map_link} onChange={e => upd(i, "map_link", e.target.value)} />
@@ -1096,7 +1244,7 @@ function NewCustomerModal({ initialName, initialMobile, onClose, onCreated }) {
     const savedAddrs = [];
     for (const r of addrRows) {
       if (!r.area) continue;
-      const a = await createAddress({ label: r.label, area: r.area, block: r.block, street: r.street, house: r.house, map_link: r.map_link, customer_id: c.id, created_at: new Date().toISOString() });
+      const a = await createAddress({ label: r.label, area: r.area, governorate: r.governorate || govFor(r.area), block: r.block, street: r.street, lane: r.lane, house: r.house, map_link: r.map_link, customer_id: c.id, created_at: new Date().toISOString() });
       savedAddrs.push(a);
     }
     onCreated(c, savedCars, savedAddrs);
@@ -1170,7 +1318,7 @@ function JobDetail({ job, onBack, onUpdate, role }) {
         <div className="detail-grid">
           <div className="detail-field"><label>Time</label><p>{fmtDate(j.scheduled_at)} at {fmtTime(j.scheduled_at)}{j.duration ? ` · ${j.duration}h` : ""}</p></div>
           <div className="detail-field"><label>Truck / Tech</label><p>{j.assigned_truck} · {j.assigned_technician || "—"}</p></div>
-          <div className="detail-field"><label>Location</label><p>{j.area}, Block {j.block}, St {j.street}, {j.house}</p></div>
+          <div className="detail-field"><label>Location</label><p>{j.area}{(j.governorate || govFor(j.area)) ? " (" + (j.governorate || govFor(j.area)) + ")" : ""}, Block {j.block}, St {j.street}{j.lane ? ", Lane " + j.lane : ""}, {j.house}</p></div>
           <div className="detail-field"><label>Map</label><p>{j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer">Open Maps ↗</a> : "—"}</p></div>
           <div className="detail-field"><label>Mobile</label><p><a href={`tel:${j.customer_mobile}`}>{j.customer_mobile}</a></p></div>
           <div className="detail-field"><label>Lead From</label><p>{j.lead_from}</p></div>
@@ -1442,7 +1590,7 @@ function TechJobCard({ job, index, onUpdate }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 14 }}>
         <p><strong>{j.customer_name}</strong> · <a href={`tel:${j.customer_mobile}`} style={{ color: "var(--accent)" }}>{j.customer_mobile}</a></p>
         <p style={{ color: "var(--muted)" }}>⏰ {fmtTime(j.scheduled_at)}{j.duration ? ` · ${j.duration}h` : ""}</p>
-        <p>📍 {j.area}, Block {j.block}, St {j.street}, {j.house}</p>
+        <p>📍 {j.area}, Block {j.block}, St {j.street}{j.lane ? ", Lane " + j.lane : ""}, {j.house}</p>
         <p>🚗 {j.car_brand} {j.car_model} {j.car_year} · {j.car_plate || "—"}</p>
         {j.notes && <p style={{ color: "#B45309" }}>⚠ {j.notes}</p>}
       </div>
@@ -1601,7 +1749,7 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
             <div key={a.id} className="car-card">
               <div>
                 <div className="car-card-info">{a.label || "Address"} — {a.area}</div>
-                <div className="car-card-plate">Block {a.block}, St {a.street}, {a.house}{a.map_link ? " · 📍 map" : ""}</div>
+                <div className="car-card-plate">Block {a.block}, St {a.street}{a.lane ? ", Lane " + a.lane : ""}, {a.house}{a.map_link ? " · 📍 map" : ""}</div>
               </div>
             </div>
           ))}
@@ -1657,9 +1805,9 @@ function AddCarModal({ customer, onClose, onCreated }) {
         </div>
         <div className="modal-body">
           <div className="form-grid">
-            <div className="form-field"><label>Brand *</label><input value={f.brand} onChange={set("brand")} placeholder="Toyota" /></div>
-            <div className="form-field"><label>Model *</label><input value={f.model} onChange={set("model")} placeholder="Land Cruiser" /></div>
-            <div className="form-field"><label>Year</label><input value={f.year} onChange={set("year")} placeholder="2023" /></div>
+            <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
+            <div className="form-field"><label>Year</label><ComboBox value={f.year} onChange={(v) => setF(p => ({ ...p, year: v }))} options={carYears} placeholder="2023" /></div>
+            <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v }))} options={modelsFor(f.brand)} placeholder="Land Cruiser" /></div>
             <div className="form-field"><label>Plate</label><input value={f.plate} onChange={set("plate")} placeholder="Kuwait · 12345 · Private" /></div>
           </div>
         </div>
@@ -1675,13 +1823,13 @@ function AddCarModal({ customer, onClose, onCreated }) {
 // ─── Customers View ───────────────────────────────────────────────────────────
 // ─── Add Address Modal ────────────────────────────────────────────────────────
 function AddAddressModal({ customer, onClose, onCreated }) {
-  const [f, setF] = useState({ label: "Home", area: "", block: "", street: "", house: "", map_link: "" });
+  const [f, setF] = useState({ label: "Home", area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "" });
   const [saving, setSaving] = useState(false);
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   const save = async () => {
     if (!f.area) return;
     setSaving(true);
-    const a = await createAddress({ ...f, customer_id: customer.id, created_at: new Date().toISOString() });
+    const a = await createAddress({ ...f, governorate: f.governorate || govFor(f.area), customer_id: customer.id, created_at: new Date().toISOString() });
     onCreated(a);
     setSaving(false);
     onClose();
@@ -1696,9 +1844,11 @@ function AddAddressModal({ customer, onClose, onCreated }) {
         <div className="modal-body">
           <div className="form-grid">
             <div className="form-field form-full"><label>Label</label><input value={f.label} onChange={set("label")} placeholder="Home, Office…" /></div>
-            <div className="form-field"><label>Area *</label><input value={f.area} onChange={set("area")} placeholder="Salmiya" /></div>
+            <div className="form-field"><label>Area *</label><ComboBox value={f.area} onChange={(v) => setF(p => ({ ...p, area: v, governorate: govFor(v) || p.governorate }))} options={KW_AREA_NAMES} placeholder="Salmiya" /></div>
+            <div className="form-field"><label>Governorate</label><input value={f.governorate || govFor(f.area)} readOnly placeholder="auto" style={{ background: "#F3F4F6", color: "var(--muted)" }} /></div>
             <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
             <div className="form-field"><label>Street</label><input value={f.street} onChange={set("street")} placeholder="Al-Khaleej" /></div>
+            <div className="form-field"><label>Lane (Jadda)</label><input value={f.lane} onChange={set("lane")} placeholder="optional" /></div>
             <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
             <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
           </div>
