@@ -62,7 +62,97 @@ const SERVICE_TYPES = [
   "Tire Change & Balancing","Oil & Filter","Battery Change",
   "Brake Change","Programming","Mechanical Check","Wheel Repair","Rotation","Other",
 ];
+
+// ─── BNCHR+ Service Catalog (official price table — single source of truth) ────
+// kind "tire"  → uses tire formula (catalog search, qty 4 default, labor from tire table)
+// kind "other" → uses other-services formula (description, qty 1 default, labor from variant)
+// Each service defines its variant axes. Labor auto-fills from the selected variant.
+const SERVICE_CATALOG = {
+  "Tire Change & Balancing": {
+    kind: "tire",
+    variants: { mount: ["Normal", "Center-lock"] }, // labor from LABOR table by qty
+  },
+  "Tire Patch": {
+    kind: "other",
+    flatLabor: 10, // 10 KD
+  },
+  "Tire Rotation": {
+    kind: "other",
+    flatLabor: 20, // 20 KD
+  },
+  "Oil & Filter": {
+    kind: "other",
+    variants: { tier: ["Normal", "Premium"] },
+    labor: { Normal: 10, Premium: 15 },
+  },
+  "Battery Charge": {
+    kind: "other",
+    variants: { tier: ["Normal", "Complex"] },
+    labor: { Normal: 10, Complex: 15 },
+  },
+  "Brake Change": {
+    kind: "other",
+    variants: { tier: ["Normal", "Premium"], sides: ["One side", "Two sides"] },
+    labor: { "Normal|One side": 15, "Normal|Two sides": 25, "Premium|One side": 20, "Premium|Two sides": 35 },
+  },
+  "Disc Change": {
+    kind: "other",
+    variants: { tier: ["Normal", "Premium"], sides: ["One side", "Two sides"] },
+    labor: { "Normal|One side": 15, "Normal|Two sides": 25, "Premium|One side": 20, "Premium|Two sides": 35 },
+  },
+  "Disc Skimming": {
+    kind: "other",
+    variants: { sides: ["One side", "Two sides"] },
+    labor: { "One side": 10, "Two sides": 20 }, // 10 KD per side
+  },
+  "Major Service": {
+    kind: "other",
+    variants: { tier: ["Economy", "Normal", "Premium", "Top"] },
+    labor: { Economy: 40, Normal: 50, Premium: 60, Top: 80 },
+  },
+  "AC Gas Refill": {
+    kind: "other",
+    flatLabor: 20, // 20 KD
+  },
+  "Car Computer Check": {
+    kind: "other",
+    flatLabor: 20, // 20 KD
+  },
+};
+const SERVICE_NAMES = Object.keys(SERVICE_CATALOG);
+
+// Tire mount labor table (by qty; standard vs center-lock)
+const LABOR = {
+  standard: { 1: 15, 2: 15, 3: 20, 4: 20, 5: 25 },
+  centerlock: { 1: 25, 2: 25, 3: 40, 4: 40, 5: 40 },
+};
+function laborFor(qty, centerlock) {
+  const table = centerlock ? LABOR.centerlock : LABOR.standard;
+  const q = Number(qty) || 0;
+  return table[q] ?? table[4];
+}
+
+// Resolve labor for a service given its variant + qty (for tires).
+function catalogLabor(serviceName, variant, qty) {
+  const svc = SERVICE_CATALOG[serviceName];
+  if (!svc) return 0;
+  // Tire formula: labor from qty + mount type (Normal/Center-lock)
+  if (svc.kind === "tire") {
+    const centerlock = (variant && variant.mount) === "Center-lock";
+    return laborFor(qty != null ? qty : 4, centerlock);
+  }
+  if (svc.flatLabor != null) return svc.flatLabor;
+  if (svc.labor) {
+    const axes = Object.keys(svc.variants || {});
+    const key = axes.map(a => variant[a]).filter(Boolean).join("|");
+    if (svc.labor[key] != null) return svc.labor[key];
+  }
+  return 0;
+}
+
 const LEAD_SOURCES = ["WhatsApp", "Signal", "Shopify", "Instagram", "Other"];
+// Active sales agents (edit here to add/remove)
+const SALES_AGENTS = ["Alaa", "Hussain"];
 const ROLES = [
   { key: "sales", label: "Sales" },
   { key: "purchaser", label: "Purchaser" },
@@ -162,6 +252,13 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
 
 // ─── Truck selector pills ─────────────────────────────────────────────────────
 function TruckPills({ value, onChange }) {
+  // pick black/white text for best contrast on a given hex bg
+  const readableOn = (hex) => {
+    const h = hex.replace("#", "");
+    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    const L = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return L > 0.6 ? "#1A1A1A" : "#FFFFFF";
+  };
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
       {ACTIVE_TRUCKS.map(t => {
@@ -170,8 +267,16 @@ function TruckPills({ value, onChange }) {
         return (
           <button key={t} type="button" onClick={() => onChange(t)}
             className="btn btn-sm"
-            style={{ minWidth: 92, background: c.bg, color: c.text, border: `${active ? 2 : 1}px solid ${c.solid}`, boxShadow: active ? `inset 0 -3px 0 ${c.solid}` : "none", fontWeight: active ? 700 : 600 }}>
-            {t} <span style={{ fontSize: 10, opacity: .85, marginLeft: 4 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00","")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00","")}</span>
+            style={{
+              minWidth: 96,
+              background: active ? c.solid : c.bg,
+              color: active ? readableOn(c.solid) : c.text,
+              border: `2px solid ${c.solid}`,
+              boxShadow: active ? "0 2px 6px rgba(0,0,0,.18)" : "none",
+              transform: active ? "translateY(-1px)" : "none",
+              fontWeight: active ? 700 : 600,
+            }}>
+            {active ? "✓ " : ""}{t} <span style={{ fontSize: 10, opacity: active ? .9 : .85, marginLeft: 4 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00","")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00","")}</span>
           </button>
         );
       })}
@@ -310,16 +415,6 @@ const truckHours = (truck) => {
 
 // ─── Labor (mirror of Tire System — keep in sync via shared contract) ─────────
 // Standard wheels vs center-lock (Porsche GT3 etc., torque wrench).
-const LABOR = {
-  standard: { 1: 15, 2: 15, 3: 20, 4: 20, 5: 25 },
-  centerlock: { 1: 25, 2: 25, 3: 40, 4: 40 },
-};
-function laborFor(qty, centerlock) {
-  const table = centerlock ? LABOR.centerlock : LABOR.standard;
-  const q = Number(qty) || 0;
-  return table[q] ?? table[4];
-}
-
 // ─── Slot helpers ─────────────────────────────────────────────────────────────
 // A job occupies `duration` consecutive hours on its truck starting at start_hour.
 // Returns the set of hours a job covers.
@@ -592,7 +687,7 @@ const MOCK_JOBS = [
     ],
     assigned_truck: "T4", assigned_technician: "Omar", status: "booked", parts_released: true, techs_released: false,
     scheduled_at: new Date(Date.now() + 3600000 * 3).toISOString(), lead_from: "Signal", sales_agent: "Alaa",
-    xero_ref: "", payment_through: "Tabby", payment_status: "pending",
+    xero_ref: "", payment_through: "Tabby", payment_status: "pending", payment_link: "https://pay.bnchr.com/abc123",
     checks: [false, false, false, false], notes: "",
     created_at: new Date().toISOString(),
   },
@@ -1102,6 +1197,270 @@ function ItemsBuilder({ items, setItems }) {
   );
 }
 
+// ─── Discount helpers ─────────────────────────────────────────────────────────
+// A discount = { type: "pct"|"amt", value: number }. Applied to a base number.
+function applyDiscount(base, disc) {
+  const b = Number(base) || 0;
+  if (!disc || !disc.value) return b;
+  const v = Number(disc.value) || 0;
+  if (disc.type === "pct") return Math.max(0, b - (b * v) / 100);
+  return Math.max(0, b - v);
+}
+const blankDisc = () => ({ type: "pct", value: 0 });
+
+// One editable discount control (toggle %/amount + value), shows live result.
+function DiscountField({ base, disc, onChange, label }) {
+  const result = applyDiscount(base, disc);
+  const has = disc && Number(disc.value) > 0;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>{label} discount</label>
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+          <button type="button" onClick={() => onChange({ ...disc, type: "pct" })}
+            style={{ border: "none", padding: "4px 8px", fontSize: 11, cursor: "pointer", background: disc.type === "pct" ? "var(--accent)" : "var(--card)", color: disc.type === "pct" ? "#fff" : "var(--muted)" }}>%</button>
+          <button type="button" onClick={() => onChange({ ...disc, type: "amt" })}
+            style={{ border: "none", padding: "4px 8px", fontSize: 11, cursor: "pointer", background: disc.type === "amt" ? "var(--accent)" : "var(--card)", color: disc.type === "amt" ? "#fff" : "var(--muted)" }}>KD</button>
+        </div>
+        <input type="number" min={0} className="filter-input" style={{ width: 64 }} value={disc.value || ""}
+          placeholder="0" onChange={e => onChange({ ...disc, value: e.target.value })} />
+        {has && <span style={{ fontSize: 11, color: "var(--success)", fontWeight: 600, whiteSpace: "nowrap" }}>→ {result.toFixed(3)}</span>}
+      </div>
+    </div>
+  );
+}
+
+// Compute a single service block's totals.
+function serviceTotals(svc) {
+  const qty = Number(svc.qty) || (SERVICE_CATALOG[svc.service_type]?.kind === "tire" ? 4 : 1);
+  const grossPrice = (Number(svc.unit_price) || 0) * qty;
+  const netPrice = applyDiscount(grossPrice, svc.price_disc);
+  const grossLabor = Number(svc.labor) || 0;
+  const netLabor = applyDiscount(grossLabor, svc.labor_disc);
+  return { qty, grossPrice, netPrice, grossLabor, netLabor, total: netPrice + netLabor };
+}
+const orderTotal = (services) => (services || []).reduce((s, svc) => s + serviceTotals(svc).total, 0);
+
+// A fresh service block.
+const newService = (type = "Tire Change & Balancing") => {
+  const cat = SERVICE_CATALOG[type] || {};
+  const variant = {};
+  Object.entries(cat.variants || {}).forEach(([axis, opts]) => { variant[axis] = opts[0]; });
+  return {
+    id: uid(), service_type: type, kind: cat.kind || "other",
+    variant,
+    // tire fields
+    tire_id: null, brand: "", pattern: "", size: "", year: "", cost: 0, supplier: "",
+    // other fields
+    description: "",
+    qty: cat.kind === "tire" ? 4 : 1,
+    unit_price: 0,
+    price_disc: blankDisc(),
+    labor: catalogLabor(type, variant, cat.kind === "tire" ? 4 : 1),
+    labor_disc: blankDisc(),
+    car_id: null,
+    _open: true,
+  };
+};
+
+// ─── Service Builder: array of service blocks, each its own formula ───────────
+function ServiceBuilder({ services, setServices, customerCars }) {
+  const upd = (id, patch) => setServices(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
+  const remove = (id) => setServices(prev => prev.filter(s => s.id !== id));
+  const addBlock = () => setServices(prev => prev.map(s => ({ ...s, _open: false })).concat(newService()));
+
+  // when service type changes, reset variant + auto-labor + kind/qty
+  const changeType = (id, type) => {
+    const cat = SERVICE_CATALOG[type] || {};
+    const variant = {};
+    Object.entries(cat.variants || {}).forEach(([axis, opts]) => { variant[axis] = opts[0]; });
+    upd(id, {
+      service_type: type, kind: cat.kind || "other", variant,
+      qty: cat.kind === "tire" ? 4 : 1,
+      labor: catalogLabor(type, variant, cat.kind === "tire" ? 4 : 1),
+      // clear cross-formula fields
+      tire_id: null, brand: "", pattern: "", size: "", description: "",
+      unit_price: 0,
+    });
+  };
+  const changeVariant = (id, axis, value, svc) => {
+    const variant = { ...svc.variant, [axis]: value };
+    upd(id, { variant, labor: catalogLabor(svc.service_type, variant, svc.qty) });
+  };
+  const pickTire = (id, t, svc) => upd(id, {
+    tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
+    year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0, qty: 4,
+    labor: catalogLabor(svc.service_type, svc.variant, 4),
+  });
+
+  const carLabel = (cid) => {
+    const c = (customerCars || []).find(x => x.id === cid);
+    return c ? `${c.brand} ${c.model} ${c.year}` : null;
+  };
+
+  return (
+    <div className="form-full">
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {(services || []).length === 0 && (
+          <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>No services yet. Add one below.</div>
+        )}
+        {(services || []).map((svc, idx) => {
+          const cat = SERVICE_CATALOG[svc.service_type] || {};
+          const t = serviceTotals(svc);
+          const isTire = cat.kind === "tire";
+          if (!svc._open) {
+            // collapsed summary row
+            return (
+              <div key={svc.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", background: "var(--card)", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
+                onClick={() => upd(svc.id, { _open: true })}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>
+                    {idx + 1}. {svc.service_type}
+                    {Object.values(svc.variant || {}).filter(Boolean).length > 0 && <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}> · {Object.values(svc.variant).join(" / ")}</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+                    {isTire ? `${svc.brand} ${svc.pattern} · ${svc.qty}×` : (svc.description ? svc.description.slice(0, 40) + (svc.description.length > 40 ? "…" : "") : "No description")}
+                    {carLabel(svc.car_id) ? ` · ${carLabel(svc.car_id)}` : ""}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {t.total.toFixed(3)}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>tap to edit</div>
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div key={svc.id} style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: "14px", background: isTire ? "#FEFBF3" : "var(--bg)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <strong style={{ fontFamily: "var(--font-head)" }}>Service {idx + 1}</strong>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {(services.length > 1) && <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { _open: false })}>Done</button>}
+                  <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => remove(svc.id)}>✕</button>
+                </div>
+              </div>
+
+              {/* Service type */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
+                <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Service type</label>
+                <select className="filter-input" value={svc.service_type} onChange={e => changeType(svc.id, e.target.value)}>
+                  {SERVICE_NAMES.map(n => <option key={n}>{n}</option>)}
+                </select>
+              </div>
+
+              {/* Variants */}
+              {Object.entries(cat.variants || {}).length > 0 && (
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                  {Object.entries(cat.variants).map(([axis, opts]) => (
+                    <div key={axis} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>{axis === "mount" ? "Type" : axis === "tier" ? "Car tier" : axis}</label>
+                      <select className="filter-input" value={svc.variant[axis] || ""} onChange={e => changeVariant(svc.id, axis, e.target.value, svc)}>
+                        {opts.map(o => <option key={o}>{o}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Formula 1: tire */}
+              {isTire ? (
+                <div style={{ marginBottom: 10 }}>
+                  {svc.tire_id ? (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px" }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>🔗 {svc.brand} {svc.pattern}</div>
+                        <div style={{ fontSize: 12, color: "var(--muted)" }}>{svc.size}{svc.year ? " · " + svc.year : ""}</div>
+                      </div>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { tire_id: null, brand: "", pattern: "", size: "" })}>Change</button>
+                    </div>
+                  ) : (
+                    <div>
+                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Search tire</label>
+                      <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc)} />
+                    </div>
+                  )}
+                </div>
+              ) : (
+                // Formula 2: other — description
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
+                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Description (parts details — optional)</label>
+                  <textarea className="filter-input" style={{ minHeight: 54, resize: "vertical" }} value={svc.description}
+                    placeholder="e.g. TOTAL OIL 20W50 - 5L [5,000 KM] 8 KD · OIL FILTER GENUINE 2 KD"
+                    onChange={e => upd(svc.id, { description: e.target.value })} />
+                </div>
+              )}
+
+              {/* Qty + unit price + price discount */}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Qty</label>
+                  <input type="number" min={1} className="filter-input" style={{ width: 60 }} value={svc.qty} onChange={e => { const q = e.target.value; upd(svc.id, isTire ? { qty: q, labor: catalogLabor(svc.service_type, svc.variant, q) } : { qty: q }); }} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>{isTire ? "Price/tire" : "Price"} (KD)</label>
+                  <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
+                </div>
+                <DiscountField base={t.grossPrice} disc={svc.price_disc} onChange={(d) => upd(svc.id, { price_disc: d })} label="Price" />
+                <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                  <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>Parts subtotal</div>
+                  <div style={{ fontWeight: 700 }}>KWD {t.netPrice.toFixed(3)}</div>
+                </div>
+              </div>
+
+              {/* Labor (auto-filled) + labor discount */}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Labor (KD) · auto</label>
+                  <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.labor} onChange={e => upd(svc.id, { labor: e.target.value })} />
+                </div>
+                <DiscountField base={t.grossLabor} disc={svc.labor_disc} onChange={(d) => upd(svc.id, { labor_disc: d })} label="Labor" />
+                <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                  <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>Labor subtotal</div>
+                  <div style={{ fontWeight: 700 }}>KWD {t.netLabor.toFixed(3)}</div>
+                </div>
+              </div>
+
+              {/* Link car */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
+                <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Link to car</label>
+                <select className="filter-input" value={svc.new_car ? "__new__" : (svc.car_id || "")}
+                  onChange={e => {
+                    if (e.target.value === "__new__") upd(svc.id, { car_id: null, new_car: { brand: "", model: "", year: "", plate: "" } });
+                    else upd(svc.id, { car_id: e.target.value || null, new_car: null });
+                  }}>
+                  <option value="">— select car —</option>
+                  {(customerCars || []).map(c => <option key={c.id} value={c.id}>{c.brand} {c.model} {c.year} {c.plate ? `· ${c.plate}` : ""}</option>)}
+                  <option value="__new__">+ Link a new car…</option>
+                </select>
+                {svc.new_car && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6, padding: 8, border: "1px dashed var(--border)", borderRadius: 8 }}>
+                    <ComboBox value={svc.new_car.brand} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, brand: v, model: "" } })} options={CAR_BRANDS} placeholder="Brand" />
+                    <ComboBox value={svc.new_car.model} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, model: v } })} options={modelsFor(svc.new_car.brand)} placeholder="Model" />
+                    <ComboBox value={svc.new_car.year} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, year: v } })} options={carYears} placeholder="Year" />
+                    <input className="filter-input" value={svc.new_car.plate} onChange={e => upd(svc.id, { new_car: { ...svc.new_car, plate: e.target.value } })} placeholder="Plate" />
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                <span style={{ fontSize: 12, color: "var(--muted)", marginRight: 10 }}>Service total</span>
+                <span style={{ fontFamily: "var(--font-head)", fontSize: 16, fontWeight: 700, color: "var(--accent)" }}>KWD {t.total.toFixed(3)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={addBlock}>+ Add another service</button>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12, paddingTop: 12, borderTop: "2px solid var(--border)" }}>
+        <span style={{ fontSize: 13, color: "var(--muted)", marginRight: 10 }}>Order Total</span>
+        <span style={{ fontFamily: "var(--font-head)", fontSize: 20, fontWeight: 700, color: "var(--accent)" }}>KWD {orderTotal(services).toFixed(3)}</span>
+      </div>
+    </div>
+  );
+}
+
 // ─── Truck Slot Grid ──────────────────────────────────────────────────────────
 // One day, all active trucks as columns, 1h rows. Click a free slot to select a
 // start; the job spans `duration` consecutive hours. Shows booked slots.
@@ -1185,17 +1544,16 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, prefill, onNewCustomer }) {
+function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, prefill, onNewCustomer, onCarCreated }) {
   const blank = {
     customer_name: "", customer_mobile: "", customer_id: null,
     area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "",
     car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
-    service_type: "Tire Change & Balancing",
-    items: [], centerlock: false, sales_match_confirmed: false,
+    services: [newService()], sales_match_confirmed: false,
     assigned_truck: prefill?.truck || "T1", start_hour: prefill?.hour ?? null, duration: 1,
     scheduled_date: prefill?.date || today(),
     lead_from: "WhatsApp", sales_agent: "",
-    xero_ref: "", payment_through: "Link", payment_status: "pending", notes: "",
+    xero_ref: "", invoice_no: "", payment_through: "Link", payment_status: "pending", payment_link: "", notes: "",
     status: "draft",
     checks: [false, false, false, false],
   };
@@ -1210,13 +1568,13 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
   const [saving, setSaving] = useState(false);
 
   const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
-  const setItems = (updater) => setF(p => ({ ...p, items: typeof updater === "function" ? updater(p.items) : updater }));
+  const setServices = (updater) => setF(p => ({ ...p, services: typeof updater === "function" ? updater(p.services) : updater }));
 
-  // tire qty across items (for labor)
-  const tireQty = f.items.filter(it => it.kind === "tire").reduce((s, it) => s + (Number(it.qty) || 0), 0);
-  const laborCharge = f.service_type.includes("Tire") && tireQty > 0 ? laborFor(tireQty, f.centerlock) : 0;
-  const itemsSum = itemsTotal(f.items);
-  const grandTotal = itemsSum + laborCharge;
+  // customer's cars for per-service linking
+  const formCustomerCars = selectedCustomer ? cars.filter(c => c.customer_id === selectedCustomer.id) : [];
+
+  const grandTotal = orderTotal(f.services);
+
 
   const customerCars = selectedCustomer ? cars.filter(c => c.customer_id === selectedCustomer.id) : [];
   const customerAddrs = selectedCustomer ? (addresses || []).filter(a => a.customer_id === selectedCustomer.id) : [];
@@ -1243,28 +1601,62 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
   };
   const pickSlot = (truck, hour) => setF(p => ({ ...p, assigned_truck: truck, start_hour: hour }));
 
-  const canSubmit = f.customer_name && f.customer_mobile && f.area && f.items.length > 0
+  const canSubmit = f.customer_name && f.customer_mobile && f.area && (f.services || []).length > 0
+    && f.services.every(s => s.kind === "tire" ? s.tire_id : (s.unit_price || s.labor))
     && f.sales_match_confirmed && f.start_hour != null;
 
   const save = async () => {
     if (!canSubmit) return;
     setSaving(true);
+    // Create any inline new cars first, link their ids back to the service blocks
+    let services = f.services;
+    if (selectedCustomer) {
+      const withCars = [];
+      for (const s of services) {
+        if (s.new_car && (s.new_car.brand || s.new_car.model)) {
+          const car = await createCar({ ...s.new_car, customer_id: selectedCustomer.id, created_at: new Date().toISOString() });
+          if (onCarCreated) onCarCreated(car);
+          withCars.push({ ...s, car_id: car.id, new_car: null });
+        } else {
+          withCars.push(s);
+        }
+      }
+      services = withCars;
+    }
     const scheduledAt = new Date(`${f.scheduled_date}T${String(f.start_hour).padStart(2, "0")}:00:00`);
+    const totalLabor = services.reduce((s, svc) => s + serviceTotals(svc).netLabor, 0);
+    // headline service summary (e.g. "Tire Change & Balancing + Oil & Filter")
+    const headline = [...new Set(services.map(s => s.service_type))].join(" + ");
+    const details = services.map(s => s.kind === "tire"
+      ? `${s.size} ${s.brand}${s.pattern ? " " + s.pattern : ""} ×${s.qty}`
+      : `${s.service_type}${s.description ? ": " + s.description : ""}`).filter(Boolean).join(" · ");
+    // keep a flat items[] for downstream views (distributor/technician per-item checks)
+    const items = services.map(s => ({
+      id: s.id, kind: s.kind, tire_id: s.tire_id,
+      brand: s.brand, pattern: s.pattern, size: s.size,
+      name: s.kind === "tire" ? `${s.brand} ${s.pattern}` : s.service_type,
+      description: s.description, qty: s.qty, unit_price: s.unit_price,
+      cost: s.cost, supplier: s.supplier, car_id: s.car_id,
+      service_type: s.service_type, variant: s.variant,
+    }));
     const job = {
       ...f,
-      labor_charge: laborCharge,
+      services,
+      service_type: headline,
+      items,
+      labor_charge: totalLabor,
       total: grandTotal,
-      qty: f.items.reduce((s, it) => s + (Number(it.qty) || 0), 0),
-      service_details: f.items.map(it => it.kind === "tire" ? `${it.size} ${it.brand}${it.pattern ? " " + it.pattern : ""}` : it.name).filter(Boolean).join(" + "),
+      qty: services.reduce((s, svc) => s + (Number(svc.qty) || 0), 0),
+      service_details: details,
       scheduled_at: scheduledAt.toISOString(),
       created_at: new Date().toISOString(),
-      parts_status: "pending",   // pending | collected | delivered
-      truck_status: "scheduled", // scheduled | arrived | processing | completed
-      parts_released: false,     // independent: distributor sees it
-      techs_released: false,     // independent: technicians see it
-      tech_arrival_match: false, // track team arrival verification (#3)
-      item_checks: {},           // distributor per-item confirmations
-      tech_checks: {},           // technician per-item confirmations
+      parts_status: "pending",
+      truck_status: "scheduled",
+      parts_released: false,
+      techs_released: false,
+      tech_arrival_match: false,
+      item_checks: {},
+      tech_checks: {},
     };
     const created = await createJob(job);
     onCreated(created);
@@ -1323,40 +1715,6 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
               </>
             )}
 
-            {/* Vehicle picker (from customer's cars) */}
-            {selectedCustomer && customerCars.length > 0 && carMode === "pick" && (
-              <div className="form-full">
-                <label style={miniLabel}>Vehicle</label>
-                <div className="car-picker">
-                  {customerCars.map(car => (
-                    <div key={car.id} className={`car-option ${selectedCar?.id === car.id ? "selected" : ""}`} onClick={() => selectCar(car)}>
-                      <div className={`car-option-radio ${selectedCar?.id === car.id ? "selected" : ""}`} />
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 14 }}>{car.brand} {car.model} {car.year}</div>
-                        <div style={{ fontSize: 12, color: "var(--muted)" }}>{car.plate}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => { setCarMode("new"); setSelectedCar(null); setF(p => ({ ...p, car_id: null, car_brand: "", car_model: "", car_year: "", car_plate: "" })); }}>+ Use a new car</button>
-              </div>
-            )}
-
-            {/* Manual vehicle fields (no saved cars, or adding new) */}
-            {(!selectedCustomer || customerCars.length === 0 || carMode === "new") && (
-              <>
-                {selectedCustomer && customerCars.length > 0 && carMode === "new" && (
-                  <div className="form-full" style={{ display: "flex", justifyContent: "flex-end" }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setCarMode("pick")}>← Back to saved cars</button>
-                  </div>
-                )}
-                <div className="form-field"><label>Car Brand</label><ComboBox value={f.car_brand} onChange={(v) => setF(p => ({ ...p, car_brand: v, car_model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
-                <div className="form-field"><label>Year</label><ComboBox value={f.car_year} onChange={(v) => setF(p => ({ ...p, car_year: v }))} options={carYears} placeholder="2023" /></div>
-                <div className="form-field"><label>Model</label><ComboBox value={f.car_model} onChange={(v) => setF(p => ({ ...p, car_model: v }))} options={modelsFor(f.car_brand)} placeholder="Land Cruiser" /></div>
-                <div className="form-field"><label>Plate</label><input value={f.car_plate} onChange={set("car_plate")} placeholder="Kuwait · 12345" /></div>
-              </>
-            )}
-
             {/* Address */}
             <div className="form-section-title">Location</div>
             {/* Saved address picker (when customer has addresses) */}
@@ -1395,38 +1753,9 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
               </>
             )}
 
-            {/* 2 — Service + items + labor */}
-            <div className="form-section-title">2 · Service & Items</div>
-            <div className="form-field">
-              <label>Service Type</label>
-              <select value={f.service_type} onChange={set("service_type")}>
-                {SERVICE_TYPES.map(s => <option key={s}>{s}</option>)}
-              </select>
-            </div>
-            {f.service_type.includes("Tire") && (
-              <div className="form-field">
-                <label>Wheel Type (labor)</label>
-                <select value={f.centerlock ? "cl" : "std"} onChange={e => setF(p => ({ ...p, centerlock: e.target.value === "cl" }))}>
-                  <option value="std">Standard</option>
-                  <option value="cl">Center-lock (Porsche GT3…)</option>
-                </select>
-              </div>
-            )}
-            <ItemsBuilder items={f.items} setItems={setItems} />
-
-            {/* Labor line + grand total */}
-            {laborCharge > 0 && (
-              <div className="form-full" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#FFF7E8", border: "1px solid #FDE6B0", borderRadius: 8, padding: "8px 12px" }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "#92400E" }}>
-                  Labor — {f.centerlock ? "center-lock" : "standard"} · {tireQty} tire{tireQty !== 1 ? "s" : ""}
-                </span>
-                <span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {laborCharge.toFixed(3)}</span>
-              </div>
-            )}
-            <div className="form-full" style={{ display: "flex", justifyContent: "flex-end", gap: 12, alignItems: "baseline" }}>
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>Items {itemsSum.toFixed(3)} {laborCharge > 0 ? `+ Labor ${laborCharge.toFixed(3)}` : ""}</span>
-              <span style={{ fontFamily: "var(--font-head)", fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>Total KWD {grandTotal.toFixed(3)}</span>
-            </div>
+            {/* 2 — Services (each its own formula) */}
+            <div className="form-section-title">2 · Services</div>
+            <ServiceBuilder services={f.services} setServices={setServices} customerCars={formCustomerCars} />
 
             {/* Sales match confirmation gate */}
             <label className="form-full" style={{ display: "flex", gap: 10, alignItems: "flex-start", background: f.sales_match_confirmed ? "#F0FDF4" : "var(--bg)", border: `1px solid ${f.sales_match_confirmed ? "var(--success)" : "var(--border)"}`, borderRadius: 8, padding: "10px 12px", cursor: "pointer" }}>
@@ -1476,8 +1805,15 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
             <div className="form-section-title">4 · Admin</div>
             <div className="form-field"><label>Lead From</label><select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select></div>
             <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Warranty","Cash","KNET"].map(s => <option key={s}>{s}</option>)}</select></div>
-            <div className="form-field"><label>Sales Agent</label><input value={f.sales_agent} onChange={set("sales_agent")} placeholder="Hussain" /></div>
+            <div className="form-field"><label>Sales Agent</label>
+              <select value={f.sales_agent} onChange={set("sales_agent")}>
+                <option value="">Select agent…</option>
+                {SALES_AGENTS.map(a => <option key={a}>{a}</option>)}
+              </select>
+            </div>
             <div className="form-field"><label>Xero PO Ref</label><input value={f.xero_ref} onChange={set("xero_ref")} placeholder="PO-2026-0041" /></div>
+            <div className="form-field"><label>Invoice No</label><input value={f.invoice_no} onChange={set("invoice_no")} placeholder="INV-… (optional)" /></div>
+            <div className="form-field form-full"><label>Payment Link</label><input value={f.payment_link} onChange={set("payment_link")} placeholder="https://… (paste link to share with customer)" /></div>
             <div className="form-field form-full"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="Gate code, special instructions…" /></div>
           </div>
         </div>
@@ -1656,8 +1992,14 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
                 {j.items.map(it => (
                   <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px" }}>
                     <div>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>{it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${it.size}` : it.name}</div>
-                      <div style={{ fontSize: 12, color: "var(--muted)" }}>{it.qty} × KWD {Number(it.unit_price).toFixed(3)}{it.kind === "tire" && it.tire_id ? ` · catalog id ${String(it.tire_id).slice(0, 8)}…` : ""}</div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>
+                        {it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${it.size}` : (it.service_type || it.name)}
+                        {it.variant && Object.values(it.variant).filter(Boolean).length > 0 && <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}> · {Object.values(it.variant).join(" / ")}</span>}
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                        {it.qty} × KWD {Number(it.unit_price).toFixed(3)}
+                        {it.kind !== "tire" && it.description ? ` · ${it.description}` : ""}
+                      </div>
                     </div>
                     <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</div>
                   </div>
@@ -1668,6 +2010,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
           {j.notes && <div className="detail-field" style={{ gridColumn: "1/-1" }}><label>Notes</label><p style={{ color: "#B45309", fontWeight: 500 }}>⚠ {j.notes}</p></div>}
           <div className="detail-field"><label>Payment</label><p>{j.payment_through} · <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span></p></div>
           <div className="detail-field"><label>Xero PO Ref</label><p>{j.xero_ref || "—"}</p></div>
+          <div className="detail-field"><label>Invoice No</label><p>{j.invoice_no || "—"}</p></div>
           <div className="detail-field"><label>Parts</label><p>{j.parts_status || "pending"}</p></div>
           <div className="detail-field"><label>Truck Status</label><p>{j.truck_status || "scheduled"}</p></div>
         </div>
@@ -1679,6 +2022,14 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
           <div className="card-header"><h3>Order Actions</h3></div>
           <div className="card-body">
             <OrderActions job={j} onAction={(patch) => patchJob(patch)} />
+            <div style={{ marginTop: 12 }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 }}>Payment Link</label>
+              <PaymentLinkEditor value={j.payment_link} onSave={(link) => patchJob({ payment_link: link })} />
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 }}>Accounting</label>
+              <AccountingEditor xeroRef={j.xero_ref} invoiceNo={j.invoice_no} onSave={(patch) => patchJob(patch)} />
+            </div>
             <div style={{ marginTop: 10, fontSize: 12, color: "var(--muted)" }}>
               Payment: <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span> · Distributor: {j.parts_released ? "released" : "not yet"} · Technicians: {j.techs_released ? "released" : "not yet"} · Parts: {j.parts_status || "pending"} · Truck: {j.truck_status || "scheduled"}
             </div>
@@ -1712,6 +2063,51 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
 }
 
 // ─── Schedule View ────────────────────────────────────────────────────────────
+// ─── Accounting editor: Xero PO Ref + Invoice No, editable after submission ────
+function AccountingEditor({ xeroRef, invoiceNo, onSave }) {
+  const [xero, setXero] = useState(xeroRef || "");
+  const [inv, setInv] = useState(invoiceNo || "");
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { setXero(xeroRef || ""); setInv(invoiceNo || ""); }, [xeroRef, invoiceNo]);
+  const dirty = xero !== (xeroRef || "") || inv !== (invoiceNo || "");
+  const save = () => { onSave({ xero_ref: xero, invoice_no: inv }); setSaved(true); setTimeout(() => setSaved(false), 1500); };
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+      <div style={{ flex: 1, minWidth: 140 }}>
+        <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Xero PO Ref</label>
+        <input className="filter-input" style={{ width: "100%" }} value={xero} placeholder="PO-2026-0041" onChange={e => setXero(e.target.value)} />
+      </div>
+      <div style={{ flex: 1, minWidth: 140 }}>
+        <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Invoice No</label>
+        <input className="filter-input" style={{ width: "100%" }} value={inv} placeholder="INV-…" onChange={e => setInv(e.target.value)} />
+      </div>
+      <button className="btn btn-ghost btn-sm" disabled={!dirty} onClick={save}>{saved ? "✓ Saved" : "Save"}</button>
+    </div>
+  );
+}
+
+// ─── Payment Link editor: paste + copy, used in detail and row ────────────────
+function PaymentLinkEditor({ value, onSave, compact }) {
+  const [link, setLink] = useState(value || "");
+  const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { setLink(value || ""); }, [value]);
+  const copy = async () => {
+    if (!link) return;
+    try { await navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+  };
+  const save = () => { onSave(link); setSaved(true); setTimeout(() => setSaved(false), 1500); };
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <input className="filter-input" style={{ flex: 1, minWidth: 160 }} value={link}
+        placeholder="Paste payment link…" onChange={e => setLink(e.target.value)}
+        onClick={e => e.stopPropagation()} />
+      <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); save(); }}>{saved ? "✓ Saved" : "Save"}</button>
+      <button className="btn btn-ghost btn-sm" disabled={!link} onClick={(e) => { e.stopPropagation(); copy(); }}>{copied ? "✓ Copied" : "Copy"}</button>
+    </div>
+  );
+}
+
 // ─── Order Actions: status buttons reused on list rows + job detail ───────────
 // No payment gate (per ops decision) — all actions available any time.
 // Payment status stays visible so it's never hidden, just not enforced.
@@ -1841,6 +2237,9 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
             {(role === "sales" || role === "purchaser") && (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
                 <OrderActions job={job} compact onAction={(patch) => onAction(job, patch)} />
+                <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
+                  <PaymentLinkEditor value={job.payment_link} onSave={(link) => onAction(job, { payment_link: link })} compact />
+                </div>
               </div>
             )}
           </div>
@@ -2093,6 +2492,18 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
   const customerJobs = jobs.filter(j => j.customer_id === customer.id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
   const totalSpent = customerJobs.reduce((s, j) => s + Number(j.total || 0), 0);
 
+  // History filters
+  const [histCar, setHistCar] = useState("all");
+  const [histService, setHistService] = useState("all");
+  const serviceOptions = [...new Set(customerJobs.map(j => j.service_type).filter(Boolean))];
+  const filteredJobs = customerJobs.filter(j => {
+    if (histCar !== "all" && j.car_id !== histCar) return false;
+    if (histService !== "all" && j.service_type !== histService) return false;
+    return true;
+  });
+  const filteredTotal = filteredJobs.reduce((s, j) => s + Number(j.total || 0), 0);
+  const histFiltered = histCar !== "all" || histService !== "all";
+
   return (
     <div className="job-detail">
       <button className="detail-back" onClick={onBack}>← Back to Customers</button>
@@ -2149,10 +2560,28 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
       </div>
 
       <div className="card">
-        <div className="card-header"><h3>Service History</h3></div>
+        <div className="card-header" style={{ flexWrap: "wrap", gap: 8 }}>
+          <h3>Service History</h3>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <select className="filter-select" value={histCar} onChange={e => setHistCar(e.target.value)}>
+              <option value="all">All vehicles</option>
+              {customerCars.map(c => <option key={c.id} value={c.id}>{c.brand} {c.model} {c.year}</option>)}
+            </select>
+            <select className="filter-select" value={histService} onChange={e => setHistService(e.target.value)}>
+              <option value="all">All services</option>
+              {serviceOptions.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        </div>
         <div className="card-body">
-          {customerJobs.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>No jobs yet.</div>}
-          {customerJobs.map(job => (
+          {histFiltered && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 13 }}>
+              <span style={{ color: "var(--muted)" }}>{filteredJobs.length} job{filteredJobs.length !== 1 ? "s" : ""} match</span>
+              <span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {filteredTotal.toFixed(3)}</span>
+            </div>
+          )}
+          {filteredJobs.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>{customerJobs.length === 0 ? "No jobs yet." : "No jobs match these filters."}</div>}
+          {filteredJobs.map(job => (
             <div key={job.id} className="history-job-card" onClick={() => onSelectJob(job)} style={{ marginBottom: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div>
@@ -2521,6 +2950,7 @@ export default function App() {
           onClose={() => { setShowNew(false); setPrefillSlot(null); }}
           onCreated={j => setJobs(prev => [j, ...prev])}
           onNewCustomer={handleNewCustomer}
+          onCarCreated={handleCarCreated}
         />
       )}
 
