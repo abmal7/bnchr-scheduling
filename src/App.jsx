@@ -189,11 +189,11 @@ const slotCellBase = { border: "1px solid var(--border)", padding: "8px 6px", te
 // ─── Truck Day View: single-column timeline for ONE truck on a date ───────────
 // Pick truck + date → see that truck's working hours, booked slots filled,
 // free slots tappable. A job spans `duration` consecutive hours from the start.
-function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, excludeId, onJobClick }) {
+function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, excludeId, onJobClick, overtime }) {
   if (!truck || !TRUCK_CONFIG[truck]) {
     return <div style={{ fontSize: 13, color: "var(--muted)", padding: "12px 0" }}>Select a truck to see its schedule.</div>;
   }
-  const hours = truckHours(truck);
+  const hours = overtime ? truckHoursWithOT(truck) : truckHours(truck);
 
   const canFit = (hour) => {
     for (let h = hour; h < hour + duration; h++) {
@@ -204,7 +204,6 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
   };
   const inSelection = (hour) => selectedHour != null && hour >= selectedHour && hour < selectedHour + duration;
 
-  // which job occupies a given hour (for showing customer on booked slots)
   const jobAt = (hour) => jobs.find(j => {
     if (j.id === excludeId) return false;
     if (j.assigned_truck !== truck) return false;
@@ -212,6 +211,9 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
     if (d !== dateStr) return false;
     return jobHours(j).includes(hour);
   });
+
+  const c = TRUCK_CONFIG[truck];
+  let dividerDrawn = { early: false, late: false };
 
   return (
     <div>
@@ -224,6 +226,12 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         {hours.map(hour => {
+          const ot = isOTHour(truck, hour);
+          // Divider labels before the first early-OT row and before the first late-OT row
+          let dividerLabel = null;
+          if (ot && hour < c.start && !dividerDrawn.early) { dividerDrawn.early = true; dividerLabel = "⏱ Overtime — early"; }
+          if (ot && hour >= c.end && !dividerDrawn.late) { dividerDrawn.late = true; dividerLabel = "⏱ Overtime — late"; }
+
           const taken = slotTaken(jobs, truck, dateStr, hour, excludeId);
           const sel = inSelection(hour);
           const fits = canFit(hour);
@@ -232,19 +240,25 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
           let right = "Free";
           if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = onJobClick ? "pointer" : "not-allowed"; border = "1px solid #FCA5A5"; right = occ ? slotLabel(occ, " · ") : "Booked"; }
           else if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; right = "Selected"; }
-          else if (!fits) { bg = "#FEF9EE"; color = "#92400E"; cursor = "not-allowed"; right = "—"; }
+          else if (!fits) { bg = ot ? "#FFFBEB" : "#FEF9EE"; color = "#92400E"; cursor = "not-allowed"; right = "—"; }
+          else if (ot) { bg = "#FEF3C7"; color = "#92400E"; border = "1px dashed #F59E0B"; right = "OT · Free"; }
           return (
-            <div key={hour}
-              onClick={() => { if (taken) { if (occ && onJobClick) onJobClick(occ); } else if (fits) onPick(truck, hour); }}
-              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 8, background: bg, color, cursor, border, fontSize: 13, fontWeight: sel ? 700 : 500 }}>
-              <span style={{ fontWeight: 600 }}>{hourLabel(hour)}</span>
-              <span style={{ fontSize: 12 }}>{right}</span>
+            <div key={hour}>
+              {dividerLabel && (
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#B45309", textTransform: "uppercase", letterSpacing: ".5px", margin: "6px 0 2px" }}>{dividerLabel}</div>
+              )}
+              <div
+                onClick={() => { if (taken) { if (occ && onJobClick) onJobClick(occ); } else if (fits) onPick(truck, hour); }}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 8, background: bg, color, cursor, border, fontSize: 13, fontWeight: sel ? 700 : 500 }}>
+                <span style={{ fontWeight: 600 }}>{hourLabel(hour)} {ot && <span style={{ fontSize: 9, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 4, marginLeft: 4 }}>OT</span>}</span>
+                <span style={{ fontSize: 12 }}>{right}</span>
+              </div>
             </div>
           );
         })}
       </div>
       <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
-        Tap a green slot to start a {duration}h job. Red = booked, faded = not enough consecutive free hours.
+        Tap a green slot to start a {duration}h job. {overtime ? "Amber = overtime hours (outside normal). " : ""}Red = booked, faded = not enough consecutive free hours.
       </div>
     </div>
   );
@@ -290,6 +304,7 @@ function RescheduleModal({ job, jobs, onClose, onSaved }) {
   const [dateStr, setDateStr] = useState(job.scheduled_date || (job.scheduled_at ? new Date(job.scheduled_at).toISOString().split("T")[0] : today()));
   const [duration, setDuration] = useState(Number(job.duration) || 1);
   const [startHour, setStartHour] = useState(null);
+  const [overtime, setOvertime] = useState(!!job.is_overtime);
   const [saving, setSaving] = useState(false);
 
   const midJob = job.truck_status === "processing" || job.truck_status === "completed";
@@ -303,6 +318,7 @@ function RescheduleModal({ job, jobs, onClose, onSaved }) {
     const patch = {
       assigned_truck: truck, start_hour: startHour, duration,
       scheduled_date: dateStr, scheduled_at: scheduledAt.toISOString(),
+      is_overtime: isOTHour(truck, startHour),
     };
     await updateJob(job.id, patch);
     onSaved({ ...job, ...patch });
@@ -340,10 +356,15 @@ function RescheduleModal({ job, jobs, onClose, onSaved }) {
                 </select>
               </div>
             </div>
-            <TruckDayView jobs={jobs} truck={truck} dateStr={dateStr} duration={duration} selectedHour={startHour} onPick={pick} excludeId={job.id} />
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: overtime ? "#B45309" : "var(--text)" }}>
+              <input type="checkbox" checked={overtime} onChange={e => { setOvertime(e.target.checked); setStartHour(null); }} />
+              ⏱ Overtime — unlock early/late slots
+            </label>
+            <TruckDayView jobs={jobs} truck={truck} dateStr={dateStr} duration={duration} selectedHour={startHour} onPick={pick} excludeId={job.id} overtime={overtime} />
             {startHour != null && (
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--success)" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: isOTHour(truck, startHour) ? "#B45309" : "var(--success)" }}>
                 ✓ New: {truck} · {hourLabel(startHour)}–{hourLabel(startHour + duration)} on {dateStr}
+                {isOTHour(truck, startHour) && <span style={{ fontSize: 11, background: "#F59E0B", color: "#fff", padding: "1px 6px", borderRadius: 4, marginLeft: 6 }}>OVERTIME</span>}
               </div>
             )}
           </div>
@@ -411,6 +432,29 @@ const truckHours = (truck) => {
   const out = [];
   for (let h = c.start; h < c.end; h++) out.push(h);
   return out;
+};
+
+// Overtime window: up to 3h before normal start, up to 4h after normal end.
+const OT_BEFORE = 3, OT_AFTER = 4;
+const truckOTHours = (truck) => {
+  const c = TRUCK_CONFIG[truck];
+  if (!c) return { early: [], late: [] };
+  const early = [];
+  for (let h = Math.max(0, c.start - OT_BEFORE); h < c.start; h++) early.push(h);
+  const late = [];
+  for (let h = c.end; h < Math.min(24, c.end + OT_AFTER); h++) late.push(h);
+  return { early, late };
+};
+// Full bookable hours when overtime is enabled.
+const truckHoursWithOT = (truck) => {
+  const ot = truckOTHours(truck);
+  return [...ot.early, ...truckHours(truck), ...ot.late];
+};
+// Is a given hour outside the truck's normal hours?
+const isOTHour = (truck, hour) => {
+  const c = TRUCK_CONFIG[truck];
+  if (!c) return false;
+  return hour < c.start || hour >= c.end;
 };
 
 // ─── Labor (mirror of Tire System — keep in sync via shared contract) ─────────
@@ -1544,13 +1588,14 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, prefill, onNewCustomer, onCarCreated }) {
+function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCarCreated }) {
   const blank = {
     customer_name: "", customer_mobile: "", customer_id: null,
     area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "",
     car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
     services: [newService()], sales_match_confirmed: false,
     assigned_truck: prefill?.truck || "T1", start_hour: prefill?.hour ?? null, duration: 1,
+    overtime: false, is_overtime: false,
     scheduled_date: prefill?.date || today(),
     lead_from: "WhatsApp", sales_agent: "",
     xero_ref: "", invoice_no: "", payment_through: "Link", payment_status: "pending", payment_link: "", notes: "",
@@ -1599,7 +1644,48 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
     setSelectedCustomer(null); setSelectedCar(null);
     setF(p => ({ ...p, customer_id: null, customer_name: "", customer_mobile: "", car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null }));
   };
-  const pickSlot = (truck, hour) => setF(p => ({ ...p, assigned_truck: truck, start_hour: hour }));
+  const pickSlot = (truck, hour) => setF(p => ({ ...p, assigned_truck: truck, start_hour: hour, is_overtime: isOTHour(truck, hour) }));
+
+  // Apply prefill from customer profile: "New Order" (customer only) or "Reorder" (copy services)
+  useEffect(() => {
+    if (!prefillOrder || !prefillOrder.customer) return;
+    const c = prefillOrder.customer;
+    setSelectedCustomer(c);
+    setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, area: c.area || p.area }));
+    const src = prefillOrder.sourceJob;
+    if (src) {
+      // Rebuild service blocks from the source job (copy services/cars/prices/discounts;
+      // reset schedule + payment; ALWAYS leave the match checkbox unchecked).
+      const baseServices = (src.services && src.services.length)
+        ? src.services
+        : (src.items || []).map(it => ({
+            service_type: it.service_type || src.service_type, kind: it.kind || "other",
+            variant: it.variant || {}, tire_id: it.tire_id || null,
+            brand: it.brand || "", pattern: it.pattern || "", size: it.size || "",
+            cost: it.cost || 0, supplier: it.supplier || "", description: it.description || "",
+            qty: it.qty || 1, unit_price: it.unit_price || 0, car_id: it.car_id || null,
+            price_disc: blankDisc(), labor_disc: blankDisc(),
+            labor: catalogLabor(it.service_type || src.service_type, it.variant || {}, it.qty),
+          }));
+      const services = baseServices.map(s => ({
+        ...s, id: uid(), _open: false, new_car: null,
+        price_disc: s.price_disc || blankDisc(), labor_disc: s.labor_disc || blankDisc(),
+      }));
+      // open the first one for review
+      if (services[0]) services[0]._open = true;
+      setF(p => ({
+        ...p,
+        services,
+        sales_match_confirmed: false,         // always re-verify
+        start_hour: null, assigned_truck: "T1", scheduled_date: today(),
+        payment_status: "pending", payment_link: "", payment_through: "Link",
+        xero_ref: "", invoice_no: "", status: "draft", notes: src.notes || "",
+        area: src.area || c.area || p.area, governorate: src.governorate || "",
+        block: src.block || "", street: src.street || "", lane: src.lane || "", house: src.house || "", map_link: src.map_link || "",
+      }));
+    }
+  }, [prefillOrder]);
+
 
   const canSubmit = f.customer_name && f.customer_mobile && f.area && (f.services || []).length > 0
     && f.services.every(s => s.kind === "tire" ? s.tire_id : (s.unit_price || s.labor))
@@ -1775,6 +1861,14 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
                 <TruckPills value={f.assigned_truck} onChange={(t) => setF(p => ({ ...p, assigned_truck: t, start_hour: null }))} />
               </div>
             )}
+            {schedView === "truck" && (
+              <div className="form-full" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: f.overtime ? "#B45309" : "var(--text)" }}>
+                  <input type="checkbox" checked={!!f.overtime} onChange={e => setF(p => ({ ...p, overtime: e.target.checked, start_hour: null }))} />
+                  ⏱ Overtime — unlock early/late slots (3h before, 4h after)
+                </label>
+              </div>
+            )}
             <div className="form-field">
               <label>Date</label>
               <input type="date" value={f.scheduled_date} onChange={e => setF(p => ({ ...p, scheduled_date: e.target.value, start_hour: null }))} />
@@ -1788,15 +1882,16 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
             <div className="form-full">
               {schedView === "truck" ? (
                 <TruckDayView jobs={jobs} truck={f.assigned_truck} dateStr={f.scheduled_date} duration={f.duration}
-                  selectedHour={f.start_hour} onPick={pickSlot} excludeId={null} />
+                  selectedHour={f.start_hour} onPick={pickSlot} excludeId={null} overtime={f.overtime} />
               ) : (
                 <TruckSlotGrid jobs={jobs} dateStr={f.scheduled_date} duration={f.duration}
                   selectedTruck={f.start_hour != null ? f.assigned_truck : null} selectedHour={f.start_hour}
                   onPick={pickSlot} excludeId={null} />
               )}
               {f.start_hour != null && (
-                <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600, color: "var(--success)" }}>
+                <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600, color: f.is_overtime ? "#B45309" : "var(--success)" }}>
                   ✓ {f.assigned_truck} · {hourLabel(f.start_hour)}–{hourLabel(f.start_hour + f.duration)} on {f.scheduled_date}
+                  {f.is_overtime && <span style={{ fontSize: 11, background: "#F59E0B", color: "#fff", padding: "1px 6px", borderRadius: 4, marginLeft: 6 }}>OVERTIME</span>}
                 </div>
               )}
             </div>
@@ -2191,6 +2286,28 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
             <span style={{ fontSize: 12, color: "var(--muted)" }}>all trucks · tap a job to open, empty slot to book</span>
           </div>
           <div className="card-body">
+            {(() => {
+              const d = filterDate || today();
+              const otByTruck = {};
+              ACTIVE_TRUCKS.forEach(t => { otByTruck[t] = 0; });
+              jobs.forEach(j => {
+                if (!j.is_overtime) return;
+                const jd = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
+                if (jd === d && otByTruck[j.assigned_truck] != null) otByTruck[j.assigned_truck]++;
+              });
+              const totalOT = Object.values(otByTruck).reduce((a, b) => a + b, 0);
+              if (totalOT === 0) return null;
+              return (
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12, padding: "8px 12px", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#B45309" }}>⏱ Overtime today:</span>
+                  {ACTIVE_TRUCKS.filter(t => otByTruck[t] > 0).map(t => (
+                    <span key={t} style={{ fontSize: 12, fontWeight: 600, color: truckColor(t).text, background: truckColor(t).bg, border: `1px solid ${truckColor(t).solid}`, borderRadius: 6, padding: "2px 8px" }}>
+                      {t}: {otByTruck[t]} order{otByTruck[t] > 1 ? "s" : ""}
+                    </span>
+                  ))}
+                </div>
+              );
+            })()}
             <TruckSlotGrid
               jobs={jobs}
               dateStr={filterDate || today()}
@@ -2223,6 +2340,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
             </div>
             <div className="job-card-meta">
               <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text }}>{job.assigned_truck}</span>
+              {job.is_overtime && <span className="tag" style={{ background: "#F59E0B", color: "#fff", fontWeight: 700 }}>⏱ OT</span>}
               <span className="tag tag-time">{fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}</span>
               {job.total ? <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span> : null}
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{job.area}</span>
@@ -2486,7 +2604,7 @@ function HistoryView({ jobs, onSelectJob }) {
 }
 
 // ─── Customer Profile Detail ──────────────────────────────────────────────────
-function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSelectJob, onAddCar, onAddAddress }) {
+function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSelectJob, onAddCar, onAddAddress, onNewOrder, onReorder }) {
   const customerCars = cars.filter(c => c.customer_id === customer.id);
   const customerAddrs = (addresses || []).filter(a => a.customer_id === customer.id);
   const customerJobs = jobs.filter(j => j.customer_id === customer.id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
@@ -2517,6 +2635,7 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
           <div style={{ textAlign: "right" }}>
             <div style={{ fontFamily: "var(--font-head)", fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>KWD {totalSpent.toFixed(3)}</div>
             <div style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.length} jobs total</div>
+            {onNewOrder && <button className="btn btn-primary btn-sm" style={{ marginTop: 8 }} onClick={onNewOrder}>+ New Order</button>}
           </div>
         </div>
         {customer.notes && <div style={{ fontSize: 13, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px" }}>⚠ {customer.notes}</div>}
@@ -2592,6 +2711,7 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {Number(job.total || 0).toFixed(3)}</div>
                   <StatusPill status={job.status} />
+                  {onReorder && <button className="btn btn-ghost btn-sm" style={{ marginTop: 6 }} onClick={(e) => { e.stopPropagation(); onReorder(job); }}>↻ Reorder</button>}
                 </div>
               </div>
             </div>
@@ -2755,6 +2875,7 @@ export default function App() {
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const [prefillSlot, setPrefillSlot] = useState(null);
+  const [prefillOrder, setPrefillOrder] = useState(null);
   const [rescheduleJob, setRescheduleJob] = useState(null);
   const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
@@ -2821,6 +2942,14 @@ export default function App() {
   const handleAddCar = (customer) => {
     setAddCarTarget(customer);
     setShowAddCar(true);
+  };
+
+  const handleNewOrderFor = (customer, sourceJob = null) => {
+    setSelectedCustomer(null);
+    setSelectedJob(null);
+    setPrefillSlot(null);
+    setPrefillOrder({ customer, sourceJob });
+    setShowNew(true);
   };
 
   const handleCarCreated = (car) => {
@@ -2910,6 +3039,8 @@ export default function App() {
               onSelectJob={(job) => { setSelectedJob(job); }}
               onAddCar={handleAddCar}
               onAddAddress={handleAddAddress}
+              onNewOrder={() => handleNewOrderFor(selectedCustomer)}
+              onReorder={(job) => handleNewOrderFor(selectedCustomer, job)}
             />
           )}
 
@@ -2942,12 +3073,13 @@ export default function App() {
 
       {showNew && (
         <NewJobModal
+          prefillOrder={prefillOrder}
           customers={customers}
           cars={cars}
           addresses={addresses}
           jobs={jobs}
           prefill={prefillSlot}
-          onClose={() => { setShowNew(false); setPrefillSlot(null); }}
+          onClose={() => { setShowNew(false); setPrefillSlot(null); setPrefillOrder(null); }}
           onCreated={j => setJobs(prev => [j, ...prev])}
           onNewCustomer={handleNewCustomer}
           onCarCreated={handleCarCreated}
