@@ -160,6 +160,11 @@ function catalogLabor(serviceName, variant, qty) {
 const LEAD_SOURCES = ["WhatsApp", "Signal", "Shopify", "Instagram", "Other"];
 // Active sales agents (edit here to add/remove)
 const SALES_AGENTS = ["Alaa", "Hussain"];
+// Suppliers for "other services" parts (editable; agent can also type a custom one)
+const OTHER_SUPPLIERS = [
+  "Alamdar", "Hitish", "Korean Store", "Ahlia", "Porsche Dealer", "Al Babtain Group",
+  "Istiqlal", "Motul", "Mercedes Benz Dealer", "Super Shine", "BMW Dealer", "BNCHR+ Inventory",
+];
 const ROLES = [
   { key: "sales", label: "Sales" },
   { key: "purchaser", label: "Purchaser" },
@@ -1349,18 +1354,30 @@ function DiscountField({ base, disc, onChange, label }) {
   );
 }
 
+// A single part row within an "other" service.
+const newPart = () => ({ id: uid(), name: "", supplier: "", qty: 1, price: 0, cost: 0 });
+const partsGross = (parts) => (parts || []).reduce((s, p) => s + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
+
 // Compute a single service block's totals.
 function serviceTotals(svc) {
-  const qty = Number(svc.qty) || (SERVICE_CATALOG[svc.service_type]?.kind === "tire" ? 4 : 1);
-  const grossPrice = (Number(svc.unit_price) || 0) * qty;
+  const isTire = SERVICE_CATALOG[svc.service_type]?.kind === "tire";
+  let grossPrice;
+  if (isTire) {
+    const qty = Number(svc.qty) || 4;
+    grossPrice = (Number(svc.unit_price) || 0) * qty;
+  } else {
+    // other services: parts subtotal = sum of item prices
+    grossPrice = partsGross(svc.parts);
+  }
+  const qty = Number(svc.qty) || (isTire ? 4 : 1);
   const netPrice = applyDiscount(grossPrice, svc.price_disc);
   const grossLabor = Number(svc.labor) || 0;
   const netLabor = applyDiscount(grossLabor, svc.labor_disc);
   return { qty, grossPrice, netPrice, grossLabor, netLabor, total: netPrice + netLabor };
 }
 const orderTotal = (services) => (services || []).reduce((s, svc) => s + serviceTotals(svc).total, 0);
-// A service carries a product if it has a real tire OR a priced part. No tire + no price = labor only.
-const svcHasProduct = (s) => !!s.tire_id || (Number(s.unit_price) || 0) > 0;
+// A service carries a product if it has a real tire OR any priced part.
+const svcHasProduct = (s) => !!s.tire_id || (SERVICE_CATALOG[s.service_type]?.kind === "tire" ? (Number(s.unit_price) || 0) > 0 : partsGross(s.parts) > 0 || (s.parts || []).some(p => p.name));
 const orderHasProducts = (services) => (services || []).some(svcHasProduct);
 
 // A fresh service block.
@@ -1375,6 +1392,7 @@ const newService = (type = "Tire Change & Balancing") => {
     tire_id: null, brand: "", pattern: "", size: "", year: "", cost: 0, supplier: "",
     // other fields
     description: "",
+    parts: cat.kind === "tire" ? [] : [newPart()], // itemized parts for other services
     qty: cat.kind === "tire" ? 4 : 1,
     unit_price: 0,
     price_disc: blankDisc(),
@@ -1390,6 +1408,10 @@ function ServiceBuilder({ services, setServices, customerCars }) {
   const upd = (id, patch) => setServices(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
   const remove = (id) => setServices(prev => prev.filter(s => s.id !== id));
   const addBlock = () => setServices(prev => prev.map(s => ({ ...s, _open: false })).concat(newService()));
+  // parts helpers (other services)
+  const addPart = (sid) => setServices(prev => prev.map(s => s.id === sid ? { ...s, parts: [...(s.parts || []), newPart()] } : s));
+  const updPart = (sid, pid, patch) => setServices(prev => prev.map(s => s.id === sid ? { ...s, parts: (s.parts || []).map(p => p.id === pid ? { ...p, ...patch } : p) } : s));
+  const removePart = (sid, pid) => setServices(prev => prev.map(s => s.id === sid ? { ...s, parts: (s.parts || []).filter(p => p.id !== pid) } : s));
 
   // when service type changes, reset variant + auto-labor + kind/qty
   const changeType = (id, type) => {
@@ -1506,28 +1528,60 @@ function ServiceBuilder({ services, setServices, customerCars }) {
                   )}
                 </div>
               ) : (
-                // Formula 2: other — description
-                <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
-                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Description (parts details — optional)</label>
-                  <textarea className="filter-input" style={{ minHeight: 54, resize: "vertical" }} value={svc.description}
-                    placeholder="e.g. TOTAL OIL 20W50 - 5L [5,000 KM] 8 KD · OIL FILTER GENUINE 2 KD"
-                    onChange={e => upd(svc.id, { description: e.target.value })} />
+                // Formula 2: other — itemized parts (name + supplier + qty + price + optional cost)
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 6 }}>Parts / items — each from its supplier</label>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {(svc.parts || []).map((p, pi) => (
+                      <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--card)" }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)" }}>{pi + 1}.</span>
+                          <input className="filter-input" style={{ flex: 1 }} value={p.name} placeholder="Part (e.g. Total 20W50 5L, oil filter, drain bolt)"
+                            onChange={e => updPart(svc.id, p.id, { name: e.target.value })} />
+                          {(svc.parts.length > 1) && <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => removePart(svc.id, p.id)}>✕</button>}
+                        </div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-end" }}>
+                          <div style={{ flex: "1 1 130px" }}>
+                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Supplier</label>
+                            <ComboBox value={p.supplier} onChange={v => updPart(svc.id, p.id, { supplier: v })} options={OTHER_SUPPLIERS} placeholder="Supplier" />
+                          </div>
+                          <div style={{ width: 48 }}>
+                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Qty</label>
+                            <input type="number" min={1} className="filter-input" style={{ width: "100%" }} value={p.qty} onChange={e => updPart(svc.id, p.id, { qty: e.target.value })} />
+                          </div>
+                          <div style={{ width: 76 }}>
+                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price</label>
+                            <input type="number" min={0} className="filter-input" style={{ width: "100%" }} value={p.price} onChange={e => updPart(svc.id, p.id, { price: e.target.value })} />
+                          </div>
+                          <div style={{ width: 76 }}>
+                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Cost <span style={{ textTransform: "none", fontWeight: 400 }}>opt</span></label>
+                            <input type="number" min={0} className="filter-input" style={{ width: "100%" }} value={p.cost} onChange={e => updPart(svc.id, p.id, { cost: e.target.value })} />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 6 }} onClick={() => addPart(svc.id)}>+ Add part</button>
                 </div>
               )}
 
-              {/* Qty + unit price + price discount */}
+              {/* Price row — tires use qty×unit price; other services use parts sum */}
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Qty</label>
-                  <input type="number" min={1} className="filter-input" style={{ width: 60 }} value={svc.qty} onChange={e => { const q = e.target.value; upd(svc.id, isTire ? { qty: q, labor: catalogLabor(svc.service_type, svc.variant, q) } : { qty: q }); }} />
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>{isTire ? "Price/tire" : "Price"} (KD)</label>
-                  <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
-                </div>
+                {isTire && (
+                  <>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Qty</label>
+                      <input type="number" min={1} className="filter-input" style={{ width: 60 }} value={svc.qty} onChange={e => { const q = e.target.value; upd(svc.id, { qty: q, labor: catalogLabor(svc.service_type, svc.variant, q) }); }} />
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Price/tire (KD)</label>
+                      <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
+                    </div>
+                  </>
+                )}
                 <DiscountField base={t.grossPrice} disc={svc.price_disc} onChange={(d) => upd(svc.id, { price_disc: d })} label="Price" />
                 <div style={{ marginLeft: "auto", textAlign: "right" }}>
-                  <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>Parts subtotal</div>
+                  <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>{isTire ? "Tires subtotal" : "Parts subtotal"}</div>
                   <div style={{ fontWeight: 700 }}>KWD {t.netPrice.toFixed(3)}</div>
                 </div>
               </div>
@@ -1721,7 +1775,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       price_disc: blankDisc(), labor_disc: blankDisc(),
       labor: catalogLabor(it.service_type || job.service_type, it.variant || {}, it.qty),
     }));
-    return base.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: null, price_disc: s.price_disc || blankDisc(), labor_disc: s.labor_disc || blankDisc() }));
+    return base.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: null, parts: s.kind !== "tire" ? (s.parts && s.parts.length ? s.parts.map(p => ({ ...p, id: p.id || uid() })) : [newPart()]) : (s.parts || []), price_disc: s.price_disc || blankDisc(), labor_disc: s.labor_disc || blankDisc() }));
   };
   const blank = isEdit ? {
     ...editJob,
@@ -1852,8 +1906,8 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
   if (!f.customer_mobile) submitReasons.push("Add a customer mobile");
   if (!f.area) submitReasons.push("Add the area");
   if (!(f.services || []).length) submitReasons.push("Add at least one service");
-  else if (!f.services.every(s => s.kind === "tire" ? true : (s.unit_price || s.labor)))
-    submitReasons.push("Each non-tire service needs a price or labor");
+  else if (!f.services.every(s => s.kind === "tire" ? true : (partsGross(s.parts) > 0 || (s.parts || []).some(p => p.name) || s.labor)))
+    submitReasons.push("Each non-tire service needs a part or labor");
   if (hasProducts && !f.sales_match_confirmed) submitReasons.push("Confirm the products match the customer's car");
   if (f.start_hour == null) submitReasons.push("Pick a time slot");
   const canSubmit = submitReasons.length === 0;
@@ -1881,19 +1935,40 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     const headline = [...new Set(services.map(s => s.service_type))].join(" + ");
     const details = services.map(s => s.kind === "tire"
       ? (s.tire_id ? `${s.size} ${s.brand}${s.pattern ? " " + s.pattern : ""} ×${s.qty}` : `${s.service_type} (labor only) ×${s.qty}`)
-      : `${s.service_type}${s.description ? ": " + s.description : ""}`).filter(Boolean).join(" · ");
+      : (() => { const ps = (s.parts || []).filter(p => p.name); return ps.length ? `${s.service_type}: ${ps.map(p => p.name).join(", ")}` : `${s.service_type} (labor only)`; })()).filter(Boolean).join(" · ");
     const carLabelFor = (cid) => {
       const c = (formCustomerCars || []).find(x => x.id === cid);
       return c ? `${c.brand} ${c.model}${c.year ? " " + c.year : ""}`.trim() : "";
     };
-    const items = services.map(s => ({
-      id: s.id, kind: s.kind, tire_id: s.tire_id, labor_only: s.kind === "tire" && !s.tire_id,
-      brand: s.brand, pattern: s.pattern, size: s.size,
-      name: s.kind === "tire" ? (s.tire_id ? `${s.brand} ${s.pattern}` : `${s.service_type} (labor only)`) : s.service_type,
-      description: s.description, qty: s.qty, unit_price: s.unit_price,
-      cost: s.cost, supplier: s.supplier, car_id: s.car_id, car_label: carLabelFor(s.car_id),
-      service_type: s.service_type, variant: s.variant,
-    }));
+    const items = services.flatMap(s => {
+      const car_label = carLabelFor(s.car_id);
+      if (s.kind === "tire") {
+        return [{
+          id: s.id, kind: "tire", tire_id: s.tire_id, labor_only: !s.tire_id,
+          brand: s.brand, pattern: s.pattern, size: s.size,
+          name: s.tire_id ? `${s.brand} ${s.pattern}` : `${s.service_type} (labor only)`,
+          supplier: s.supplier || "", qty: s.qty, unit_price: s.unit_price,
+          cost: s.cost, car_id: s.car_id, car_label,
+          service_type: s.service_type, service_id: s.id, variant: s.variant,
+        }];
+      }
+      // other service → one item per part (each collectable with its own supplier)
+      const parts = (s.parts || []).filter(p => p.name || Number(p.price) > 0);
+      if (parts.length === 0) {
+        // labor-only other service
+        return [{
+          id: s.id, kind: "other", labor_only: true, name: `${s.service_type} (labor only)`,
+          supplier: "", qty: 1, unit_price: 0, cost: 0, car_id: s.car_id, car_label,
+          service_type: s.service_type, service_id: s.id, variant: s.variant,
+        }];
+      }
+      return parts.map(p => ({
+        id: p.id, kind: "part", name: p.name || s.service_type,
+        supplier: p.supplier || "", qty: p.qty, unit_price: p.price, cost: p.cost,
+        car_id: s.car_id, car_label,
+        service_type: s.service_type, service_id: s.id, variant: s.variant,
+      }));
+    });
     const common = {
       ...f,
       services,
@@ -2646,35 +2721,255 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
 // Shows part_ready orders. Per-item: match-checkbox + Collected; once all collected,
 // Delivered unlocks. Persists to DB (parts_status, item_checks).
 function DistributorView({ jobs, onUpdate }) {
+  const [view, setView] = useState("order"); // order | supplier
   const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled");
+
+  // per-item collect action (used by supplier view too) — writes to the job
+  const collectItem = (job, itemId) => {
+    const collected = { ...(job.collected_items || {}), [itemId]: new Date().toISOString() };
+    const next = { ...job, collected_items: collected };
+    onUpdate(next); updateJob(job.id, { collected_items: collected });
+  };
+  const confirmItem = (job, itemId, val) => {
+    const item_checks = { ...(job.item_checks || {}), [itemId]: val };
+    const next = { ...job, item_checks };
+    onUpdate(next); updateJob(job.id, { item_checks });
+  };
+
+  // Supplier groups across active orders (includes collected, for ✅ + progress)
+  const supplierGroups = {};
+  active.forEach(j => {
+    (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part").forEach(it => {
+      const sup = it.supplier || "Unassigned";
+      (supplierGroups[sup] = supplierGroups[sup] || []).push({ ...it, _job: j });
+    });
+  });
+  const supplierNames = Object.keys(supplierGroups).sort();
 
   return (
     <>
-      <div className="page-header"><div className="page-title">Parts & Logistics</div></div>
-      {active.length === 0 && <div className="empty"><h3>Nothing to collect</h3><p>Orders appear here when Sales marks "Parts Ready".</p></div>}
-      {active.map(job => (
-        <DistributorCard key={job.id} job={job} onUpdate={onUpdate} />
-      ))}
+      <div className="page-header">
+        <div className="page-title">Collect</div>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button className={`btn btn-sm ${view === "order" ? "btn-primary" : "btn-ghost"}`} onClick={() => setView("order")}>By order</button>
+          <button className={`btn btn-sm ${view === "supplier" ? "btn-primary" : "btn-ghost"}`} onClick={() => setView("supplier")}>By supplier</button>
+        </div>
+      </div>
+
+      {(() => {
+        // Collect-view progress: items to collect across active orders
+        let totalItems = 0, collectedCount = 0;
+        active.forEach(j => {
+          const col = j.collected_items || {};
+          (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part").forEach(it => {
+            totalItems++; if (col[it.id]) collectedCount++;
+          });
+        });
+        const remaining = totalItems - collectedCount;
+        if (totalItems === 0) return null;
+        return (
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+            {[
+              { label: "Orders", value: active.length, color: "var(--text)" },
+              { label: "Items to collect", value: totalItems, color: "var(--accent)" },
+              { label: "Collected", value: collectedCount, color: "var(--success)" },
+              { label: "Remaining", value: remaining, color: "#D97706" },
+            ].map(s => (
+              <div key={s.label} style={{ flex: "1 1 90px", minWidth: 90, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px", textAlign: "center" }}>
+                <div style={{ fontFamily: "var(--font-head)", fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
+                <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".4px" }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {view === "order" && (<>
+        {active.length === 0 && <div className="empty"><h3>Nothing to collect</h3><p>Orders appear here when Sales marks "Parts Ready".</p></div>}
+        {active.map(job => <DistributorCard key={job.id} job={job} onUpdate={onUpdate} />)}
+      </>)}
+
+      {view === "supplier" && (
+        supplierNames.length === 0 ? <div className="empty"><h3>Nothing to collect</h3><p>No outstanding orders.</p></div> :
+        supplierNames.map(sup => {
+          const list = supplierGroups[sup];
+          const doneCount = list.filter(it => (it._job.collected_items || {})[it.id]).length;
+          return (
+            <div key={sup} className="dist-card" style={{ marginBottom: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontFamily: "var(--font-head)", fontWeight: 700, fontSize: 15, color: "#1E40AF" }}>📍 {sup}</div>
+                <span style={{ fontSize: 11, color: doneCount === list.length ? "var(--success)" : "var(--muted)", fontWeight: 700 }}>{doneCount} of {list.length} collected</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {list.map(it => {
+                  const job = it._job;
+                  const isCollected = (job.collected_items || {})[it.id];
+                  const isChecked = (job.item_checks || {})[it.id];
+                  return (
+                    <div key={it.id + job.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: isCollected ? "#F0FDF4" : "var(--card)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <span style={{ fontSize: 13 }}><strong>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${it.size}` : it.name}</strong> × {it.qty}
+                          <div style={{ fontSize: 11, color: "var(--muted)" }}>{job.customer_name} · {job.assigned_truck} · {it.service_type}</div>
+                        </span>
+                        {isCollected
+                          ? <span style={{ fontSize: 13, color: "var(--success)", fontWeight: 700, whiteSpace: "nowrap" }}>✅ Collected</span>
+                          : null}
+                      </div>
+                      {!isCollected && (
+                        <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!isChecked} onChange={e => confirmItem(job, it.id, e.target.checked)} />
+                            matches order
+                          </label>
+                          <button className="btn btn-ghost btn-sm" disabled={!isChecked} onClick={() => collectItem(job, it.id)} title={!isChecked ? "Confirm match first" : ""}>Mark Collected</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })
+      )}
+    </>
+  );
+}
+
+
+// ─── Distributor History (own page) ──────────────────────────────────────────
+function DistributorHistoryView({ jobs }) {
+  const [histSupplier, setHistSupplier] = useState("all");
+  const [histGroup, setHistGroup] = useState("order"); // order | supplier (default: per order)
+
+  const history = [];
+  jobs.forEach(j => {
+    const collected = j.collected_items || {};
+    (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part").forEach(it => {
+      if (collected[it.id]) history.push({
+        ...it, when: typeof collected[it.id] === "string" ? collected[it.id] : null,
+        customer: j.customer_name, truck: j.assigned_truck, service: it.service_type,
+        orderId: j.id, orderWhen: j.scheduled_at, orderDelivered: j.parts_status === "delivered",
+      });
+    });
+  });
+  history.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
+  const histSuppliers = [...new Set(history.map(h => h.supplier || "Unassigned"))].sort();
+  const histFiltered = histSupplier === "all" ? history : history.filter(h => (h.supplier || "Unassigned") === histSupplier);
+
+  // Simple collection report (today + all-time counts)
+  const todayStr = today();
+  const isToday = (w) => w && new Date(w).toISOString().split("T")[0] === todayStr;
+  const collectedToday = history.filter(h => isToday(h.when)).length;
+  const ordersDelivered = new Set(history.filter(h => h.orderDelivered).map(h => h.orderId)).size;
+  const ordersPending = new Set(history.filter(h => !h.orderDelivered).map(h => h.orderId)).size;
+
+  return (
+    <>
+      <div className="page-header"><div className="page-title">Collected History</div></div>
+
+      {/* Collection report */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        {[
+          { label: "Collected today", value: collectedToday, color: "var(--accent)" },
+          { label: "Total collected", value: history.length, color: "var(--text)" },
+          { label: "Orders delivered", value: ordersDelivered, color: "var(--success)" },
+          { label: "Awaiting delivery", value: ordersPending, color: "#D97706" },
+        ].map(s => (
+          <div key={s.label} style={{ flex: "1 1 100px", minWidth: 100, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "12px 14px", textAlign: "center" }}>
+            <div style={{ fontFamily: "var(--font-head)", fontSize: 24, fontWeight: 700, color: s.color }}>{s.value}</div>
+            <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".4px" }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button className={`btn btn-sm ${histGroup === "order" ? "btn-primary" : "btn-ghost"}`} onClick={() => setHistGroup("order")}>Per order</button>
+            <button className={`btn btn-sm ${histGroup === "supplier" ? "btn-primary" : "btn-ghost"}`} onClick={() => setHistGroup("supplier")}>Per supplier</button>
+          </div>
+          {histGroup === "supplier" && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <button className={`btn btn-sm ${histSupplier === "all" ? "btn-primary" : "btn-ghost"}`} onClick={() => setHistSupplier("all")}>All</button>
+              {histSuppliers.map(s => (
+                <button key={s} className={`btn btn-sm ${histSupplier === s ? "btn-primary" : "btn-ghost"}`} onClick={() => setHistSupplier(s)}>{s}</button>
+              ))}
+            </div>
+          )}
+          <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>{histFiltered.length} collected item{histFiltered.length !== 1 ? "s" : ""}</span>
+        </div>
+
+        {histFiltered.length === 0 ? <div className="empty"><h3>No collected history</h3><p>Collected items will appear here.</p></div> : (() => {
+          // group into { groupKey: { title, sub, items[] } }
+          const groups = {};
+          histFiltered.forEach(h => {
+            const key = histGroup === "supplier" ? (h.supplier || "Unassigned") : h.orderId;
+            if (!groups[key]) groups[key] = {
+              title: histGroup === "supplier" ? (h.supplier || "Unassigned") : h.customer,
+              sub: histGroup === "supplier" ? "" : `${h.truck} · ${h.orderWhen ? fmtDate(h.orderWhen) : ""}`,
+              delivered: histGroup === "order" ? h.orderDelivered : null,
+              items: [],
+            };
+            groups[key].items.push(h);
+          });
+          const keys = Object.keys(groups);
+          return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {keys.map(k => (
+                <div key={k} className="dist-card">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ fontFamily: "var(--font-head)", fontWeight: 700, fontSize: 15, color: histGroup === "supplier" ? "#1E40AF" : "var(--text)" }}>
+                      {histGroup === "supplier" ? "📍 " : "🧾 "}{groups[k].title}
+                      {groups[k].sub && <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}> · {groups[k].sub}</span>}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                      {histGroup === "order" && (
+                        <>
+                          <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 8px", borderRadius: 6, background: "#DCFCE7", color: "#15803D" }}>✅ Collected</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 8px", borderRadius: 6, background: groups[k].delivered ? "#DCFCE7" : "#F1F5F9", color: groups[k].delivered ? "#15803D" : "#94A3B8" }}>{groups[k].delivered ? "✅ Delivered" : "○ Not delivered"}</span>
+                        </>
+                      )}
+                      <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{groups[k].items.length} item{groups[k].items.length > 1 ? "s" : ""}</span>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {groups[k].items.map((h, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, borderBottom: i < groups[k].items.length - 1 ? "1px solid var(--border)" : "none", paddingBottom: 6 }}>
+                        <div>
+                          <strong>{h.kind === "tire" ? `${h.brand} ${h.pattern || ""} · ${h.size}` : h.name}</strong> × {h.qty}
+                          <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                            {histGroup === "supplier" ? `${h.customer} · ${h.service}` : `${h.supplier || "Unassigned"} · ${h.service}`}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap", textAlign: "right" }}>{h.when ? `${fmtDate(h.when)} ${fmtTime(h.when)}` : "—"}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
     </>
   );
 }
 
 function DistributorCard({ job, onUpdate }) {
   const [j, setJ] = useState(job);
-  const items = (j.items || []).filter(it => it.kind === "tire" || it.kind === "service");
+  // collectable items = tires with a tire OR parts (exclude labor-only lines)
+  const items = (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
   const checks = j.item_checks || {};
   const collected = j.collected_items || {};
 
-  const patch = async (p) => { const next = { ...j, ...p }; setJ(next); await updateJob(j.id, p); onUpdate(next); };
+  const patch = (p) => { const next = { ...j, ...p }; setJ(next); onUpdate(next); updateJob(j.id, p); };
 
   const toggleMatch = (id) => patch({ item_checks: { ...checks, [id]: !checks[id] } });
   const markCollected = (id) => {
     if (!checks[id]) return; // must confirm match first
-    patch({ collected_items: { ...collected, [id]: true } });
+    patch({ collected_items: { ...collected, [id]: new Date().toISOString() } });
   };
   const allCollected = items.length > 0 && items.every(it => collected[it.id]);
   const markDelivered = () => { if (allCollected) patch({ parts_status: "delivered" }); };
-  // when all collected, reflect parts_status
   const partsStatus = j.parts_status === "delivered" ? "delivered" : (allCollected ? "collected" : "pending");
 
   return (
@@ -2686,16 +2981,20 @@ function DistributorCard({ job, onUpdate }) {
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>Truck {j.assigned_truck} · {fmtDate(j.scheduled_at)} {fmtTime(j.scheduled_at)} · {j.area}</div>
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>{j.xero_ref ? `PO Ref: ${j.xero_ref}` : "No PO ref"}</div>
 
+      {items.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>Labor-only order — nothing to collect.</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {items.map(it => (
           <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: collected[it.id] ? "#F0FDF4" : "var(--card)" }}>
-            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
-              {it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${it.size}${it.year ? " · " + it.year : ""}` : it.name} × {it.qty}
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+                {it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${it.size}` : it.name} × {it.qty}
+                <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 500, marginTop: 1 }}>for {it.service_type}{it.car_label ? ` · 🚗 ${it.car_label}` : ""}</div>
+              </div>
+              {it.supplier && <span style={{ fontSize: 11, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 6, padding: "2px 8px", height: "fit-content", whiteSpace: "nowrap" }}>{it.supplier}</span>}
             </div>
-            {it.kind === "tire" && it.supplier && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Supplier: {it.supplier}</div>}
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, fontWeight: 600, marginBottom: 8, cursor: "pointer" }}>
+            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, fontWeight: 600, margin: "6px 0 8px", cursor: "pointer" }}>
               <input type="checkbox" checked={!!checks[it.id]} onChange={() => toggleMatch(it.id)} />
-              I'm sure this product matches the customer's car
+              I'm sure this item matches the order
             </label>
             {!collected[it.id]
               ? <button className="btn btn-ghost btn-sm" disabled={!checks[it.id]} onClick={() => markCollected(it.id)} title={!checks[it.id] ? "Confirm match first" : ""}>Mark Collected</button>
@@ -2708,7 +3007,7 @@ function DistributorCard({ job, onUpdate }) {
         <button className="btn btn-primary btn-sm" disabled={!allCollected || j.parts_status === "delivered"} onClick={markDelivered}>
           {j.parts_status === "delivered" ? "✓ Delivered to Truck" : "Mark Delivered to Truck"}
         </button>
-        {!allCollected && <span style={{ fontSize: 11, color: "var(--muted)" }}>Collect all items to enable delivery.</span>}
+        {!allCollected && items.length > 0 && <span style={{ fontSize: 11, color: "var(--muted)" }}>Collect all items to enable delivery.</span>}
       </div>
     </div>
   );
@@ -3426,7 +3725,8 @@ export default function App() {
     { key: "customers",  label: "Customers",       icon: "👥", roles: ["sales", "purchaser"] },
     { key: "myjobs",     label: "My Jobs",         icon: "🔧", roles: ["technician"] },
     { key: "myhistory",  label: "History",         icon: "🕘", roles: ["technician"] },
-    { key: "distributor",label: "Parts",           icon: "📦", roles: ["distributor"] },
+    { key: "distributor",label: "Collect",         icon: "📦", roles: ["distributor"] },
+    { key: "disthistory",label: "History",         icon: "🕘", roles: ["distributor"] },
   ];
   const tabs = allTabs.filter(t => t.roles.includes(role));
 
@@ -3535,6 +3835,9 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "distributor" && (
             <DistributorView jobs={jobs} onUpdate={handleJobUpdate} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "disthistory" && (
+            <DistributorHistoryView jobs={jobs} />
           )}
         </div>
 
