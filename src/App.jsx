@@ -165,7 +165,9 @@ const today = () => new Date().toISOString().split("T")[0];
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" }) : "—";
 const fmtTime = (d) => d ? new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "—";
 const fmtDateTime = (d) => d ? `${fmtDate(d)} ${fmtTime(d)}` : "—";
-const statusMeta = (key) => STATUS_FLOW.find((s) => s.key === key) || STATUS_FLOW[0];
+const statusMeta = (key) => key === "cancelled"
+  ? { key: "cancelled", label: "Cancelled", color: "#DC2626" }
+  : (STATUS_FLOW.find((s) => s.key === key) || STATUS_FLOW[0]);
 const nextStatus = (key) => {
   const idx = STATUS_FLOW.findIndex((s) => s.key === key);
   return idx < STATUS_FLOW.length - 1 ? STATUS_FLOW[idx + 1] : null;
@@ -236,22 +238,30 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
           const sel = inSelection(hour);
           const fits = canFit(hour);
           const occ = taken ? jobAt(hour) : null;
-          let bg = "var(--card)", color = "var(--text)", cursor = "pointer", border = "1px solid var(--border)";
-          let right = "Free";
-          if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = onJobClick ? "pointer" : "not-allowed"; border = "1px solid #FCA5A5"; right = occ ? slotLabel(occ, " · ") : "Booked"; }
-          else if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; right = "Selected"; }
-          else if (!fits) { bg = ot ? "#FFFBEB" : "#FEF9EE"; color = "#92400E"; cursor = "not-allowed"; right = "—"; }
-          else if (ot) { bg = "#FEF3C7"; color = "#92400E"; border = "1px dashed #F59E0B"; right = "OT · Free"; }
+          const tc = truckColor(truck);
+          let bg = "#fff", color = "var(--text)", cursor = "pointer", border = "1px solid var(--border)", borderLeft = null, shadow = "none";
+          let right = "Free", rightColor = "var(--muted)";
+          if (taken) { bg = tc.bg; color = tc.text; cursor = onJobClick ? "pointer" : "not-allowed"; border = "1px solid transparent"; borderLeft = `3px solid ${tc.solid}`; right = occ ? slotLabel(occ, " · ") : "Booked"; rightColor = tc.text; }
+          else if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; right = "Selected ✓"; rightColor = "rgba(255,255,255,.9)"; shadow = "0 2px 8px rgba(0,0,0,.15)"; }
+          else if (!fits) { bg = ot ? "#FFFBEB" : "#FAFAF8"; color = "#B49A6A"; cursor = "not-allowed"; border = "1px dashed #E8D9B5"; right = "—"; rightColor = "#C9B687"; }
+          else if (ot) { bg = "#FFFBEB"; color = "#92400E"; border = "1px dashed #F59E0B"; right = "Free"; rightColor = "#B45309"; }
           return (
             <div key={hour}>
               {dividerLabel && (
-                <div style={{ fontSize: 10, fontWeight: 700, color: "#B45309", textTransform: "uppercase", letterSpacing: ".5px", margin: "6px 0 2px" }}>{dividerLabel}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 0 4px" }}>
+                  <div style={{ height: 1, flex: 1, background: "#FDE68A" }} />
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#B45309", textTransform: "uppercase", letterSpacing: ".5px" }}>{dividerLabel}</span>
+                  <div style={{ height: 1, flex: 1, background: "#FDE68A" }} />
+                </div>
               )}
               <div
                 onClick={() => { if (taken) { if (occ && onJobClick) onJobClick(occ); } else if (fits) onPick(truck, hour); }}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 8, background: bg, color, cursor, border, fontSize: 13, fontWeight: sel ? 700 : 500 }}>
-                <span style={{ fontWeight: 600 }}>{hourLabel(hour)} {ot && <span style={{ fontSize: 9, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 4, marginLeft: 4 }}>OT</span>}</span>
-                <span style={{ fontSize: 12 }}>{right}</span>
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 14px", borderRadius: 10, background: bg, color, cursor, border, borderLeft, boxShadow: shadow, fontSize: 13, fontWeight: sel ? 700 : 500 }}>
+                <span style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                  {hourLabel(hour)}
+                  {ot && <span style={{ fontSize: 8, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: ".3px" }}>OT</span>}
+                </span>
+                <span style={{ fontSize: 12, color: rightColor, fontWeight: taken ? 600 : 500 }}>{right}</span>
               </div>
             </div>
           );
@@ -474,6 +484,7 @@ const jobHours = (job) => {
 const slotTaken = (jobs, truck, dateStr, hour, excludeId) => {
   return jobs.some(j => {
     if (j.id === excludeId) return false;
+    if (j.status === "cancelled") return false;
     if (j.assigned_truck !== truck) return false;
     const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
     if (d !== dateStr) return false;
@@ -483,11 +494,18 @@ const slotTaken = (jobs, truck, dateStr, hour, excludeId) => {
 // Short service label for tight slot cells
 const shortService = (s) => {
   if (!s) return "Service";
+  if (/patch/i.test(s)) return "Patch";
+  if (/rotation/i.test(s)) return "Rotation";
   if (/tire/i.test(s)) return "Tires";
   if (/oil/i.test(s)) return "Oil";
   if (/battery/i.test(s)) return "Battery";
   if (/brake/i.test(s)) return "Brakes";
+  if (/disc skim/i.test(s)) return "Skim";
+  if (/disc/i.test(s)) return "Disc";
   if (/align/i.test(s)) return "Align";
+  if (/major/i.test(s)) return "Major";
+  if (/ac gas/i.test(s)) return "AC Gas";
+  if (/computer/i.test(s)) return "Computer";
   if (/tune/i.test(s)) return "Tune-up";
   return s.length > 10 ? s.slice(0, 10) + "…" : s;
 };
@@ -503,6 +521,33 @@ const itemsSummary = (job) => {
     return `${qty}× ${name}`;
   }).join(" · ");
 };
+
+// ─── Address → Google Maps link ──────────────────────────────────────────────
+// Build a Maps search URL from Kuwait address parts. Used to auto-fill map_link.
+function buildMapsLink(addr) {
+  if (!addr) return "";
+  const isNum = (v) => /^\s*\d+\s*$/.test(String(v || ""));
+  // Kuwait geocodes best by Area + Block (real units Maps knows). Lead with those,
+  // include the governorate + Kuwait for region lock. Named streets help; numbered
+  // streets ("Street 33") and house numbers don't resolve, so we omit/de-emphasize them.
+  const parts = [];
+  if (addr.area) parts.push(addr.area);
+  if (addr.block) parts.push(`Block ${addr.block}`);
+  // include the street only if it's a NAME (not a bare number Maps can't use)
+  if (addr.street && !isNum(addr.street)) parts.push(addr.street);
+  if (addr.governorate) parts.push(addr.governorate);
+  parts.push("Kuwait");
+  // Need at least an area or block to be useful (more than just governorate + Kuwait)
+  const hasLocator = addr.area || addr.block;
+  if (!hasLocator) return "";
+  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(parts.join(", "));
+}
+// Is a map link a manually-pasted pin (coordinates / shortened link), not our generated search?
+function isManualPin(link) {
+  if (!link) return false;
+  if (link.includes("/maps/search/?api=1&query=")) return false; // our generated format
+  return /maps\.app\.goo\.gl|goo\.gl\/maps|\/maps\/place\/|[?&]q=-?\d|@-?\d/.test(link);
+}
 
 // ─── Kuwait areas → governorate (6 governorates) ──────────────────────────────
 // Used for clean, consistent area data + auto-derived governorate for reporting.
@@ -890,6 +935,9 @@ const css = `
   .filter-input:focus { border-color: var(--accent); }
 
   .job-cards { display: flex; flex-direction: column; gap: 10px; }
+  @media (min-width: 900px) {
+    .schedule-board-panel { position: sticky; top: 12px; max-height: calc(100vh - 40px); overflow-y: auto; }
+  }
   .job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
   .job-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(212,132,10,.1); }
   .job-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
@@ -1284,6 +1332,9 @@ function serviceTotals(svc) {
   return { qty, grossPrice, netPrice, grossLabor, netLabor, total: netPrice + netLabor };
 }
 const orderTotal = (services) => (services || []).reduce((s, svc) => s + serviceTotals(svc).total, 0);
+// A service carries a product if it has a real tire OR a priced part. No tire + no price = labor only.
+const svcHasProduct = (s) => !!s.tire_id || (Number(s.unit_price) || 0) > 0;
+const orderHasProducts = (services) => (services || []).some(svcHasProduct);
 
 // A fresh service block.
 const newService = (type = "Tire Change & Balancing") => {
@@ -1363,7 +1414,7 @@ function ServiceBuilder({ services, setServices, customerCars }) {
                     {Object.values(svc.variant || {}).filter(Boolean).length > 0 && <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}> · {Object.values(svc.variant).join(" / ")}</span>}
                   </div>
                   <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
-                    {isTire ? `${svc.brand} ${svc.pattern} · ${svc.qty}×` : (svc.description ? svc.description.slice(0, 40) + (svc.description.length > 40 ? "…" : "") : "No description")}
+                    {isTire ? (svc.tire_id ? `${svc.brand} ${svc.pattern} · ${svc.qty}×` : `Labor only · ${svc.qty}×${svc.description ? " · " + svc.description.slice(0, 20) : ""}`) : (svc.description ? svc.description.slice(0, 40) + (svc.description.length > 40 ? "…" : "") : "No description")}
                     {carLabel(svc.car_id) ? ` · ${carLabel(svc.car_id)}` : ""}
                   </div>
                 </div>
@@ -1406,7 +1457,7 @@ function ServiceBuilder({ services, setServices, customerCars }) {
                 </div>
               )}
 
-              {/* Formula 1: tire */}
+              {/* Formula 1: tire — search is optional (no tire = labor only) */}
               {isTire ? (
                 <div style={{ marginBottom: 10 }}>
                   {svc.tire_id ? (
@@ -1415,12 +1466,15 @@ function ServiceBuilder({ services, setServices, customerCars }) {
                         <div style={{ fontWeight: 600, fontSize: 14 }}>🔗 {svc.brand} {svc.pattern}</div>
                         <div style={{ fontSize: 12, color: "var(--muted)" }}>{svc.size}{svc.year ? " · " + svc.year : ""}</div>
                       </div>
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { tire_id: null, brand: "", pattern: "", size: "" })}>Change</button>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { tire_id: null, brand: "", pattern: "", size: "", unit_price: 0 })}>Change</button>
                     </div>
                   ) : (
                     <div>
-                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Search tire</label>
+                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Search tire <span style={{ textTransform: "none", fontWeight: 500 }}>· optional (leave empty for labor only)</span></label>
                       <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc)} />
+                      <textarea className="filter-input" style={{ minHeight: 40, resize: "vertical", width: "100%", marginTop: 6 }} value={svc.description}
+                        placeholder="Optional note (e.g. customer supplies tires, mounting + balancing only)"
+                        onChange={e => upd(svc.id, { description: e.target.value })} />
                     </div>
                   )}
                 </div>
@@ -1509,7 +1563,6 @@ function ServiceBuilder({ services, setServices, customerCars }) {
 // One day, all active trucks as columns, 1h rows. Click a free slot to select a
 // start; the job spans `duration` consecutive hours. Shows booked slots.
 function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, onPick, onJobClick, excludeId }) {
-  // union of all hours across active trucks, for row range
   const allHours = [];
   ACTIVE_TRUCKS.forEach(t => truckHours(t).forEach(h => { if (!allHours.includes(h)) allHours.push(h); }));
   allHours.sort((a, b) => a - b);
@@ -1532,52 +1585,92 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
     if (d !== dateStr) return false;
     return jobHours(j).includes(hour);
   });
+  // a booked cell shows the start label only on the job's first hour, spanning visually
+  const isJobStart = (job, hour) => jobHours(job)[0] === hour;
+
+  const gridCols = `48px repeat(${ACTIVE_TRUCKS.length}, 1fr)`;
 
   return (
     <div style={{ overflowX: "auto" }}>
-      <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 360 }}>
-        <thead>
-          <tr>
-            <th style={{ ...slotCellBase, background: "var(--bg)", fontWeight: 700, width: 56 }}>Time</th>
-            {ACTIVE_TRUCKS.map(t => (
-              <th key={t} style={{ ...slotCellBase, background: truckColor(t).bg, color: truckColor(t).text, fontWeight: 700, borderBottom: `3px solid ${truckColor(t).solid}` }}>
-                {t}
-                <div style={{ fontSize: 9, color: truckColor(t).text, opacity: .75, fontWeight: 500 }}>
-                  {hourLabel(TRUCK_CONFIG[t].start)}–{hourLabel(TRUCK_CONFIG[t].end)}
-                </div>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
+      <div style={{ minWidth: 320 }}>
+        {/* Header row */}
+        <div style={{ display: "grid", gridTemplateColumns: gridCols, gap: 6, marginBottom: 6 }}>
+          <div />
+          {ACTIVE_TRUCKS.map(t => {
+            const c = truckColor(t);
+            return (
+              <div key={t} style={{ borderRadius: 10, background: c.solid, color: "#fff", padding: "7px 4px", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,.08)" }}>
+                <div style={{ fontWeight: 700, fontSize: 13, letterSpacing: ".3px" }}>{t}</div>
+                <div style={{ fontSize: 9, opacity: .85, fontWeight: 500 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00", "")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00", "")}</div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Hour rows */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {allHours.map(hour => (
-            <tr key={hour}>
-              <td style={{ ...slotCellBase, fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{hourLabel(hour)}</td>
+            <div key={hour} style={{ display: "grid", gridTemplateColumns: gridCols, gap: 6, alignItems: "stretch" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 4, fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
+                {hourLabel(hour).replace(":00", "")}
+              </div>
               {ACTIVE_TRUCKS.map(truck => {
+                const c = truckColor(truck);
                 const works = truckHours(truck).includes(hour);
-                if (!works) return <td key={truck} style={{ ...slotCellBase, background: "#F7F8FA" }} />;
+                if (!works) return <div key={truck} style={{ borderRadius: 8, background: "repeating-linear-gradient(45deg, #F4F5F7, #F4F5F7 6px, #EEF0F3 6px, #EEF0F3 12px)", minHeight: 38 }} />;
                 const taken = slotTaken(jobs, truck, dateStr, hour, excludeId);
                 const sel = inSelection(truck, hour);
                 const fits = canFit(truck, hour);
                 const occ = taken ? jobAt(truck, hour) : null;
-                let bg = "var(--card)", color = "var(--text)", cursor = "pointer", label = "Free";
-                if (taken) { bg = "#FEE2E2"; color = "#B91C1C"; cursor = onJobClick ? "pointer" : "not-allowed"; label = occ ? slotLabel(occ, "\n") : "Booked"; }
-                else if (sel) { bg = "var(--accent)"; color = "#fff"; label = "Selected"; }
-                else if (!fits) { bg = "#FEF3C7"; color = "#92400E"; cursor = "not-allowed"; label = "—"; }
+
+                if (taken) {
+                  const start = occ ? isJobStart(occ, hour) : true;
+                  return (
+                    <div key={truck}
+                      onClick={() => { if (occ && onJobClick) onJobClick(occ); }}
+                      style={{
+                        borderRadius: 8, minHeight: 48, padding: "5px 7px",
+                        background: c.bg, borderLeft: `3px solid ${c.solid}`,
+                        color: c.text, cursor: onJobClick ? "pointer" : "default",
+                        display: "flex", flexDirection: "column", justifyContent: "center",
+                        overflow: "hidden",
+                      }}>
+                      {start && occ ? (
+                        <>
+                          <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{shortService(occ.service_type)}</div>
+                          <div style={{ fontSize: 9, fontWeight: 600, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.customer_mobile || ""}</div>
+                          <div style={{ fontSize: 9, opacity: .8, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.area || ""}</div>
+                        </>
+                      ) : <div style={{ fontSize: 9, opacity: .5 }}>↑</div>}
+                    </div>
+                  );
+                }
+                let bg = "#fff", color = "var(--muted)", border = "1px solid var(--border)", label = "+", cursor = "pointer", weight = 500;
+                if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; label = "✓"; weight = 700; }
+                else if (!fits) { bg = "#FAFAF8"; color = "#D4B483"; border = "1px dashed #E8D9B5"; label = "·"; cursor = "not-allowed"; }
                 return (
-                  <td key={truck}
-                    onClick={() => { if (taken) { if (occ && onJobClick) onJobClick(occ); } else if (fits) onPick(truck, hour); }}
-                    style={{ ...slotCellBase, background: bg, color, cursor, fontSize: 10, fontWeight: sel ? 700 : 500, whiteSpace: "pre-line", lineHeight: 1.25 }}>
+                  <div key={truck}
+                    onClick={() => { if (fits) onPick(truck, hour); }}
+                    title={fits ? `Book ${truck} at ${hourLabel(hour)}` : "Not enough consecutive free time"}
+                    style={{
+                      borderRadius: 8, minHeight: 38, border, background: bg, color, cursor,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 15, fontWeight: weight, transition: "transform .08s, box-shadow .08s",
+                    }}>
                     {label}
-                  </td>
+                  </div>
                 );
               })}
-            </tr>
+            </div>
           ))}
-        </tbody>
-      </table>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
-        {onJobClick ? "Tap a booked slot to open the order, or an empty slot to start a new one. " : ""}Selecting <strong>{duration}h</strong>. Red = booked (area · name), yellow = won't fit.
+        </div>
+        {/* Legend */}
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10, fontSize: 11, color: "var(--muted)" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, border: "1px solid var(--border)", background: "#fff" }} /> Free</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "var(--accent)" }} /> Selected</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(ACTIVE_TRUCKS[0]).bg, borderLeft: `3px solid ${truckColor(ACTIVE_TRUCKS[0]).solid}` }} /> Booked</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, border: "1px dashed #E8D9B5", background: "#FAFAF8" }} /> Won't fit {duration}h</span>
+        </div>
+        {onJobClick && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>Tap a booked slot to open it, or any free slot to start a new order.</div>}
       </div>
     </div>
   );
@@ -1588,8 +1681,27 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCarCreated }) {
-  const blank = {
+function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCarCreated }) {
+  const isEdit = !!editJob;
+  // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
+  const hydrateServices = (job) => {
+    const base = (job.services && job.services.length) ? job.services : (job.items || []).map(it => ({
+      service_type: it.service_type || job.service_type, kind: it.kind || "other",
+      variant: it.variant || {}, tire_id: it.tire_id || null,
+      brand: it.brand || "", pattern: it.pattern || "", size: it.size || "",
+      cost: it.cost || 0, supplier: it.supplier || "", description: it.description || "",
+      qty: it.qty || 1, unit_price: it.unit_price || 0, car_id: it.car_id || null,
+      price_disc: blankDisc(), labor_disc: blankDisc(),
+      labor: catalogLabor(it.service_type || job.service_type, it.variant || {}, it.qty),
+    }));
+    return base.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: null, price_disc: s.price_disc || blankDisc(), labor_disc: s.labor_disc || blankDisc() }));
+  };
+  const blank = isEdit ? {
+    ...editJob,
+    services: hydrateServices(editJob),
+    start_hour: editJob.start_hour ?? (editJob.scheduled_at ? new Date(editJob.scheduled_at).getHours() : null),
+    scheduled_date: editJob.scheduled_date || (editJob.scheduled_at ? new Date(editJob.scheduled_at).toISOString().split("T")[0] : today()),
+  } : {
     customer_name: "", customer_mobile: "", customer_id: null,
     area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "",
     car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
@@ -1646,6 +1758,25 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
   };
   const pickSlot = (truck, hour) => setF(p => ({ ...p, assigned_truck: truck, start_hour: hour, is_overtime: isOTHour(truck, hour) }));
 
+  // In edit mode, resolve the customer so per-service car linking + address work
+  useEffect(() => {
+    if (isEdit && editJob.customer_id) {
+      const c = customers.find(x => x.id === editJob.customer_id);
+      if (c) setSelectedCustomer(c);
+    }
+  }, [isEdit]);
+
+  // Auto-generate the Google Maps link from address fields — unless the agent
+  // pasted a precise pin (manual links are preserved, never overwritten).
+  useEffect(() => {
+    setF(p => {
+      if (isManualPin(p.map_link)) return p; // keep precise pin
+      const gen = buildMapsLink({ area: p.area, governorate: p.governorate, block: p.block, street: p.street, lane: p.lane, house: p.house });
+      if (gen === p.map_link) return p;
+      return { ...p, map_link: gen };
+    });
+  }, [f.area, f.governorate, f.block, f.street, f.lane, f.house]);
+
   // Apply prefill from customer profile: "New Order" (customer only) or "Reorder" (copy services)
   useEffect(() => {
     if (!prefillOrder || !prefillOrder.customer) return;
@@ -1687,9 +1818,18 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
   }, [prefillOrder]);
 
 
-  const canSubmit = f.customer_name && f.customer_mobile && f.area && (f.services || []).length > 0
-    && f.services.every(s => s.kind === "tire" ? s.tire_id : (s.unit_price || s.labor))
-    && f.sales_match_confirmed && f.start_hour != null;
+  const hasProducts = orderHasProducts(f.services);
+  // Collect reasons submit is blocked (shown to the agent)
+  const submitReasons = [];
+  if (!f.customer_name) submitReasons.push("Add a customer");
+  if (!f.customer_mobile) submitReasons.push("Add a customer mobile");
+  if (!f.area) submitReasons.push("Add the area");
+  if (!(f.services || []).length) submitReasons.push("Add at least one service");
+  else if (!f.services.every(s => s.kind === "tire" ? true : (s.unit_price || s.labor)))
+    submitReasons.push("Each non-tire service needs a price or labor");
+  if (hasProducts && !f.sales_match_confirmed) submitReasons.push("Confirm the products match the customer's car");
+  if (f.start_hour == null) submitReasons.push("Pick a time slot");
+  const canSubmit = submitReasons.length === 0;
 
   const save = async () => {
     if (!canSubmit) return;
@@ -1711,21 +1851,19 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
     }
     const scheduledAt = new Date(`${f.scheduled_date}T${String(f.start_hour).padStart(2, "0")}:00:00`);
     const totalLabor = services.reduce((s, svc) => s + serviceTotals(svc).netLabor, 0);
-    // headline service summary (e.g. "Tire Change & Balancing + Oil & Filter")
     const headline = [...new Set(services.map(s => s.service_type))].join(" + ");
     const details = services.map(s => s.kind === "tire"
-      ? `${s.size} ${s.brand}${s.pattern ? " " + s.pattern : ""} ×${s.qty}`
+      ? (s.tire_id ? `${s.size} ${s.brand}${s.pattern ? " " + s.pattern : ""} ×${s.qty}` : `${s.service_type} (labor only) ×${s.qty}`)
       : `${s.service_type}${s.description ? ": " + s.description : ""}`).filter(Boolean).join(" · ");
-    // keep a flat items[] for downstream views (distributor/technician per-item checks)
     const items = services.map(s => ({
-      id: s.id, kind: s.kind, tire_id: s.tire_id,
+      id: s.id, kind: s.kind, tire_id: s.tire_id, labor_only: s.kind === "tire" && !s.tire_id,
       brand: s.brand, pattern: s.pattern, size: s.size,
-      name: s.kind === "tire" ? `${s.brand} ${s.pattern}` : s.service_type,
+      name: s.kind === "tire" ? (s.tire_id ? `${s.brand} ${s.pattern}` : `${s.service_type} (labor only)`) : s.service_type,
       description: s.description, qty: s.qty, unit_price: s.unit_price,
       cost: s.cost, supplier: s.supplier, car_id: s.car_id,
       service_type: s.service_type, variant: s.variant,
     }));
-    const job = {
+    const common = {
       ...f,
       services,
       service_type: headline,
@@ -1735,6 +1873,34 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
       qty: services.reduce((s, svc) => s + (Number(svc.qty) || 0), 0),
       service_details: details,
       scheduled_at: scheduledAt.toISOString(),
+    };
+
+    if (isEdit) {
+      // Detect whether services/items materially changed (to decide re-verification)
+      const sig = (list) => JSON.stringify((list || []).map(s => ({
+        t: s.service_type, k: s.kind, v: s.variant, tire: s.tire_id, d: s.description,
+        q: Number(s.qty) || 0, p: Number(s.unit_price) || 0, car: s.car_id || null,
+      })));
+      const itemsChanged = sig(hydrateServices(editJob)) !== sig(services);
+      const patch = { ...common };
+      delete patch.created_at; // preserve original
+      if (itemsChanged) {
+        // re-verification habit: clear all match confirmations + downstream per-item checks
+        patch.sales_match_confirmed = false;
+        patch.tech_arrival_match = false;
+        patch.item_checks = {};
+        patch.tech_checks = {};
+        patch.items_edited_at = new Date().toISOString();
+      }
+      await updateJob(editJob.id, patch);
+      onEdited({ ...editJob, ...patch });
+      setSaving(false);
+      onClose();
+      return;
+    }
+
+    const job = {
+      ...common,
       created_at: new Date().toISOString(),
       parts_status: "pending",
       truck_status: "scheduled",
@@ -1754,10 +1920,15 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-header">
-          <h3>New Order</h3>
+          <h3>{isEdit ? `Edit Order — ${editJob.customer_name}` : "New Order"}</h3>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
+          {isEdit && (editJob.parts_released || editJob.techs_released || editJob.truck_status === "processing" || editJob.truck_status === "completed") && (
+            <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 8, padding: "10px 14px", margin: "0 0 14px", fontSize: 13, color: "#92400E" }}>
+              ⚠ Work has already started on this order ({editJob.parts_released ? "parts released" : ""}{editJob.parts_released && (editJob.techs_released || editJob.truck_status !== "scheduled") ? ", " : ""}{editJob.techs_released ? "shown to technicians" : ""}{editJob.truck_status && editJob.truck_status !== "scheduled" ? ` · truck ${editJob.truck_status}` : ""}). Editing services or items will reset the verification checks and the distributor/technician will need to re-verify. Proceed carefully.
+            </div>
+          )}
           <div className="form-grid">
 
             {/* 1 — Customer by mobile */}
@@ -1835,7 +2006,15 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
                 <div className="form-field"><label>Street</label><ComboBox value={f.street} onChange={(v) => setF(p => ({ ...p, street: v }))} options={streetsForArea(f.area)} placeholder="33 or name" /></div>
                 <div className="form-field"><label>Lane (Jadda)</label><input value={f.lane} onChange={set("lane")} placeholder="optional" /></div>
                 <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
-                <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
+                <div className="form-field form-full">
+                  <label>Google Map Link {!isManualPin(f.map_link) && f.map_link ? <span style={{ color: "var(--success)", fontWeight: 600 }}>· auto (block-level)</span> : isManualPin(f.map_link) ? <span style={{ color: "var(--accent)", fontWeight: 600 }}>· exact pin</span> : ""}</label>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input value={f.map_link} onChange={set("map_link")} placeholder="Auto-fills to the block; paste customer's WhatsApp pin for exact" style={{ flex: 1 }} />
+                    {f.map_link && <a href={f.map_link} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm" style={{ whiteSpace: "nowrap" }}>📍 Open</a>}
+                  </div>
+                  {!isManualPin(f.map_link) && f.map_link && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>Rough block-level link. For pinpoint accuracy, paste the customer's shared location pin.</div>}
+                  {isManualPin(f.map_link) && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>Using exact pin. <button type="button" onClick={() => setF(p => ({ ...p, map_link: buildMapsLink(p) }))} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", padding: 0, fontSize: 11, textDecoration: "underline" }}>Reset to auto from address</button></div>}
+                </div>
               </>
             )}
 
@@ -1843,11 +2022,18 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
             <div className="form-section-title">2 · Services</div>
             <ServiceBuilder services={f.services} setServices={setServices} customerCars={formCustomerCars} />
 
-            {/* Sales match confirmation gate */}
-            <label className="form-full" style={{ display: "flex", gap: 10, alignItems: "flex-start", background: f.sales_match_confirmed ? "#F0FDF4" : "var(--bg)", border: `1px solid ${f.sales_match_confirmed ? "var(--success)" : "var(--border)"}`, borderRadius: 8, padding: "10px 12px", cursor: "pointer" }}>
-              <input type="checkbox" checked={f.sales_match_confirmed} onChange={e => setF(p => ({ ...p, sales_match_confirmed: e.target.checked }))} style={{ marginTop: 2 }} />
-              <span style={{ fontSize: 13, fontWeight: 600 }}>I'm sure the tires / products match the customer's car. <span style={{ color: "var(--danger)" }}>*</span></span>
-            </label>
+            {/* Sales match confirmation gate — only when the order has products to verify */}
+            {hasProducts ? (
+              <label className="form-full" style={{ display: "flex", gap: 10, alignItems: "flex-start", background: f.sales_match_confirmed ? "#F0FDF4" : "var(--bg)", border: `1px solid ${f.sales_match_confirmed ? "var(--success)" : "var(--border)"}`, borderRadius: 8, padding: "10px 12px", cursor: "pointer" }}>
+                <input type="checkbox" checked={f.sales_match_confirmed} onChange={e => setF(p => ({ ...p, sales_match_confirmed: e.target.checked }))} style={{ marginTop: 2 }} />
+                <span style={{ fontSize: 13, fontWeight: 600 }}>I'm sure the tires / products match the customer's car. <span style={{ color: "var(--danger)" }}>*</span></span>
+              </label>
+            ) : (
+              <div className="form-full" style={{ display: "flex", gap: 10, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 8, padding: "10px 12px" }}>
+                <span style={{ fontSize: 18 }}>🔧</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#1E40AF" }}>Labor only — no products for this order. Parts/tires with customer.</span>
+              </div>
+            )}
 
             {/* 3 — Scheduling slot grid */}
             <div className="form-section-title">3 · Scheduling</div>
@@ -1913,11 +2099,13 @@ function NewJobModal({ onClose, onCreated, customers, cars, addresses, jobs, pre
           </div>
         </div>
         <div className="modal-footer">
-          <span style={{ fontSize: 12, color: "var(--muted)", marginRight: "auto", alignSelf: "center" }}>
-            {!canSubmit && "Fill customer, items, match-confirm, and pick a slot to submit."}
-          </span>
+          {!canSubmit && (
+            <span style={{ fontSize: 12, color: "var(--danger)", marginRight: "auto", alignSelf: "center" }}>
+              Can't submit yet: {submitReasons.join(" · ")}
+            </span>
+          )}
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={!canSubmit || saving}>{saving ? "Saving…" : "Submit as Draft"}</button>
+          <button className="btn btn-primary" onClick={() => { if (!canSubmit) { alert("Can't submit yet:\n\n• " + submitReasons.join("\n• ")); return; } save(); }} disabled={saving}>{saving ? "Saving…" : isEdit ? "Save Changes" : "Submit as Draft"}</button>
         </div>
       </div>
     </div>
@@ -2004,7 +2192,7 @@ function NewCustomerModal({ initialName, initialMobile, onClose, onCreated }) {
     const savedAddrs = [];
     for (const r of addrRows) {
       if (!r.area) continue;
-      const a = await createAddress({ label: r.label, area: r.area, governorate: r.governorate || govFor(r.area), block: r.block, street: r.street, lane: r.lane, house: r.house, map_link: r.map_link, customer_id: c.id, created_at: new Date().toISOString() });
+      const a = await createAddress({ label: r.label, area: r.area, governorate: r.governorate || govFor(r.area), block: r.block, street: r.street, lane: r.lane, house: r.house, map_link: r.map_link || buildMapsLink({ ...r, governorate: r.governorate || govFor(r.area) }), customer_id: c.id, created_at: new Date().toISOString() });
       savedAddrs.push(a);
     }
     onCreated(c, savedCars, savedAddrs);
@@ -2043,8 +2231,10 @@ function NewCustomerModal({ initialName, initialMobile, onClose, onCreated }) {
 const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 
 // ─── Job Detail (with order actions) ─────────────────────────────────────────
-function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
+function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
   const [j, setJ] = useState(job);
+  const [showCancel, setShowCancel] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
 
   const patchJob = async (patch) => {
     const next = { ...j, ...patch };
@@ -2053,12 +2243,29 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
     onUpdate(next);
   };
 
+  const confirmCancel = () => {
+    const patch = { status: "cancelled", cancel_reason: cancelReason.trim() || "—", cancelled_at: new Date().toISOString() };
+    const next = { ...j, ...patch };
+    setJ(next);
+    onUpdate(next);           // reflect in list immediately
+    setShowCancel(false);
+    setCancelReason("");
+    updateJob(j.id, patch);   // persist in background (non-blocking)
+  };
+
   const isPaid = j.payment_status === "paid";
+  const isCancelled = j.status === "cancelled";
   const flowIdx = STATUS_FLOW.findIndex(s => s.key === j.status);
 
   return (
     <div className="job-detail">
       <button className="detail-back" onClick={onBack}>← Back</button>
+
+      {isCancelled && (
+        <div style={{ background: "#FEE2E2", border: "1px solid #FCA5A5", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#991B1B" }}>
+          ✕ This order is <strong>cancelled</strong>{j.cancel_reason && j.cancel_reason !== "—" ? ` — ${j.cancel_reason}` : ""}.
+        </div>
+      )}
 
       <div className="detail-hero">
         <div className="detail-hero-top">
@@ -2066,8 +2273,10 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
             <h2>{j.customer_name}</h2>
             <div className="detail-hero-sub">{j.car_brand} {j.car_model} {j.car_year} · {j.car_plate || "—"}</div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {role === "sales" && <button className="btn btn-ghost btn-sm" onClick={() => onReschedule(j)}>↻ Reschedule</button>}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {role === "sales" && !isCancelled && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(j)}>✏ Edit</button>}
+            {role === "sales" && !isCancelled && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onReschedule(j)}>↻ Reschedule</button>}
+            {role === "sales" && !isCancelled && <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => setShowCancel(true)}>✕ Cancel</button>}
             <StatusPill status={j.status} />
           </div>
         </div>
@@ -2075,7 +2284,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
           <div className="detail-field"><label>Time</label><p>{fmtDate(j.scheduled_at)} at {fmtTime(j.scheduled_at)}{j.duration ? ` · ${j.duration}h` : ""}</p></div>
           <div className="detail-field"><label>Truck / Tech</label><p>{j.assigned_truck} · {j.assigned_technician || "—"}</p></div>
           <div className="detail-field"><label>Location</label><p>{j.area}{(j.governorate || govFor(j.area)) ? " (" + (j.governorate || govFor(j.area)) + ")" : ""}, Block {j.block}, St {j.street}{j.lane ? ", Lane " + j.lane : ""}, {j.house}</p></div>
-          <div className="detail-field"><label>Map</label><p>{j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer">Open Maps ↗</a> : "—"}</p></div>
+          <div className="detail-field"><label>Map</label><p>{j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm" style={{ textDecoration: "none" }}>🧭 Navigate</a> : "—"}</p></div>
           <div className="detail-field"><label>Mobile</label><p><a href={`tel:${j.customer_mobile}`}>{j.customer_mobile}</a></p></div>
           <div className="detail-field"><label>Lead From</label><p>{j.lead_from}</p></div>
           <div className="detail-field"><label>Service</label><p>{j.service_type}</p></div>
@@ -2153,6 +2362,32 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, role }) {
           </div>
         </div>
       </div>
+
+      {showCancel && (
+        <div className="overlay" onClick={e => e.target === e.currentTarget && setShowCancel(false)}>
+          <div className="modal" style={{ maxWidth: 420 }}>
+            <div className="modal-header">
+              <h3>Cancel Order — {j.customer_name}</h3>
+              <button className="modal-close" onClick={() => setShowCancel(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              {(j.parts_released || j.techs_released || (j.truck_status && j.truck_status !== "scheduled")) && (
+                <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#92400E", marginBottom: 12 }}>
+                  ⚠ This order already has work in progress. Cancelling will remove it from the distributor/technician dashboards.
+                </div>
+              )}
+              <label style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", display: "block", marginBottom: 6 }}>Reason for cancellation (kept for records)</label>
+              <textarea className="filter-input" style={{ width: "100%", minHeight: 70, resize: "vertical" }} value={cancelReason}
+                placeholder="e.g. Customer rescheduled to next week / changed their mind / duplicate order"
+                onChange={e => setCancelReason(e.target.value)} autoFocus />
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setShowCancel(false)}>Keep Order</button>
+              <button className="btn btn-primary" style={{ background: "var(--danger)", borderColor: "var(--danger)" }} onClick={confirmCancel}>Cancel Order</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2233,7 +2468,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterDate, setFilterDate] = useState(today());
   const [search, setSearch] = useState("");
-  const [boardView, setBoardView] = useState("list"); // list | board
+  const [boardOpen, setBoardOpen] = useState(true); // Day Board shown by default, collapsible
 
   const filtered = jobs.filter(j => {
     if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
@@ -2258,10 +2493,9 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
       <div className="page-header">
         <div className="page-title">Schedule</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ display: "flex", gap: 4 }}>
-            <button className={`btn btn-sm ${boardView === "list" ? "btn-primary" : "btn-ghost"}`} onClick={() => setBoardView("list")}>List</button>
-            <button className={`btn btn-sm ${boardView === "board" ? "btn-primary" : "btn-ghost"}`} onClick={() => setBoardView("board")}>Day Board</button>
-          </div>
+          <button className={`btn btn-sm ${boardOpen ? "btn-primary" : "btn-ghost"}`} onClick={() => setBoardOpen(o => !o)}>
+            {boardOpen ? "◧ Hide Day Board" : "◧ Show Day Board"}
+          </button>
           <div className="filters">
             <input className="filter-input" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 140 }} />
             <input type="date" className="filter-select" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
@@ -2279,11 +2513,12 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
         </div>
       </div>
 
-      {boardView === "board" && (
-        <div className="card" style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+      {boardOpen && (
+        <div className="card schedule-board-panel" style={{ marginBottom: 16, flex: "1 1 380px", minWidth: 300, alignSelf: "stretch" }}>
           <div className="card-header">
             <h3>Day Board — {filterDate || today()}</h3>
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>all trucks · tap a job to open, empty slot to book</span>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>tap a job to open, empty slot to book</span>
           </div>
           <div className="card-body">
             {(() => {
@@ -2322,8 +2557,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
         </div>
       )}
 
-      {boardView === "list" && (
-      <div className="job-cards">
+      <div className="job-cards" style={{ flex: "2 1 420px", minWidth: 300 }}>
         {filtered.length === 0 && <div className="empty"><h3>No jobs</h3><p>Adjust filters or create a new job.</p></div>}
         {filtered.map(job => (
           <div key={job.id} className="job-card" onClick={() => onSelectJob(job)}>
@@ -2363,7 +2597,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
           </div>
         ))}
       </div>
-      )}
+      </div>
     </>
   );
 }
@@ -2372,7 +2606,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
 // Shows part_ready orders. Per-item: match-checkbox + Collected; once all collected,
 // Delivered unlocks. Persists to DB (parts_status, item_checks).
 function DistributorView({ jobs, onUpdate }) {
-  const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered");
+  const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled");
 
   return (
     <>
@@ -2444,7 +2678,7 @@ function DistributorCard({ job, onUpdate }) {
 function MyJobsView({ jobs, onUpdate, onSelectJob }) {
   const [myTruck, setMyTruck] = useState(ACTIVE_TRUCKS[0]);
   const myJobs = jobs
-    .filter(j => j.assigned_truck === myTruck && j.techs_released)
+    .filter(j => j.assigned_truck === myTruck && j.techs_released && j.status !== "cancelled")
     .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
     .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
 
@@ -2468,13 +2702,16 @@ function TechJobCard({ job, index, onUpdate }) {
   const [j, setJ] = useState(job);
   const [open, setOpen] = useState(false);
   const items = j.items || [];
+  const productItems = items.filter(it => it.tire_id || (Number(it.unit_price) || 0) > 0);
+  const hasProducts = productItems.length > 0;
   const tchecks = j.tech_checks || {};
   const patch = async (p) => { const next = { ...j, ...p }; setJ(next); await updateJob(j.id, p); onUpdate(next); };
 
   const startJob = () => { setOpen(true); if (j.truck_status !== "processing") patch({ truck_status: "processing" }); };
   const arrived = () => patch({ truck_status: "arrived" });
   const toggleMatch = (id) => patch({ tech_checks: { ...tchecks, [id]: !tchecks[id] } });
-  const allMatched = items.length > 0 && items.every(it => tchecks[it.id]);
+  // labor-only orders have nothing to match → completion is unblocked
+  const allMatched = !hasProducts || (productItems.length > 0 && productItems.every(it => tchecks[it.id]));
   const complete = () => { if (allMatched) patch({ truck_status: "completed", status: "done" }); };
 
   const ts = j.truck_status || "scheduled";
@@ -2492,7 +2729,13 @@ function TechJobCard({ job, index, onUpdate }) {
         <p>🚗 {j.car_brand} {j.car_model} {j.car_year} · {j.car_plate || "—"}</p>
         {j.notes && <p style={{ color: "#B45309" }}>⚠ {j.notes}</p>}
       </div>
-      {j.map_link && <a className="map-btn" href={j.map_link} target="_blank" rel="noreferrer">📍 Open in Maps</a>}
+      {!hasProducts && (
+        <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 8, padding: "8px 12px" }}>
+          <span style={{ fontSize: 16 }}>🔧</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#1E40AF" }}>Labor only — no products for this order. Parts/tires with customer.</span>
+        </div>
+      )}
+      {j.map_link && <a className="map-btn" href={j.map_link} target="_blank" rel="noreferrer" style={{ display: "inline-block", background: "var(--accent)", color: "#fff", padding: "8px 16px", borderRadius: 8, textDecoration: "none", fontWeight: 700, fontSize: 14, marginTop: 4 }}>🧭 Navigate to customer</a>}
 
       <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
         {ts === "scheduled" && <button className="btn btn-ghost btn-sm" onClick={arrived}>Mark Arrived</button>}
@@ -2500,8 +2743,8 @@ function TechJobCard({ job, index, onUpdate }) {
         {ts === "processing" && <button className="btn btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide" : "Show"} Service Details</button>}
       </div>
 
-      {/* Arrival verification (#3) — collected items match the order */}
-      {(ts === "arrived" || ts === "processing" || ts === "completed") && (
+      {/* Arrival verification (#3) — collected items match the order (products only) */}
+      {hasProducts && (ts === "arrived" || ts === "processing" || ts === "completed") && (
         <label style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", border: `1px solid ${j.tech_arrival_match ? "var(--success)" : "var(--border)"}`, borderRadius: 8, padding: "8px 12px", background: j.tech_arrival_match ? "#F0FDF4" : "var(--bg)", cursor: "pointer" }}>
           <input type="checkbox" checked={!!j.tech_arrival_match} onChange={() => patch({ tech_arrival_match: !j.tech_arrival_match })} style={{ marginTop: 2 }} />
           <span style={{ fontSize: 13 }}>
@@ -2514,21 +2757,33 @@ function TechJobCard({ job, index, onUpdate }) {
       {/* Service details revealed on Start Job */}
       {open && (
         <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 8 }}>Before fitting (#4) — confirm each tire matches the car</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {items.map(it => (
-              <label key={it.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", background: tchecks[it.id] ? "#F0FDF4" : "var(--bg)", cursor: "pointer" }}>
-                <input type="checkbox" checked={!!tchecks[it.id]} onChange={() => toggleMatch(it.id)} style={{ marginTop: 2 }} />
-                <span style={{ fontSize: 13 }}>
-                  <strong>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${it.size}` : it.name}</strong> × {it.qty}
-                  <div style={{ fontSize: 11, color: "var(--muted)" }}>I'm sure this matches the customer's car</div>
-                </span>
-              </label>
-            ))}
-          </div>
-          <button className="btn btn-success btn-sm" style={{ marginTop: 12 }} disabled={!allMatched} onClick={complete} title={!allMatched ? "Confirm all items match first" : ""}>
-            {allMatched ? "Complete Job" : `Confirm all ${items.length} items to complete`}
-          </button>
+          {hasProducts ? (
+            <>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 8 }}>Before fitting (#4) — confirm each tire matches the car</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {productItems.map(it => (
+                  <label key={it.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", background: tchecks[it.id] ? "#F0FDF4" : "var(--bg)", cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!tchecks[it.id]} onChange={() => toggleMatch(it.id)} style={{ marginTop: 2 }} />
+                    <span style={{ fontSize: 13 }}>
+                      <strong>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${it.size}` : it.name}</strong> × {it.qty}
+                      <div style={{ fontSize: 11, color: "var(--muted)" }}>I'm sure this matches the customer's car</div>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <button className="btn btn-success btn-sm" style={{ marginTop: 12 }} disabled={!allMatched} onClick={complete} title={!allMatched ? "Confirm all items match first" : ""}>
+                {allMatched ? "Complete Job" : `Confirm all ${productItems.length} items to complete`}
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
+                <span style={{ fontSize: 16 }}>🔧</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#1E40AF" }}>Labor only — no products to verify. Perform the service and complete.</span>
+              </div>
+              <button className="btn btn-success btn-sm" onClick={complete}>Complete Job</button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -2770,7 +3025,7 @@ function AddAddressModal({ customer, onClose, onCreated }) {
   const save = async () => {
     if (!f.area) return;
     setSaving(true);
-    const a = await createAddress({ ...f, governorate: f.governorate || govFor(f.area), customer_id: customer.id, created_at: new Date().toISOString() });
+    const a = await createAddress({ ...f, governorate: f.governorate || govFor(f.area), map_link: f.map_link || buildMapsLink({ ...f, governorate: f.governorate || govFor(f.area) }), customer_id: customer.id, created_at: new Date().toISOString() });
     onCreated(a);
     setSaving(false);
     onClose();
@@ -2874,6 +3129,7 @@ export default function App() {
   const [selectedJob, setSelectedJob] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [showNew, setShowNew] = useState(false);
+  const [editingJob, setEditingJob] = useState(null);
   const [prefillSlot, setPrefillSlot] = useState(null);
   const [prefillOrder, setPrefillOrder] = useState(null);
   const [rescheduleJob, setRescheduleJob] = useState(null);
@@ -3026,7 +3282,7 @@ export default function App() {
           {loading && <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>Loading…</div>}
 
           {!loading && selectedJob && (
-            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onAction={handleJobAction} />
+            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
 
           {!loading && !selectedJob && selectedCustomer && tab === "customers" && (
@@ -3045,7 +3301,7 @@ export default function App() {
           )}
 
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
-            <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onAction={handleJobAction} />
+            <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
@@ -3068,6 +3324,20 @@ export default function App() {
           jobs={jobs}
           onClose={() => setRescheduleJob(null)}
           onSaved={(updated) => { handleJobUpdate(updated); setRescheduleJob(null); }}
+        />
+      )}
+
+      {editingJob && (
+        <NewJobModal
+          editJob={editingJob}
+          customers={customers}
+          cars={cars}
+          addresses={addresses}
+          jobs={jobs}
+          onClose={() => setEditingJob(null)}
+          onEdited={(updated) => { handleJobUpdate(updated); setEditingJob(null); }}
+          onNewCustomer={handleNewCustomer}
+          onCarCreated={handleCarCreated}
         />
       )}
 
