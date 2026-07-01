@@ -20,6 +20,13 @@ async function sb(path, opts = {}) {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const PASSWORD = "bnchr901";
+// Per-truck technician logins — each truck has its own password.
+// Edit these codes as needed; only ACTIVE_TRUCKS are offered at login.
+const TRUCK_PASSWORDS = {
+  T1: "t1bnchr",
+  T2: "t2bnchr",
+  T4: "t4bnchr",
+};
 const TRUCKS = ["T1", "T2", "T4", "T5", "T6"];
 
 const STATUS_FLOW = [
@@ -851,6 +858,7 @@ async function createAddress(a) {
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { max-width: 100%; overflow-x: hidden; -webkit-text-size-adjust: 100%; }
   :root {
     --bg: #F0F2F5; --surface: #FFFFFF; --card: #FFFFFF; --border: #D8DCE6;
     --accent: #D4840A; --accent2: #C13A06; --text: #0F1117; --muted: #5A6278;
@@ -1049,16 +1057,31 @@ const css = `
   /* Divider */
   .job-detail { display: flex; flex-direction: column; gap: 14px; }
 
+  .bottom-nav { display: none; }
   @media (max-width: 640px) {
     .form-grid, .detail-grid { grid-template-columns: 1fr; }
     .nav-tabs { display: none; }
     .topbar { padding: 0 12px; }
-    .main { padding: 14px 12px; }
+    .main { padding: 14px 12px 84px; }
+    .bottom-nav { display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 150;
+      background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -2px 10px rgba(0,0,0,.06);
+      padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); justify-content: space-around; }
+    .bottom-nav-item { flex: 1; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 2px;
+      padding: 6px 4px; border-radius: 10px; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 600; }
+    .bottom-nav-item.active { color: var(--accent); background: #FFF7EC; }
+    .bottom-nav-icon { font-size: 18px; line-height: 1; }
   }
 `;
 
 function StyleTag() {
   useEffect(() => {
+    // Ensure the mobile viewport is set so the app renders at device width (no zoom-in).
+    let vp = document.querySelector('meta[name="viewport"]');
+    const created = !vp;
+    if (!vp) { vp = document.createElement("meta"); vp.name = "viewport"; }
+    vp.setAttribute("content", "width=device-width, initial-scale=1, viewport-fit=cover");
+    if (created) document.head.appendChild(vp);
+
     const el = document.createElement("style");
     el.textContent = css;
     document.head.appendChild(el);
@@ -2570,7 +2593,16 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
                 <div className="job-card-service">{job.service_type} · {job.car_brand} {job.car_model}</div>
                 {itemsSummary(job) && <div className="job-card-service" style={{ marginTop: 2, color: "var(--text)" }}>📦 {itemsSummary(job)}</div>}
               </div>
-              <StatusPill status={job.status} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+                <StatusPill status={job.status} />
+                {job.truck_status && job.truck_status !== "scheduled" && (
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 7px", borderRadius: 6,
+                    background: job.truck_status === "completed" ? "#DCFCE7" : job.truck_status === "processing" ? "#FEF3C7" : "#DBEAFE",
+                    color: job.truck_status === "completed" ? "#15803D" : job.truck_status === "processing" ? "#92400E" : "#1D4ED8" }}>
+                    🚚 {job.truck_status === "arrived" ? "parts received" : job.truck_status === "processing" ? "arrived · processing" : job.truck_status}
+                  </span>
+                )}
+              </div>
             </div>
             <div className="job-card-meta">
               <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text }}>{job.assigned_truck}</span>
@@ -2675,24 +2707,110 @@ function DistributorCard({ job, onUpdate }) {
 }
 
 // ─── Technician Dashboard (per truck) ─────────────────────────────────────────
-function MyJobsView({ jobs, onUpdate, onSelectJob }) {
-  const [myTruck, setMyTruck] = useState(ACTIVE_TRUCKS[0]);
-  const myJobs = jobs
+function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck }) {
+  const [pickTruck, setPickTruck] = useState(ACTIVE_TRUCKS[0]);
+  const myTruck = lockedTruck || pickTruck;
+  const todayJobs = jobs
     .filter(j => j.assigned_truck === myTruck && j.techs_released && j.status !== "cancelled")
     .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
     .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+
+  const isDone = (j) => j.truck_status === "completed" || j.status === "done";
+  const active = todayJobs.filter(j => !isDone(j));
+  const completed = todayJobs.filter(isDone);
+  const inProgress = active.filter(j => j.truck_status === "processing" || j.truck_status === "arrived").length;
+
+  const tc = truckColor(myTruck);
 
   return (
     <>
       <div className="page-header">
         <div className="page-title">My Jobs — {fmtDate(new Date().toISOString())}</div>
-        <select className="filter-select" value={myTruck} onChange={e => setMyTruck(e.target.value)}>
-          {ACTIVE_TRUCKS.map(t => <option key={t}>{t}</option>)}
-        </select>
+        {lockedTruck ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, color: truckColor(myTruck).text, background: truckColor(myTruck).bg, border: `2px solid ${truckColor(myTruck).solid}`, borderRadius: 8, padding: "5px 12px", fontSize: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: truckColor(myTruck).solid }} /> {myTruck}
+          </span>
+        ) : (
+          <TruckPills value={myTruck} onChange={setPickTruck} />
+        )}
       </div>
-      {myJobs.length === 0 && <div className="empty"><h3>No jobs today</h3><p>All clear for {myTruck}.</p></div>}
+
+      {/* Reporting strip */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        {[
+          { label: "Total today", value: todayJobs.length, color: "var(--text)" },
+          { label: "Completed", value: completed.length, color: "var(--success)" },
+          { label: "Remaining", value: active.length, color: tc.solid },
+        ].map(s => (
+          <div key={s.label} style={{ flex: "1 1 90px", minWidth: 90, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "12px 14px", textAlign: "center" }}>
+            <div style={{ fontFamily: "var(--font-head)", fontSize: 26, fontWeight: 700, color: s.color }}>{s.value}</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".5px" }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {active.length === 0 && <div className="empty"><h3>No active jobs</h3><p>{completed.length > 0 ? `${completed.length} completed today — see History.` : `All clear for ${myTruck}.`}</p></div>}
+
       <div className="job-cards">
-        {myJobs.map((job, i) => <TechJobCard key={job.id} job={job} index={i} onUpdate={onUpdate} />)}
+        {active.map((job, i) => <TechJobCard key={job.id} job={job} index={i} onUpdate={onUpdate} />)}
+      </div>
+    </>
+  );
+}
+
+// ─── Technician History: completed jobs (own page to keep My Jobs clean) ──────
+function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
+  const [pickTruck, setPickTruck] = useState(ACTIVE_TRUCKS[0]);
+  const myTruck = lockedTruck || pickTruck;
+  const [dateStr, setDateStr] = useState(today());
+  const isDone = (j) => j.truck_status === "completed" || j.status === "done";
+  const done = jobs
+    .filter(j => j.assigned_truck === myTruck && isDone(j) && j.status !== "cancelled")
+    .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return !dateStr || d === dateStr; })
+    .sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+  const dayTotal = done.reduce((s, j) => s + Number(j.total || 0), 0);
+
+  return (
+    <>
+      <div className="page-header">
+        <div className="page-title">History</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input type="date" className="filter-select" value={dateStr} onChange={e => setDateStr(e.target.value)} />
+          {dateStr && <button className="btn btn-ghost btn-sm" onClick={() => setDateStr("")}>All dates</button>}
+        </div>
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        {lockedTruck ? (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, color: truckColor(myTruck).text, background: truckColor(myTruck).bg, border: `2px solid ${truckColor(myTruck).solid}`, borderRadius: 8, padding: "5px 12px", fontSize: 14 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: truckColor(myTruck).solid }} /> {myTruck}
+          </span>
+        ) : (
+          <TruckPills value={myTruck} onChange={setPickTruck} />
+        )}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>
+        <span style={{ color: "var(--muted)" }}>{done.length} completed{dateStr ? ` on ${fmtDate(dateStr)}` : " (all time)"}</span>
+      </div>
+
+      {done.length === 0 && <div className="empty"><h3>No completed jobs</h3><p>Nothing for {myTruck}{dateStr ? " on this date" : ""} yet.</p></div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {done.map((job, i) => (
+          <div key={job.id} onClick={() => onSelectJob && onSelectJob(job)} style={{ background: "var(--card)", border: "1px solid var(--border)", borderLeft: "3px solid var(--success)", borderRadius: 10, padding: "12px 14px", cursor: onSelectJob ? "pointer" : "default", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>
+                <span className="my-job-num" style={{ marginRight: 6 }}>#{i + 1}</span>
+                {job.customer_name} <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>· {fmtDate(job.scheduled_at)} {fmtTime(job.scheduled_at)}</span>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{job.service_type} · {job.area}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontWeight: 700, color: "var(--success)" }}>KWD {Number(job.total || 0).toFixed(3)}</div>
+              <div style={{ fontSize: 11, color: "var(--success)" }}>✓ Done</div>
+            </div>
+          </div>
+        ))}
       </div>
     </>
   );
@@ -2705,29 +2823,59 @@ function TechJobCard({ job, index, onUpdate }) {
   const productItems = items.filter(it => it.tire_id || (Number(it.unit_price) || 0) > 0);
   const hasProducts = productItems.length > 0;
   const tchecks = j.tech_checks || {};
-  const patch = async (p) => { const next = { ...j, ...p }; setJ(next); await updateJob(j.id, p); onUpdate(next); };
+  const patch = (p) => { const next = { ...j, ...p }; setJ(next); onUpdate(next); updateJob(j.id, p); };
 
-  const startJob = () => { setOpen(true); if (j.truck_status !== "processing") patch({ truck_status: "processing" }); };
-  const arrived = () => patch({ truck_status: "arrived" });
+  const partsReceived = () => patch({ truck_status: "arrived" });
+  const startJob = () => { setOpen(true); patch({ truck_status: "processing" }); };
   const toggleMatch = (id) => patch({ tech_checks: { ...tchecks, [id]: !tchecks[id] } });
   // labor-only orders have nothing to match → completion is unblocked
   const allMatched = !hasProducts || (productItems.length > 0 && productItems.every(it => tchecks[it.id]));
   const complete = () => { if (allMatched) patch({ truck_status: "completed", status: "done" }); };
+  // can only start once parts-received match is confirmed (for product orders)
+  const canStart = !hasProducts || j.tech_arrival_match;
 
   const ts = j.truck_status || "scheduled";
+  const tsLabel = ts === "arrived" ? "parts received" : ts === "processing" ? "arrived · processing" : ts;
 
   return (
     <div className="my-job-card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div className="my-job-num">#{index + 1}</div>
-        <span className="status-pill" style={{ background: ts === "completed" ? "#DCFCE7" : ts === "processing" ? "#FEF3C7" : ts === "arrived" ? "#DBEAFE" : "var(--bg)", color: ts === "completed" ? "#15803D" : ts === "processing" ? "#92400E" : ts === "arrived" ? "#1D4ED8" : "var(--muted)" }}>{ts}</span>
+      {/* Time — the thing that must be accurate — up top with the order number */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span className="my-job-num">#{index + 1}</span>
+          <span style={{ fontFamily: "var(--font-head)", fontSize: 20, fontWeight: 700, color: "var(--text)" }}>⏰ {fmtTime(j.scheduled_at)}</span>
+          {j.duration ? <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 600 }}>· {j.duration}h</span> : ""}
+          {j.is_overtime ? <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "2px 6px", borderRadius: 4, fontWeight: 700 }}>⏱ OT</span> : ""}
+        </div>
+        <span className="status-pill" style={{ background: ts === "completed" ? "#DCFCE7" : ts === "processing" ? "#FEF3C7" : ts === "arrived" ? "#DBEAFE" : "var(--bg)", color: ts === "completed" ? "#15803D" : ts === "processing" ? "#92400E" : ts === "arrived" ? "#1D4ED8" : "var(--muted)" }}>{tsLabel}</span>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 14 }}>
         <p><strong>{j.customer_name}</strong> · <a href={`tel:${j.customer_mobile}`} style={{ color: "var(--accent)" }}>{j.customer_mobile}</a></p>
-        <p style={{ color: "var(--muted)" }}>⏰ {fmtTime(j.scheduled_at)}{j.duration ? ` · ${j.duration}h` : ""}</p>
         <p>📍 {j.area}, Block {j.block}, St {j.street}{j.lane ? ", Lane " + j.lane : ""}, {j.house}</p>
         <p>🚗 {j.car_brand} {j.car_model} {j.car_year} · {j.car_plate || "—"}</p>
         {j.notes && <p style={{ color: "#B45309" }}>⚠ {j.notes}</p>}
+      </div>
+
+      {/* Services & products at a glance + order total */}
+      <div style={{ marginTop: 10, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", marginBottom: 6 }}>Services & Products</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {items.map(it => (
+            <div key={it.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+              <span>
+                <strong>{it.kind === "tire" ? (it.tire_id ? `${it.brand} ${it.pattern || ""}` : `${it.service_type} (labor)`) : it.service_type}</strong>
+                {it.kind === "tire" && it.tire_id && it.size ? <span style={{ color: "var(--muted)" }}> · {it.size}</span> : ""}
+                {it.variant && Object.values(it.variant).filter(Boolean).length ? <span style={{ color: "var(--muted)" }}> · {Object.values(it.variant).join("/")}</span> : ""}
+                {it.kind !== "tire" && it.description ? <div style={{ fontSize: 11, color: "var(--muted)" }}>{it.description}</div> : ""}
+              </span>
+              <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>×{it.qty}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
+          <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>Order total</span>
+          <span style={{ fontFamily: "var(--font-head)", fontSize: 16, fontWeight: 700, color: "var(--accent)" }}>KWD {Number(j.total || 0).toFixed(3)}</span>
+        </div>
       </div>
       {!hasProducts && (
         <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 8, padding: "8px 12px" }}>
@@ -2738,17 +2886,17 @@ function TechJobCard({ job, index, onUpdate }) {
       {j.map_link && <a className="map-btn" href={j.map_link} target="_blank" rel="noreferrer" style={{ display: "inline-block", background: "var(--accent)", color: "#fff", padding: "8px 16px", borderRadius: 8, textDecoration: "none", fontWeight: 700, fontSize: 14, marginTop: 4 }}>🧭 Navigate to customer</a>}
 
       <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {ts === "scheduled" && <button className="btn btn-ghost btn-sm" onClick={arrived}>Mark Arrived</button>}
-        {(ts === "scheduled" || ts === "arrived") && <button className="btn btn-primary btn-sm" onClick={startJob}>Start Job</button>}
+        {ts === "scheduled" && <button className="btn btn-primary btn-sm" onClick={partsReceived}>📦 Parts received</button>}
+        {ts === "arrived" && <button className="btn btn-primary btn-sm" onClick={startJob} disabled={!canStart} title={!canStart ? "Confirm the products match first" : ""}>▶ Start Job</button>}
         {ts === "processing" && <button className="btn btn-ghost btn-sm" onClick={() => setOpen(o => !o)}>{open ? "Hide" : "Show"} Service Details</button>}
       </div>
 
-      {/* Arrival verification (#3) — collected items match the order (products only) */}
+      {/* Parts-received verification (#3) — collected items match the order (products only) */}
       {hasProducts && (ts === "arrived" || ts === "processing" || ts === "completed") && (
         <label style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "flex-start", border: `1px solid ${j.tech_arrival_match ? "var(--success)" : "var(--border)"}`, borderRadius: 8, padding: "8px 12px", background: j.tech_arrival_match ? "#F0FDF4" : "var(--bg)", cursor: "pointer" }}>
           <input type="checkbox" checked={!!j.tech_arrival_match} onChange={() => patch({ tech_arrival_match: !j.tech_arrival_match })} style={{ marginTop: 2 }} />
           <span style={{ fontSize: 13 }}>
-            <strong>On arrival:</strong> I'm sure the collected tires/products match this order
+            I'm sure the collected tires/products match this order
             <div style={{ fontSize: 11, color: "var(--muted)" }}>Verification check #3</div>
           </span>
         </label>
@@ -3118,6 +3266,8 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
 export default function App() {
   const [authed, setAuthed] = useState(false);
   const [role, setRole] = useState("sales");
+  const [loginTruck, setLoginTruck] = useState(ACTIVE_TRUCKS[0]); // chosen truck at login
+  const [sessionTruck, setSessionTruck] = useState(null);         // locked truck for this session (technician)
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState(false);
   const [jobs, setJobs] = useState([]);
@@ -3144,8 +3294,14 @@ export default function App() {
   const [usingMock, setUsingMock] = useState(false);
 
   const login = () => {
-    if (pw === PASSWORD) { setAuthed(true); setPwErr(false); }
-    else setPwErr(true);
+    if (role === "technician") {
+      // each truck has its own password; log in locked to that truck
+      if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setAuthed(true); setPwErr(false); }
+      else setPwErr(true);
+    } else {
+      if (pw === PASSWORD) { setSessionTruck(null); setAuthed(true); setPwErr(false); }
+      else setPwErr(true);
+    }
   };
 
   useEffect(() => {
@@ -3223,11 +3379,12 @@ export default function App() {
   };
 
   const allTabs = [
-    { key: "schedule",   label: "Schedule",        roles: ["sales", "purchaser"] },
-    { key: "history",    label: "History",         roles: ["sales", "purchaser"] },
-    { key: "customers",  label: "Customers",       roles: ["sales", "purchaser"] },
-    { key: "myjobs",     label: "My Jobs",         roles: ["technician"] },
-    { key: "distributor",label: "Parts & Logistics", roles: ["distributor"] },
+    { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
+    { key: "history",    label: "History",         icon: "🕘", roles: ["sales", "purchaser"] },
+    { key: "customers",  label: "Customers",       icon: "👥", roles: ["sales", "purchaser"] },
+    { key: "myjobs",     label: "My Jobs",         icon: "🔧", roles: ["technician"] },
+    { key: "myhistory",  label: "History",         icon: "🕘", roles: ["technician"] },
+    { key: "distributor",label: "Parts",           icon: "📦", roles: ["distributor"] },
   ];
   const tabs = allTabs.filter(t => t.roles.includes(role));
 
@@ -3241,12 +3398,31 @@ export default function App() {
             <p>Scheduling System · Internal</p>
             <div className="role-grid">
               {ROLES.map(r => (
-                <button key={r.key} className={`role-btn ${role === r.key ? "active" : ""}`} onClick={() => setRole(r.key)}>{r.label}</button>
+                <button key={r.key} className={`role-btn ${role === r.key ? "active" : ""}`} onClick={() => { setRole(r.key); setPwErr(false); }}>{r.label}</button>
               ))}
             </div>
-            <input type="password" placeholder="Team password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && login()} />
+            {role === "technician" && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, marginBottom: 6 }}>Select your truck</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {ACTIVE_TRUCKS.map(t => {
+                    const c = truckColor(t);
+                    const active = loginTruck === t;
+                    return (
+                      <button key={t} type="button" onClick={() => { setLoginTruck(t); setPwErr(false); }}
+                        style={{ flex: 1, minWidth: 70, padding: "8px 4px", borderRadius: 8, cursor: "pointer", fontWeight: 700,
+                          background: active ? c.solid : c.bg, color: active ? (["T1","T2"].includes(t) ? "#1A1A1A" : "#fff") : c.text,
+                          border: `2px solid ${c.solid}` }}>
+                        {active ? "✓ " : ""}{t}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <input type="password" placeholder={role === "technician" ? `${loginTruck} password` : "Team password"} value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && login()} />
             {pwErr && <div className="login-error">Incorrect password.</div>}
-            <button className="btn btn-primary" style={{ width: "100%" }} onClick={login}>Enter</button>
+            <button className="btn btn-primary" style={{ width: "100%" }} onClick={login}>Enter{role === "technician" ? ` as ${loginTruck}` : ""}</button>
           </div>
         </div>
       </>
@@ -3262,7 +3438,7 @@ export default function App() {
         <div className="topbar">
           <div className="topbar-left">
             <div className="logo">BNCHR<span>+</span></div>
-            <span className="badge-role">{role}</span>
+            <span className="badge-role">{role}{sessionTruck ? ` · ${sessionTruck}` : ""}</span>
             <nav className="nav-tabs">
               {tabs.map(t => (
                 <button key={t.key} className={`nav-tab ${tab === t.key ? "active" : ""}`}
@@ -3274,7 +3450,7 @@ export default function App() {
           </div>
           <div className="topbar-right">
             {usingMock && <span style={{ fontSize: 11, color: "var(--accent)", border: "1px solid #FDE68A", background: "#FFFBEB", borderRadius: 6, padding: "2px 8px" }}>Demo Data</span>}
-            <button className="btn-logout" onClick={() => { setAuthed(false); setPw(""); }}>Sign out</button>
+            <button className="btn-logout" onClick={() => { setAuthed(false); setPw(""); setSessionTruck(null); }}>Sign out</button>
           </div>
         </div>
 
@@ -3310,12 +3486,27 @@ export default function App() {
             <CustomersView customers={customers} cars={cars} jobs={jobs} onSelectCustomer={setSelectedCustomer} onNewCustomer={() => { setNewCustomerName(""); setNewCustomerMobile(""); setNewCustomerCallback(null); setShowNewCustomer(true); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "myjobs" && (
-            <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} />
+            <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} />
+          )}
+          {tab === "myhistory" && !selectedJob && (
+            <TechHistoryView jobs={jobs} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "distributor" && (
             <DistributorView jobs={jobs} onUpdate={handleJobUpdate} />
           )}
         </div>
+
+        {tabs.length > 1 && (
+          <nav className="bottom-nav">
+            {tabs.map(t => (
+              <button key={t.key} className={`bottom-nav-item ${tab === t.key ? "active" : ""}`}
+                onClick={() => { setTab(t.key); setSelectedJob(null); setSelectedCustomer(null); }}>
+                <span className="bottom-nav-icon">{t.icon}</span>
+                {t.label}
+              </button>
+            ))}
+          </nav>
+        )}
       </div>
 
       {rescheduleJob && (
