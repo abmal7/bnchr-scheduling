@@ -1882,12 +1882,16 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     const details = services.map(s => s.kind === "tire"
       ? (s.tire_id ? `${s.size} ${s.brand}${s.pattern ? " " + s.pattern : ""} ×${s.qty}` : `${s.service_type} (labor only) ×${s.qty}`)
       : `${s.service_type}${s.description ? ": " + s.description : ""}`).filter(Boolean).join(" · ");
+    const carLabelFor = (cid) => {
+      const c = (formCustomerCars || []).find(x => x.id === cid);
+      return c ? `${c.brand} ${c.model}${c.year ? " " + c.year : ""}`.trim() : "";
+    };
     const items = services.map(s => ({
       id: s.id, kind: s.kind, tire_id: s.tire_id, labor_only: s.kind === "tire" && !s.tire_id,
       brand: s.brand, pattern: s.pattern, size: s.size,
       name: s.kind === "tire" ? (s.tire_id ? `${s.brand} ${s.pattern}` : `${s.service_type} (labor only)`) : s.service_type,
       description: s.description, qty: s.qty, unit_price: s.unit_price,
-      cost: s.cost, supplier: s.supplier, car_id: s.car_id,
+      cost: s.cost, supplier: s.supplier, car_id: s.car_id, car_label: carLabelFor(s.car_id),
       service_type: s.service_type, variant: s.variant,
     }));
     const common = {
@@ -2840,19 +2844,51 @@ function TechJobCard({ job, index, onUpdate }) {
 
   const ts = j.truck_status || "scheduled";
   const tsLabel = ts === "arrived" ? "parts received" : ts === "processing" ? "arrived · processing" : ts;
+  // status → color for the left bar + pill (grey→blue→amber→green)
+  const statusColor = ts === "completed" ? "#15803D" : ts === "processing" ? "#D97706" : ts === "arrived" ? "#2563EB" : "#94A3B8";
+  const pillBg = ts === "completed" ? "#DCFCE7" : ts === "processing" ? "#FEF3C7" : ts === "arrived" ? "#DBEAFE" : "#F1F5F9";
+  // Per-service summary lines for the collapsed view: service + qty + car
+  const summaryLines = items.map(it => {
+    const svc = shortService(it.service_type);
+    const isTire = it.kind === "tire";
+    const qtyPart = isTire
+      ? (it.tire_id ? `×${it.qty}` : "(labor)")
+      : (Number(it.qty) > 1 ? `×${it.qty}` : "");
+    const carPart = it.car_label || (it.car_id ? "" : "") || (j.car_brand ? `${j.car_brand} ${j.car_model}`.trim() : "");
+    return { key: it.id, text: [svc, qtyPart].filter(Boolean).join(" "), car: carPart };
+  });
 
   return (
-    <div className="my-job-card">
-      {/* Time — the thing that must be accurate — up top with the order number */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, paddingBottom: 10, borderBottom: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <span className="my-job-num">#{index + 1}</span>
-          <span style={{ fontFamily: "var(--font-head)", fontSize: 20, fontWeight: 700, color: "var(--text)" }}>⏰ {fmtTime(j.scheduled_at)}</span>
-          {j.duration ? <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 600 }}>· {j.duration}h</span> : ""}
-          {j.is_overtime ? <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "2px 6px", borderRadius: 4, fontWeight: 700 }}>⏱ OT</span> : ""}
+    <div className="my-job-card" style={{ borderLeft: `4px solid ${statusColor}`, padding: 0, overflow: "hidden" }}>
+      {/* Collapsed summary — always visible, tap to expand */}
+      <div onClick={() => setOpen(o => !o)} style={{ cursor: "pointer", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+            <span className="my-job-num">#{index + 1}</span>
+            <span style={{ fontFamily: "var(--font-head)", fontSize: 18, fontWeight: 700 }}>⏰ {fmtTime(j.scheduled_at)}</span>
+            {j.is_overtime ? <span style={{ fontSize: 9, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 4, fontWeight: 700 }}>OT</span> : ""}
+          </div>
+          <div style={{ fontWeight: 600, fontSize: 14, marginTop: 3 }}>{j.customer_name} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· {j.area}</span></div>
+          {summaryLines.length > 0 && (
+            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+              {summaryLines.map(line => (
+                <div key={line.key} style={{ fontSize: 12, color: "var(--muted)", display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span style={{ fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap" }}>{line.text}</span>
+                  {line.car && <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>🚗 {line.car}</span>}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        <span className="status-pill" style={{ background: ts === "completed" ? "#DCFCE7" : ts === "processing" ? "#FEF3C7" : ts === "arrived" ? "#DBEAFE" : "var(--bg)", color: ts === "completed" ? "#15803D" : ts === "processing" ? "#92400E" : ts === "arrived" ? "#1D4ED8" : "var(--muted)" }}>{tsLabel}</span>
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontWeight: 700, color: "var(--accent)", fontSize: 14 }}>KWD {Number(j.total || 0).toFixed(3)}</div>
+          <span style={{ display: "inline-block", marginTop: 4, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 7px", borderRadius: 6, background: pillBg, color: statusColor }}>{tsLabel}</span>
+          <div style={{ fontSize: 15, color: "var(--muted)", marginTop: 2 }}>{open ? "▲" : "▼"}</div>
+        </div>
       </div>
+
+      {!open ? null : (
+      <div style={{ padding: "0 14px 14px" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 14 }}>
         <p><strong>{j.customer_name}</strong> · <a href={`tel:${j.customer_mobile}`} style={{ color: "var(--accent)" }}>{j.customer_mobile}</a></p>
         <p>📍 {j.area}, Block {j.block}, St {j.street}{j.lane ? ", Lane " + j.lane : ""}, {j.house}</p>
@@ -2937,6 +2973,8 @@ function TechJobCard({ job, index, onUpdate }) {
             </>
           )}
         </div>
+      )}
+      </div>
       )}
     </div>
   );
