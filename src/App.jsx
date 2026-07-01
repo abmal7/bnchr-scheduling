@@ -869,11 +869,11 @@ const css = `
 
   /* Login */
   .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
-  .login-box { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 40px 36px; width: 320px; box-shadow: 0 4px 24px rgba(0,0,0,.08); }
+  .login-box { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 36px 28px; width: 320px; max-width: calc(100vw - 32px); box-shadow: 0 4px 24px rgba(0,0,0,.08); }
   .login-box h1 { font-family: var(--font-head); font-size: 22px; font-weight: 700; margin-bottom: 4px; }
   .login-box h1 span { color: var(--accent); }
   .login-box p { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
-  .login-box input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; color: var(--text); font-size: 14px; margin-bottom: 12px; outline: none; }
+  .login-box input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 14px; color: var(--text); font-size: 16px; margin-bottom: 12px; outline: none; }
   .login-box input:focus { border-color: var(--accent); }
   .login-error { color: var(--danger); font-size: 12px; margin-bottom: 10px; }
   .role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 20px; }
@@ -1059,6 +1059,10 @@ const css = `
 
   .bottom-nav { display: none; }
   @media (max-width: 640px) {
+    /* iOS zooms in on focus when an input's font-size < 16px — force 16px on phones */
+    input, select, textarea,
+    .filter-input, .filter-select, .search-input,
+    .form-field input, .form-field select, .form-field textarea { font-size: 16px !important; }
     .form-grid, .detail-grid { grid-template-columns: 1fr; }
     .nav-tabs { display: none; }
     .topbar { padding: 0 12px; }
