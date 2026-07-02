@@ -1363,8 +1363,12 @@ function serviceTotals(svc) {
   const isTire = SERVICE_CATALOG[svc.service_type]?.kind === "tire";
   let grossPrice;
   if (isTire) {
-    const qty = Number(svc.qty) || 4;
-    grossPrice = (Number(svc.unit_price) || 0) * qty;
+    if (svc.staggered) {
+      grossPrice = (Number(svc.unit_price) || 0) * (Number(svc.qty) || 2) + (Number(svc.rear_unit_price) || 0) * (Number(svc.rear_qty) || 2);
+    } else {
+      const qty = Number(svc.qty) || 4;
+      grossPrice = (Number(svc.unit_price) || 0) * qty;
+    }
   } else {
     // other services: parts subtotal = sum of item prices
     grossPrice = partsGross(svc.parts);
@@ -1377,7 +1381,7 @@ function serviceTotals(svc) {
 }
 const orderTotal = (services) => (services || []).reduce((s, svc) => s + serviceTotals(svc).total, 0);
 // A service carries a product if it has a real tire OR any priced part.
-const svcHasProduct = (s) => !!s.tire_id || (SERVICE_CATALOG[s.service_type]?.kind === "tire" ? (Number(s.unit_price) || 0) > 0 : partsGross(s.parts) > 0 || (s.parts || []).some(p => p.name));
+const svcHasProduct = (s) => !!s.tire_id || !!s.rear_tire_id || (SERVICE_CATALOG[s.service_type]?.kind === "tire" ? (Number(s.unit_price) || 0) > 0 || (Number(s.rear_unit_price) || 0) > 0 : partsGross(s.parts) > 0 || (s.parts || []).some(p => p.name));
 const orderHasProducts = (services) => (services || []).some(svcHasProduct);
 
 // A fresh service block.
@@ -1388,8 +1392,10 @@ const newService = (type = "Tire Change & Balancing") => {
   return {
     id: uid(), service_type: type, kind: cat.kind || "other",
     variant,
-    // tire fields
+    // tire fields (front when staggered)
     tire_id: null, brand: "", pattern: "", size: "", year: "", cost: 0, supplier: "",
+    staggered: false,
+    rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_year: "", rear_cost: 0, rear_supplier: "", rear_unit_price: 0, rear_qty: 2,
     // other fields
     description: "",
     parts: cat.kind === "tire" ? [] : [newPart()], // itemized parts for other services
@@ -1404,7 +1410,7 @@ const newService = (type = "Tire Change & Balancing") => {
 };
 
 // ─── Service Builder: array of service blocks, each its own formula ───────────
-function ServiceBuilder({ services, setServices, customerCars }) {
+function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
   const upd = (id, patch) => setServices(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
   const remove = (id) => setServices(prev => prev.filter(s => s.id !== id));
   const addBlock = () => setServices(prev => prev.map(s => ({ ...s, _open: false })).concat(newService()));
@@ -1429,13 +1435,28 @@ function ServiceBuilder({ services, setServices, customerCars }) {
   };
   const changeVariant = (id, axis, value, svc) => {
     const variant = { ...svc.variant, [axis]: value };
-    upd(id, { variant, labor: catalogLabor(svc.service_type, variant, svc.qty) });
+    const q = svc.staggered ? (Number(svc.qty) || 0) + (Number(svc.rear_qty) || 0) : svc.qty;
+    upd(id, { variant, labor: catalogLabor(svc.service_type, variant, q) });
   };
-  const pickTire = (id, t, svc) => upd(id, {
-    tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
-    year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0, qty: 4,
-    labor: catalogLabor(svc.service_type, svc.variant, 4),
-  });
+  const totalTireQty = (s, patch = {}) => {
+    const m = { ...s, ...patch };
+    return m.staggered ? (Number(m.qty) || 0) + (Number(m.rear_qty) || 0) : (Number(m.qty) || 4);
+  };
+  const pickTire = (id, t, svc, pos) => {
+    if (pos === "rear") {
+      upd(id, { rear_tire_id: t.id, rear_brand: t.brand, rear_pattern: t.pattern, rear_size: `${t.width}/${t.aspect}R${t.rim}`,
+        rear_year: t.year, rear_cost: t.cost, rear_supplier: t.supplier, rear_unit_price: Number(t.price) || 0,
+        labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc)) });
+    } else if (svc.staggered) {
+      upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
+        year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0,
+        labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc)) });
+    } else {
+      upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
+        year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0, qty: 4,
+        labor: catalogLabor(svc.service_type, svc.variant, 4) });
+    }
+  };
 
   const carLabel = (cid) => {
     const c = (customerCars || []).find(x => x.id === cid);
@@ -1463,7 +1484,7 @@ function ServiceBuilder({ services, setServices, customerCars }) {
                     {Object.values(svc.variant || {}).filter(Boolean).length > 0 && <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}> · {Object.values(svc.variant).join(" / ")}</span>}
                   </div>
                   <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
-                    {isTire ? (svc.tire_id ? `${svc.brand} ${svc.pattern} · ${svc.qty}×` : `Labor only · ${svc.qty}×${svc.description ? " · " + svc.description.slice(0, 20) : ""}`) : (svc.description ? svc.description.slice(0, 40) + (svc.description.length > 40 ? "…" : "") : "No description")}
+                    {isTire ? (svc.staggered ? `Staggered · F ${svc.qty}× + R ${svc.rear_qty}×` : (svc.tire_id ? `${svc.brand} ${svc.pattern} · ${svc.qty}×` : `Labor only · ${svc.qty}×${svc.description ? " · " + svc.description.slice(0, 20) : ""}`)) : (svc.description ? svc.description.slice(0, 40) + (svc.description.length > 40 ? "…" : "") : "No description")}
                     {carLabel(svc.car_id) ? ` · ${carLabel(svc.car_id)}` : ""}
                   </div>
                 </div>
@@ -1509,21 +1530,89 @@ function ServiceBuilder({ services, setServices, customerCars }) {
               {/* Formula 1: tire — search is optional (no tire = labor only) */}
               {isTire ? (
                 <div style={{ marginBottom: 10 }}>
-                  {svc.tire_id ? (
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px" }}>
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 14 }}>🔗 {svc.brand} {svc.pattern}</div>
-                        <div style={{ fontSize: 12, color: "var(--muted)" }}>{svc.size}{svc.year ? " · " + svc.year : ""}</div>
+                  <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, fontWeight: 600, marginBottom: 8, cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!svc.staggered} onChange={e => {
+                      const st = e.target.checked;
+                      const patch = st
+                        ? { staggered: true, qty: 2, rear_qty: 2 }
+                        : { staggered: false, qty: 4, rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_unit_price: 0 };
+                      upd(svc.id, { ...patch, labor: catalogLabor(svc.service_type, svc.variant, st ? 4 : 4) });
+                    }} />
+                    Staggered — front and rear tires are different
+                  </label>
+
+                  {!svc.staggered ? (
+                    svc.tire_id ? (
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px" }}>
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 14 }}>🔗 {svc.brand} {svc.pattern}</div>
+                          <div style={{ fontSize: 12, color: "var(--muted)" }}>{svc.size}{svc.year ? " · " + svc.year : ""}</div>
+                        </div>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { tire_id: null, brand: "", pattern: "", size: "", unit_price: 0 })}>Change</button>
                       </div>
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { tire_id: null, brand: "", pattern: "", size: "", unit_price: 0 })}>Change</button>
-                    </div>
+                    ) : (
+                      <div>
+                        <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Search tire <span style={{ textTransform: "none", fontWeight: 500 }}>· optional (leave empty for labor only)</span></label>
+                        <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc)} />
+                        <textarea className="filter-input" style={{ minHeight: 40, resize: "vertical", width: "100%", marginTop: 6 }} value={svc.description}
+                          placeholder="Optional note (e.g. customer supplies tires, mounting + balancing only)"
+                          onChange={e => upd(svc.id, { description: e.target.value })} />
+                      </div>
+                    )
                   ) : (
-                    <div>
-                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Search tire <span style={{ textTransform: "none", fontWeight: 500 }}>· optional (leave empty for labor only)</span></label>
-                      <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc)} />
-                      <textarea className="filter-input" style={{ minHeight: 40, resize: "vertical", width: "100%", marginTop: 6 }} value={svc.description}
-                        placeholder="Optional note (e.g. customer supplies tires, mounting + balancing only)"
-                        onChange={e => upd(svc.id, { description: e.target.value })} />
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {/* Front */}
+                      <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 6 }}>Front tires</div>
+                        {svc.tire_id ? (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", borderRadius: 8 }}>
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: 13 }}>🔗 {svc.brand} {svc.pattern}</div>
+                              <div style={{ fontSize: 12, color: "var(--muted)" }}>{svc.size}{svc.year ? " · " + svc.year : ""}</div>
+                            </div>
+                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { tire_id: null, brand: "", pattern: "", size: "", unit_price: 0 })}>Change</button>
+                          </div>
+                        ) : (
+                          <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc)} />
+                        )}
+                        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "flex-end" }}>
+                          <div>
+                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Qty</label>
+                            <input type="number" min={1} className="filter-input" style={{ width: 56 }} value={svc.qty}
+                              onChange={e => upd(svc.id, { qty: e.target.value, labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc, { qty: e.target.value })) })} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price/tire (KD)</label>
+                            <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
+                          </div>
+                        </div>
+                      </div>
+                      {/* Rear */}
+                      <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 6 }}>Rear tires</div>
+                        {svc.rear_tire_id ? (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", borderRadius: 8 }}>
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: 13 }}>🔗 {svc.rear_brand} {svc.rear_pattern}</div>
+                              <div style={{ fontSize: 12, color: "var(--muted)" }}>{svc.rear_size}{svc.rear_year ? " · " + svc.rear_year : ""}</div>
+                            </div>
+                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_unit_price: 0 })}>Change</button>
+                          </div>
+                        ) : (
+                          <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc, "rear")} />
+                        )}
+                        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "flex-end" }}>
+                          <div>
+                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Qty</label>
+                            <input type="number" min={1} className="filter-input" style={{ width: 56 }} value={svc.rear_qty}
+                              onChange={e => upd(svc.id, { rear_qty: e.target.value, labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc, { rear_qty: e.target.value })) })} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price/tire (KD)</label>
+                            <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.rear_unit_price} onChange={e => upd(svc.id, { rear_unit_price: e.target.value })} />
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1567,7 +1656,7 @@ function ServiceBuilder({ services, setServices, customerCars }) {
 
               {/* Price row — tires use qty×unit price; other services use parts sum */}
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
-                {isTire && (
+                {isTire && !svc.staggered && (
                   <>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                       <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Qty</label>
@@ -1616,7 +1705,11 @@ function ServiceBuilder({ services, setServices, customerCars }) {
                     <ComboBox value={svc.new_car.brand} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, brand: v, model: "" } })} options={CAR_BRANDS} placeholder="Brand" />
                     <ComboBox value={svc.new_car.model} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, model: v } })} options={modelsFor(svc.new_car.brand)} placeholder="Model" />
                     <ComboBox value={svc.new_car.year} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, year: v } })} options={carYears} placeholder="Year" />
-                    <input className="filter-input" value={svc.new_car.plate} onChange={e => upd(svc.id, { new_car: { ...svc.new_car, plate: e.target.value } })} placeholder="Plate" />
+                    <input className="filter-input" value={svc.new_car.plate} onChange={e => upd(svc.id, { new_car: { ...svc.new_car, plate: e.target.value } })} placeholder="VIN" />
+                    <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, alignItems: "center" }}>
+                      <button type="button" className="btn btn-primary btn-sm" disabled={!onSaveCar || !svc.new_car.brand || !svc.new_car.model} onClick={() => onSaveCar && onSaveCar(svc.id)}>💾 Save car to profile</button>
+                      <span style={{ fontSize: 11, color: "var(--muted)" }}>{onSaveCar ? "Saves to the customer's cars." : "Select a customer first."}</span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1762,7 +1855,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCarCreated }) {
+function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCarCreated, onAddressCreated }) {
   const isEdit = !!editJob;
   // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
   const hydrateServices = (job) => {
@@ -1832,6 +1925,22 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
   const selectAddr = (a) => {
     setSelectedAddr(a); setAddrMode("pick");
     setF(p => ({ ...p, area: a.area, governorate: a.governorate || govFor(a.area), block: a.block, street: a.street, lane: a.lane || "", house: a.house, map_link: a.map_link || "" }));
+  };
+  // Explicit inline saves — write to the customer profile immediately (optimistic + background persist)
+  const saveInlineCar = (sid) => {
+    const s = f.services.find(x => x.id === sid);
+    if (!selectedCustomer || !s?.new_car?.brand || !s?.new_car?.model) return;
+    const car = { ...s.new_car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, customer_id: selectedCustomer.id, created_at: new Date().toISOString() };
+    if (onCarCreated) onCarCreated(car);                    // appears in profile + dropdowns immediately
+    setServices(prev => prev.map(x => x.id === sid ? { ...x, car_id: car.id, new_car: null } : x));
+    createCar(car);                                          // persist in background (non-blocking)
+  };
+  const saveInlineAddress = () => {
+    if (!selectedCustomer || !f.area) return;
+    const a = { id: `laddr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, label: f.area, area: f.area, governorate: f.governorate || govFor(f.area), block: f.block, street: f.street, lane: f.lane, house: f.house, map_link: f.map_link || buildMapsLink({ ...f, governorate: f.governorate || govFor(f.area) }), customer_id: selectedCustomer.id, created_at: new Date().toISOString() };
+    if (onAddressCreated) onAddressCreated(a);              // appears in saved addresses immediately
+    setSelectedAddr(a); setAddrMode("pick");
+    createAddress(a);                                        // persist in background (non-blocking)
   };
   const clearCustomer = () => {
     setSelectedCustomer(null); setSelectedCar(null);
@@ -1934,8 +2043,11 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     const totalLabor = services.reduce((s, svc) => s + serviceTotals(svc).netLabor, 0);
     const headline = [...new Set(services.map(s => s.service_type))].join(" + ");
     const details = services.map(s => s.kind === "tire"
-      ? (s.tire_id ? `${s.size} ${s.brand}${s.pattern ? " " + s.pattern : ""} ×${s.qty}` : `${s.service_type} (labor only) ×${s.qty}`)
+      ? (s.staggered
+          ? [s.tire_id ? `F: ${s.size} ${s.brand} ×${s.qty}` : "", s.rear_tire_id ? `R: ${s.rear_size} ${s.rear_brand} ×${s.rear_qty}` : ""].filter(Boolean).join(" + ") || `${s.service_type} (labor only)`
+          : (s.tire_id ? `${s.size} ${s.brand}${s.pattern ? " " + s.pattern : ""} ×${s.qty}` : `${s.service_type} (labor only) ×${s.qty}`))
       : (() => { const ps = (s.parts || []).filter(p => p.name); return ps.length ? `${s.service_type}: ${ps.map(p => p.name).join(", ")}` : `${s.service_type} (labor only)`; })()).filter(Boolean).join(" · ");
+    const totQtyOf = (s) => s.staggered ? (Number(s.qty) || 0) + (Number(s.rear_qty) || 0) : (Number(s.qty) || 4);
     const carLabelFor = (cid) => {
       const c = (formCustomerCars || []).find(x => x.id === cid);
       return c ? `${c.brand} ${c.model}${c.year ? " " + c.year : ""}`.trim() : "";
@@ -1943,6 +2055,31 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     const items = services.flatMap(s => {
       const car_label = carLabelFor(s.car_id);
       if (s.kind === "tire") {
+        if (s.staggered) {
+          const out = [];
+          if (s.tire_id) out.push({
+            id: s.id + "-F", kind: "tire", tire_id: s.tire_id, position: "front",
+            brand: s.brand, pattern: s.pattern, size: s.size,
+            name: `${s.brand} ${s.pattern} (front)`,
+            supplier: s.supplier || "", qty: s.qty, unit_price: s.unit_price,
+            cost: s.cost, car_id: s.car_id, car_label,
+            service_type: s.service_type, service_id: s.id, variant: s.variant,
+          });
+          if (s.rear_tire_id) out.push({
+            id: s.id + "-R", kind: "tire", tire_id: s.rear_tire_id, position: "rear",
+            brand: s.rear_brand, pattern: s.rear_pattern, size: s.rear_size,
+            name: `${s.rear_brand} ${s.rear_pattern} (rear)`,
+            supplier: s.rear_supplier || "", qty: s.rear_qty, unit_price: s.rear_unit_price,
+            cost: s.rear_cost, car_id: s.car_id, car_label,
+            service_type: s.service_type, service_id: s.id, variant: s.variant,
+          });
+          if (out.length === 0) out.push({
+            id: s.id, kind: "tire", labor_only: true, name: `${s.service_type} (labor only)`,
+            supplier: "", qty: totQtyOf(s), unit_price: 0, cost: 0, car_id: s.car_id, car_label,
+            service_type: s.service_type, service_id: s.id, variant: s.variant,
+          });
+          return out;
+        }
         return [{
           id: s.id, kind: "tire", tire_id: s.tire_id, labor_only: !s.tire_id,
           brand: s.brand, pattern: s.pattern, size: s.size,
@@ -2121,12 +2258,18 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
                   {!isManualPin(f.map_link) && f.map_link && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>Rough block-level link. For pinpoint accuracy, paste the customer's shared location pin.</div>}
                   {isManualPin(f.map_link) && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>Using exact pin. <button type="button" onClick={() => setF(p => ({ ...p, map_link: buildMapsLink(p) }))} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", padding: 0, fontSize: 11, textDecoration: "underline" }}>Reset to auto from address</button></div>}
                 </div>
+                {selectedCustomer && (
+                  <div className="form-full" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button type="button" className="btn btn-primary btn-sm" disabled={!f.area} onClick={saveInlineAddress}>💾 Save address to profile</button>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>Saves to the customer's addresses for future orders.</span>
+                  </div>
+                )}
               </>
             )}
 
             {/* 2 — Services (each its own formula) */}
             <div className="form-section-title">2 · Services</div>
-            <ServiceBuilder services={f.services} setServices={setServices} customerCars={formCustomerCars} />
+            <ServiceBuilder services={f.services} setServices={setServices} customerCars={formCustomerCars} onSaveCar={selectedCustomer ? saveInlineCar : null} />
 
             {/* Sales match confirmation gate — only when the order has products to verify */}
             {hasProducts ? (
@@ -2232,7 +2375,7 @@ function CarRowsEditor({ rows, setRows }) {
           <ComboBox value={r.brand} onChange={(v) => updBrand(i, v)} options={CAR_BRANDS} placeholder="Brand" />
           <ComboBox value={r.year} onChange={(v) => upd(i, "year", v)} options={carYears} placeholder="Year" />
           <ComboBox value={r.model} onChange={(v) => upd(i, "model", v)} options={modelsFor(r.brand)} placeholder="Model" />
-          <input className="filter-input" placeholder="Plate" value={r.plate} onChange={e => upd(i, "plate", e.target.value)} />
+          <input className="filter-input" placeholder="VIN" value={r.plate} onChange={e => upd(i, "plate", e.target.value)} />
           <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => del(i)}>✕</button>
         </div>
       ))}
@@ -2563,7 +2706,7 @@ function OrderActions({ job, onAction, compact }) {
       </button>
       <button className={`${btn} ${job.techs_released ? "btn-success" : "btn-ghost"}`}
         onClick={stop(() => onAction({ techs_released: !job.techs_released }))}>
-        {job.techs_released ? "✓ With Technicians" : "Show Technicians"}
+        {"Show Technicians"}
       </button>
     </div>
   );
@@ -2757,23 +2900,25 @@ function DistributorView({ jobs, onUpdate }) {
       </div>
 
       {(() => {
-        // Collect-view progress: items to collect across active orders
-        let totalItems = 0, collectedCount = 0;
-        active.forEach(j => {
+        // Pipeline: each item lives in exactly one bucket → to collect → collected → delivered
+        const released = jobs.filter(j => j.parts_released && j.status !== "cancelled");
+        let toCollect = 0, collectedCount = 0, deliveredCount = 0;
+        released.forEach(j => {
           const col = j.collected_items || {};
+          const delivered = j.parts_status === "delivered";
           (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part").forEach(it => {
-            totalItems++; if (col[it.id]) collectedCount++;
+            if (delivered) deliveredCount++;
+            else if (col[it.id]) collectedCount++;
+            else toCollect++;
           });
         });
-        const remaining = totalItems - collectedCount;
-        if (totalItems === 0) return null;
+        if (toCollect + collectedCount + deliveredCount === 0) return null;
         return (
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
             {[
-              { label: "Orders", value: active.length, color: "var(--text)" },
-              { label: "Items to collect", value: totalItems, color: "var(--accent)" },
-              { label: "Collected", value: collectedCount, color: "var(--success)" },
-              { label: "Remaining", value: remaining, color: "#D97706" },
+              { label: "Items to collect", value: toCollect, color: "#D97706" },
+              { label: "Collected", value: collectedCount, color: "var(--accent)" },
+              { label: "Delivered", value: deliveredCount, color: "var(--success)" },
             ].map(s => (
               <div key={s.label} style={{ flex: "1 1 90px", minWidth: 90, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px", textAlign: "center" }}>
                 <div style={{ fontFamily: "var(--font-head)", fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
@@ -3045,9 +3190,8 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck }) {
       {/* Reporting strip */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
         {[
-          { label: "Total today", value: todayJobs.length, color: "var(--text)" },
+          { label: "Jobs", value: active.length, color: truckColor(myTruck).solid },
           { label: "Completed", value: completed.length, color: "var(--success)" },
-          { label: "Remaining", value: active.length, color: tc.solid },
         ].map(s => (
           <div key={s.label} style={{ flex: "1 1 90px", minWidth: 90, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "12px 14px", textAlign: "center" }}>
             <div style={{ fontFamily: "var(--font-head)", fontSize: 26, fontWeight: 700, color: s.color }}>{s.value}</div>
@@ -3493,7 +3637,7 @@ function AddCarModal({ customer, onClose, onCreated }) {
             <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
             <div className="form-field"><label>Year</label><ComboBox value={f.year} onChange={(v) => setF(p => ({ ...p, year: v }))} options={carYears} placeholder="2023" /></div>
             <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v }))} options={modelsFor(f.brand)} placeholder="Land Cruiser" /></div>
-            <div className="form-field"><label>Plate</label><input value={f.plate} onChange={set("plate")} placeholder="Kuwait · 12345 · Private" /></div>
+            <div className="form-field"><label>VIN</label><input value={f.plate} onChange={set("plate")} placeholder="VIN" /></div>
           </div>
         </div>
         <div className="modal-footer">
@@ -3874,6 +4018,7 @@ export default function App() {
           onEdited={(updated) => { handleJobUpdate(updated); setEditingJob(null); }}
           onNewCustomer={handleNewCustomer}
           onCarCreated={handleCarCreated}
+          onAddressCreated={handleAddressCreated}
         />
       )}
 
@@ -3889,6 +4034,7 @@ export default function App() {
           onCreated={j => setJobs(prev => [j, ...prev])}
           onNewCustomer={handleNewCustomer}
           onCarCreated={handleCarCreated}
+          onAddressCreated={handleAddressCreated}
         />
       )}
 
