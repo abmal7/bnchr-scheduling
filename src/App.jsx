@@ -1749,6 +1749,15 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
 function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, onPick, onJobClick, excludeId }) {
   const allHours = [];
   ACTIVE_TRUCKS.forEach(t => truckHours(t).forEach(h => { if (!allHours.includes(h)) allHours.push(h); }));
+  // include overtime rows for hours actually booked outside regular time on this date
+  const regularSet = new Set(allHours);
+  const otRowHours = new Set();
+  jobs.forEach(j => {
+    if (j.id === excludeId || j.status === "cancelled") return;
+    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
+    if (d !== dateStr) return;
+    jobHours(j).forEach(h => { if (!regularSet.has(h)) { otRowHours.add(h); if (!allHours.includes(h)) allHours.push(h); } });
+  });
   allHours.sort((a, b) => a - b);
 
   const canFit = (truck, hour) => {
@@ -1794,33 +1803,36 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {allHours.map(hour => (
             <div key={hour} style={{ display: "grid", gridTemplateColumns: gridCols, gap: 6, alignItems: "stretch" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 4, fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>
-                {hourLabel(hour).replace(":00", "")}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 4, fontSize: 11, color: otRowHours.has(hour) ? "#B45309" : "var(--muted)", fontWeight: otRowHours.has(hour) ? 700 : 600 }}>
+                {otRowHours.has(hour) ? "⏱" : ""}{hourLabel(hour).replace(":00", "")}
               </div>
               {ACTIVE_TRUCKS.map(truck => {
                 const c = truckColor(truck);
                 const works = truckHours(truck).includes(hour);
-                if (!works) return <div key={truck} style={{ borderRadius: 8, background: "repeating-linear-gradient(45deg, #F4F5F7, #F4F5F7 6px, #EEF0F3 6px, #EEF0F3 12px)", minHeight: 38 }} />;
-                const taken = slotTaken(jobs, truck, dateStr, hour, excludeId);
+                const otOcc = !works ? jobAt(truck, hour) : null; // overtime booking outside regular hours
+                if (!works && !otOcc) return <div key={truck} style={{ borderRadius: 8, background: "repeating-linear-gradient(45deg, #F4F5F7, #F4F5F7 6px, #EEF0F3 6px, #EEF0F3 12px)", minHeight: 38 }} />;
+                const taken = !works ? true : slotTaken(jobs, truck, dateStr, hour, excludeId);
                 const sel = inSelection(truck, hour);
                 const fits = canFit(truck, hour);
-                const occ = taken ? jobAt(truck, hour) : null;
+                const occ = taken ? (otOcc || jobAt(truck, hour)) : null;
 
                 if (taken) {
                   const start = occ ? isJobStart(occ, hour) : true;
+                  const isOT = !!occ && (occ.is_overtime || !works);
                   return (
                     <div key={truck}
                       onClick={() => { if (occ && onJobClick) onJobClick(occ); }}
                       style={{
                         borderRadius: 8, minHeight: 48, padding: "5px 7px",
-                        background: c.bg, borderLeft: `3px solid ${c.solid}`,
+                        background: c.bg, borderLeft: `3px solid ${isOT ? "#F59E0B" : c.solid}`,
+                        boxShadow: isOT ? "inset 0 0 0 1px #FDE68A" : "none",
                         color: c.text, cursor: onJobClick ? "pointer" : "default",
                         display: "flex", flexDirection: "column", justifyContent: "center",
                         overflow: "hidden",
                       }}>
                       {start && occ ? (
                         <>
-                          <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{shortService(occ.service_type)}</div>
+                          <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isOT ? "⏱ " : ""}{shortService(occ.service_type)}</div>
                           <div style={{ fontSize: 9, fontWeight: 600, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.customer_mobile || ""}</div>
                           <div style={{ fontSize: 9, opacity: .8, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.area || ""}</div>
                         </>
@@ -1853,6 +1865,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "var(--accent)" }} /> Selected</span>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(ACTIVE_TRUCKS[0]).bg, borderLeft: `3px solid ${truckColor(ACTIVE_TRUCKS[0]).solid}` }} /> Booked</span>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, border: "1px dashed #E8D9B5", background: "#FAFAF8" }} /> Won't fit {duration}h</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "#FEF3C7", borderLeft: "3px solid #F59E0B" }} /> Overtime</span>
         </div>
         {onJobClick && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>Tap a booked slot to open it, or any free slot to start a new order.</div>}
       </div>
