@@ -197,7 +197,7 @@ const MOCK_TIRES = [
 const tireSize = (t) => `${t.width}/${t.aspect}R${t.rim}`;
 // Full tire spec string from an item/record: "275/35R21 103Y · 2024 · Germany"
 const liSr = (li, sr) => (li || sr) ? ` ${li || ""}${sr || ""}` : "";
-const itemSpec = (it) => [`${it.size || ""}${liSr(it.load_index, it.speed_rating)}`.trim(), it.year, it.country].filter(Boolean).join(" · ");
+const itemSpec = (it) => [`${it.size || ""}${liSr(it.load_index, it.speed_rating)}`.trim(), it.oem, it.year, it.country, it.tire_note].filter(Boolean).join(" · ");
 const uid = () => `it-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const itemsTotal = (items) => (items || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
 
@@ -410,7 +410,12 @@ async function searchTires(q) {
   if (term.length < 2) return [];
   try {
     const m = term.match(/(\d{3})\s*\/?\s*(\d{2})?\s*r?\s*(\d{2})?/i);
-    let path = "/tires?select=id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,in_stock&limit=40";
+    const SELECTS = [
+      "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,oem,notes,in_stock",
+      "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,in_stock",
+      "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,in_stock",
+    ];
+    let path = `/tires?select=${SELECTS[0]}&limit=40`;
     if (m && m[1]) {
       path += `&width=eq.${m[1]}`;
       if (m[2]) path += `&aspect=eq.${m[2]}`;
@@ -419,9 +424,10 @@ async function searchTires(q) {
       path += `&or=(brand.ilike.*${term}*,pattern.ilike.*${term}*)`;
     }
     path += "&order=price.asc";
-    let d;
-    try { d = await sb(path); }
-    catch { d = await sb(path.replace(",load_index,speed_rating", "")); } // live table may not have spec columns
+    let d = null;
+    for (const sel of SELECTS) { // live table may not have every spec column — degrade gracefully
+      try { d = await sb(path.replace(SELECTS[0], sel)); break; } catch {}
+    }
     return d && d.length ? d : MOCK_TIRES.filter(x => (`${x.brand} ${x.pattern} ${tireSize(x)}`).toLowerCase().includes(term.toLowerCase()));
   } catch {
     const t = term.toLowerCase();
@@ -1246,7 +1252,7 @@ function TireCatalogPicker({ onPick }) {
             <div key={t.id} className="search-item" onClick={() => { onPick(t); setOpen(false); setQ(""); }}>
               <div className="search-item-name">{t.brand}{t.pattern ? " " + t.pattern : ""}</div>
               <div className="search-item-sub">
-                {tireSize(t)}{liSr(t.load_index, t.speed_rating)}{t.year ? " · " + t.year : ""}{t.country ? " · " + t.country : ""}
+                {tireSize(t)}{liSr(t.load_index, t.speed_rating)}{t.oem ? " · " + t.oem : ""}{t.year ? " · " + t.year : ""}{t.country ? " · " + t.country : ""}{t.notes ? " · " + t.notes : ""}
                 {" · "}<strong style={{ color: "var(--accent)" }}>KWD {Number(t.price).toFixed(3)}</strong>
                 {t.in_stock ? <span style={{ color: "var(--success)", marginLeft: 6 }}>● in stock</span>
                             : <span style={{ color: "var(--danger)", marginLeft: 6 }}>● out</span>}
@@ -1400,9 +1406,9 @@ const newService = (type = "Tire Change & Balancing") => {
     id: uid(), service_type: type, kind: cat.kind || "other",
     variant,
     // tire fields (front when staggered)
-    tire_id: null, brand: "", pattern: "", size: "", year: "", cost: 0, supplier: "", load_index: "", speed_rating: "", country: "",
+    tire_id: null, brand: "", pattern: "", size: "", year: "", cost: 0, supplier: "", load_index: "", speed_rating: "", country: "", oem: "", tire_note: "",
     staggered: false,
-    rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_year: "", rear_cost: 0, rear_supplier: "", rear_unit_price: 0, rear_qty: 2, rear_load_index: "", rear_speed_rating: "", rear_country: "",
+    rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_year: "", rear_cost: 0, rear_supplier: "", rear_unit_price: 0, rear_qty: 2, rear_load_index: "", rear_speed_rating: "", rear_country: "", rear_oem: "", rear_tire_note: "",
     // other fields
     description: "",
     parts: cat.kind === "tire" ? [] : [newPart()], // itemized parts for other services
@@ -1453,16 +1459,16 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
     if (pos === "rear") {
       upd(id, { rear_tire_id: t.id, rear_brand: t.brand, rear_pattern: t.pattern, rear_size: `${t.width}/${t.aspect}R${t.rim}`,
         rear_year: t.year, rear_cost: t.cost, rear_supplier: t.supplier, rear_unit_price: Number(t.price) || 0,
-        rear_load_index: t.load_index || "", rear_speed_rating: t.speed_rating || "", rear_country: t.country || "",
+        rear_load_index: t.load_index || "", rear_speed_rating: t.speed_rating || "", rear_country: t.country || "", rear_oem: t.oem || "", rear_tire_note: t.notes || "",
         labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc)) });
     } else if (svc.staggered) {
       upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
-        load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "",
+        load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "", oem: t.oem || "", tire_note: t.notes || "",
         year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0,
         labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc)) });
     } else {
       upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
-        load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "",
+        load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "", oem: t.oem || "", tire_note: t.notes || "",
         year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0, qty: 4,
         labor: catalogLabor(svc.service_type, svc.variant, 4) });
     }
@@ -1604,7 +1610,7 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", borderRadius: 8 }}>
                             <div>
                               <div style={{ fontWeight: 600, fontSize: 13 }}>🔗 {svc.rear_brand} {svc.rear_pattern}</div>
-                              <div style={{ fontSize: 12, color: "var(--muted)" }}>{itemSpec({ size: svc.rear_size, load_index: svc.rear_load_index, speed_rating: svc.rear_speed_rating, year: svc.rear_year, country: svc.rear_country }) || svc.rear_size}</div>
+                              <div style={{ fontSize: 12, color: "var(--muted)" }}>{itemSpec({ size: svc.rear_size, load_index: svc.rear_load_index, speed_rating: svc.rear_speed_rating, year: svc.rear_year, country: svc.rear_country, oem: svc.rear_oem, tire_note: svc.rear_tire_note }) || svc.rear_size}</div>
                             </div>
                             <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_unit_price: 0 })}>Change</button>
                           </div>
@@ -2082,7 +2088,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           const out = [];
           if (s.tire_id) out.push({
             id: s.id + "-F", kind: "tire", tire_id: s.tire_id, position: "front",
-            brand: s.brand, pattern: s.pattern, size: s.size, year: s.year, load_index: s.load_index, speed_rating: s.speed_rating, country: s.country,
+            brand: s.brand, pattern: s.pattern, size: s.size, year: s.year, load_index: s.load_index, speed_rating: s.speed_rating, country: s.country, oem: s.oem, tire_note: s.tire_note,
             name: `${s.brand} ${s.pattern} (front)`,
             supplier: s.supplier || "", qty: s.qty, unit_price: s.unit_price,
             cost: s.cost, car_id: s.car_id, car_label,
@@ -2090,7 +2096,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           });
           if (s.rear_tire_id) out.push({
             id: s.id + "-R", kind: "tire", tire_id: s.rear_tire_id, position: "rear",
-            brand: s.rear_brand, pattern: s.rear_pattern, size: s.rear_size, year: s.rear_year, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, country: s.rear_country,
+            brand: s.rear_brand, pattern: s.rear_pattern, size: s.rear_size, year: s.rear_year, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note,
             name: `${s.rear_brand} ${s.rear_pattern} (rear)`,
             supplier: s.rear_supplier || "", qty: s.rear_qty, unit_price: s.rear_unit_price,
             cost: s.rear_cost, car_id: s.car_id, car_label,
@@ -2105,7 +2111,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
         }
         return [{
           id: s.id, kind: "tire", tire_id: s.tire_id, labor_only: !s.tire_id,
-          brand: s.brand, pattern: s.pattern, size: s.size, year: s.year, load_index: s.load_index, speed_rating: s.speed_rating, country: s.country,
+          brand: s.brand, pattern: s.pattern, size: s.size, year: s.year, load_index: s.load_index, speed_rating: s.speed_rating, country: s.country, oem: s.oem, tire_note: s.tire_note,
           name: s.tire_id ? `${s.brand} ${s.pattern}` : `${s.service_type} (labor only)`,
           supplier: s.supplier || "", qty: s.qty, unit_price: s.unit_price,
           cost: s.cost, car_id: s.car_id, car_label,
@@ -2529,7 +2535,25 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
 
   const isPaid = j.payment_status === "paid";
   const isCancelled = j.status === "cancelled";
-  const flowIdx = STATUS_FLOW.findIndex(s => s.key === j.status);
+  const [verOpen, setVerOpen] = useState(false);
+  const [payEdit, setPayEdit] = useState(false);
+  const checks = deriveChecks(j);
+  const passed = checks.filter(Boolean).length;
+
+  // group services by their linked car for the Service Details section
+  const svcCarLabel = (s) => {
+    const it = (j.items || []).find(x => x.service_id === s.id && x.car_label);
+    return (it && it.car_label) || `${j.car_brand || ""} ${j.car_model || ""}`.trim() || "—";
+  };
+  const svcGroups = {};
+  (j.services || []).forEach(s => { const car = svcCarLabel(s); (svcGroups[car] = svcGroups[car] || []).push(s); });
+
+  const Row = ({ icon, children, right }) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 13 }}>
+      <span style={{ color: "var(--muted)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{icon} {children}</span>
+      {right}
+    </div>
+  );
 
   return (
     <div className="job-detail">
@@ -2541,99 +2565,166 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
         </div>
       )}
 
+      {/* ── Customer info — one calm card ── */}
       <div className="detail-hero">
-        <div className="detail-hero-top">
+        <div className="detail-hero-top" style={{ marginBottom: 10 }}>
           <div>
-            <h2>{j.customer_name}</h2>
-            <div className="detail-hero-sub">{j.car_brand} {j.car_model} {j.car_year} · {j.car_plate || "—"}</div>
+            <h2 style={{ marginBottom: 2 }}>{j.customer_name}</h2>
+            <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+              {fmtDate(j.scheduled_at)} · <strong style={{ color: "var(--text)" }}>{fmtTime(j.scheduled_at)}</strong>{j.duration ? ` · ${j.duration}h` : ""}
+              {" · "}<span style={{ color: truckColor(j.assigned_truck).text, fontWeight: 700 }}>{j.assigned_truck}</span>
+              {j.is_overtime ? <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "1px 6px", borderRadius: 4, marginLeft: 6, fontWeight: 700 }}>⏱ OT</span> : ""}
+            </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            {role === "sales" && !isCancelled && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(j)}>✏ Edit</button>}
-            {role === "sales" && !isCancelled && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onReschedule(j)}>↻ Reschedule</button>}
-            {role === "sales" && !isCancelled && <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => setShowCancel(true)}>✕ Cancel</button>}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <StatusPill status={j.status} />
+            <div style={{ fontFamily: "var(--font-head)", fontSize: 20, fontWeight: 700, color: "var(--accent)", marginLeft: 4 }}>KWD {Number(j.total || 0).toFixed(3)}</div>
           </div>
         </div>
-        <div className="detail-grid">
-          <div className="detail-field"><label>Time</label><p>{fmtDate(j.scheduled_at)} at {fmtTime(j.scheduled_at)}{j.duration ? ` · ${j.duration}h` : ""}</p></div>
-          <div className="detail-field"><label>Truck / Tech</label><p>{j.assigned_truck} · {j.assigned_technician || "—"}</p></div>
-          <div className="detail-field"><label>Location</label><p>{j.area}{(j.governorate || govFor(j.area)) ? " (" + (j.governorate || govFor(j.area)) + ")" : ""}, Block {j.block}, St {j.street}{j.lane ? ", Lane " + j.lane : ""}, {j.house}</p></div>
-          <div className="detail-field"><label>Map</label><p>{j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer" className="btn btn-primary btn-sm" style={{ textDecoration: "none" }}>🧭 Navigate</a> : "—"}</p></div>
-          <div className="detail-field"><label>Mobile</label><p><a href={`tel:${j.customer_mobile}`}>{j.customer_mobile}</a></p></div>
-          <div className="detail-field"><label>Lead From</label><p>{j.lead_from}</p></div>
-          <div className="detail-field"><label>Service</label><p>{j.service_type}</p></div>
-          <div className="detail-field"><label>Total</label><p style={{ color: "var(--accent)", fontWeight: 700 }}>KWD {Number(j.total || 0).toFixed(3)}</p></div>
-          <div className="detail-field" style={{ gridColumn: "1/-1" }}>
-            <label>Items ({(j.items || []).length}){j.labor_charge ? ` + labor ${Number(j.labor_charge).toFixed(3)}` : ""}</label>
-            {(j.items && j.items.length) ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
-                {j.items.map(it => (
-                  <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px" }}>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}>
-                        {it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.service_type || it.name)}
-                        {it.variant && Object.values(it.variant).filter(Boolean).length > 0 && <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}> · {Object.values(it.variant).join(" / ")}</span>}
-                      </div>
-                      <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                        {it.qty} × KWD {Number(it.unit_price).toFixed(3)}
-                        {it.kind !== "tire" && it.description ? ` · ${it.description}` : ""}
-                      </div>
-                    </div>
-                    <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</div>
-                  </div>
-                ))}
-              </div>
-            ) : <p>{j.service_details || "—"}</p>}
-          </div>
-          {j.notes && <div className="detail-field" style={{ gridColumn: "1/-1" }}><label>Notes</label><p style={{ color: "#B45309", fontWeight: 500 }}>⚠ {j.notes}</p></div>}
-          <div className="detail-field"><label>Payment</label><p>{j.payment_through} · <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span></p></div>
-          <div className="detail-field"><label>Xero PO Ref</label><p>{j.xero_ref || "—"}</p></div>
-          <div className="detail-field"><label>Invoice No</label><p>{j.invoice_no || "—"}</p></div>
-          <div className="detail-field"><label>Parts</label><p>{j.parts_status || "pending"}</p></div>
-          <div className="detail-field"><label>Truck Status</label><p>{j.truck_status || "scheduled"}</p></div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <Row icon="📞" right={<a href={`tel:${j.customer_mobile}`} className="btn btn-ghost btn-sm" style={{ textDecoration: "none", flexShrink: 0 }}>Call</a>}>
+            <a href={`tel:${j.customer_mobile}`} style={{ color: "var(--accent)", fontWeight: 600 }}>{j.customer_mobile}</a>
+            <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: 12 }}>lead: {j.lead_from || "—"}</span>
+          </Row>
+          <Row icon="📍" right={j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm" style={{ textDecoration: "none", flexShrink: 0 }}>🧭 Navigate</a> : null}>
+            {j.area}{(j.governorate || govFor(j.area)) ? ` (${j.governorate || govFor(j.area)})` : ""}, Blk {j.block}{j.street ? `, St ${j.street}` : ""}{j.lane ? `, Ln ${j.lane}` : ""}{j.house ? `, ${j.house}` : ""}
+          </Row>
+          {j.notes && <div style={{ fontSize: 12.5, color: "#B45309", fontWeight: 500 }}>⚠ {j.notes}</div>}
         </div>
+        {role === "sales" && !isCancelled && (
+          <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(j)}>✏ Edit</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onReschedule(j)}>↻ Reschedule</button>
+            <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", marginLeft: "auto" }} onClick={() => setShowCancel(true)}>✕ Cancel</button>
+          </div>
+        )}
       </div>
 
-      {/* Order actions (sales/purchaser) */}
+      {/* ── Order actions — one slim card ── */}
       {(role === "sales" || role === "purchaser") && (
         <div className="card">
-          <div className="card-header"><h3>Order Actions</h3></div>
-          <div className="card-body">
+          <div className="card-body" style={{ padding: "12px 16px" }}>
             <OrderActions job={j} onAction={(patch) => patchJob(patch)} />
-            <div style={{ marginTop: 12 }}>
-              <label style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 }}>Payment Link</label>
-              <PaymentLinkEditor value={j.payment_link} onSave={(link) => patchJob({ payment_link: link })} />
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10, fontSize: 12 }}>
+              {/* payment link as a compact chip */}
+              {!payEdit ? (
+                j.payment_link ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: "3px 8px", background: "var(--bg)" }}>
+                    🔗 <button className="btn btn-ghost btn-sm" style={{ padding: "1px 6px" }} onClick={() => { navigator.clipboard && navigator.clipboard.writeText(j.payment_link); }}>Copy link</button>
+                    <button className="btn btn-ghost btn-sm" style={{ padding: "1px 6px" }} onClick={() => setPayEdit(true)}>✎</button>
+                  </span>
+                ) : (
+                  <button className="btn btn-ghost btn-sm" onClick={() => setPayEdit(true)}>+ Payment link</button>
+                )
+              ) : (
+                <span style={{ flex: "1 1 100%" }}><PaymentLinkEditor value={j.payment_link} onSave={(link) => { patchJob({ payment_link: link }); setPayEdit(false); }} /></span>
+              )}
+              <span style={{ flex: "1 1 100%" }}><AccountingEditor xeroRef={j.xero_ref} invoiceNo={j.invoice_no} onSave={(patch) => patchJob(patch)} /></span>
             </div>
-            <div style={{ marginTop: 12 }}>
-              <label style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 }}>Accounting</label>
-              <AccountingEditor xeroRef={j.xero_ref} invoiceNo={j.invoice_no} onSave={(patch) => patchJob(patch)} />
-            </div>
-            <div style={{ marginTop: 10, fontSize: 12, color: "var(--muted)" }}>
-              Payment: <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span> · Distributor: {j.parts_released ? "released" : "not yet"} · Technicians: {j.techs_released ? "released" : "not yet"} · Parts: {j.parts_status || "pending"} · Truck: {j.truck_status || "scheduled"}
+            <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--muted)" }}>
+              Payment: <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span>
+              {" · "}Parts: {j.parts_status || "pending"} · Truck: {j.truck_status || "scheduled"}
             </div>
           </div>
         </div>
       )}
 
-      {/* 4-check verification — read-only audit trail, auto-filled from real actions */}
+      {/* ── Verification — segmented progress bar, tap for detail ── */}
       <div className="card">
-        <div className="card-header">
-          <h3>4-Check Verification</h3>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>{deriveChecks(j).filter(Boolean).length}/4 verified</span>
-        </div>
-        <div className="card-body">
-          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>Auto-filled as each party verifies in their own step. Not manually editable.</div>
-          <div className="checks-list">
-            {CHECK_LABELS.map((label, i) => {
-              const done = deriveChecks(j)[i];
-              return (
-                <div key={i} className={`check-item ${done ? "done" : ""}`} style={{ cursor: "default" }}>
-                  <div className={`check-circle ${done ? "done" : ""}`}>{done ? "✓" : ""}</div>
-                  <div className="check-text"><span className="check-num">#{i + 1}</span>{label}</div>
-                </div>
-              );
-            })}
+        <div className="card-body" style={{ padding: "12px 16px", cursor: "pointer" }} onClick={() => setVerOpen(o => !o)}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700 }}>Verification</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: passed === 4 ? "var(--success)" : "var(--muted)" }}>{passed}/4 {passed === 4 ? "✓" : ""} <span style={{ fontWeight: 500, color: "var(--muted)" }}>{verOpen ? "▲" : "▼"}</span></span>
           </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
+            {checks.map((done, i) => (
+              <div key={i} title={CHECK_LABELS[i]} style={{ height: 8, borderRadius: 5, background: done ? "var(--success)" : "var(--border)", transition: "background .2s" }} />
+            ))}
+          </div>
+          {verOpen && (
+            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 5 }}>
+              {CHECK_LABELS.map((label, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
+                  <span style={{ width: 16, height: 16, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, background: checks[i] ? "var(--success)" : "var(--bg)", color: checks[i] ? "#fff" : "var(--muted)", border: checks[i] ? "none" : "1px solid var(--border)", flexShrink: 0 }}>{checks[i] ? "✓" : i + 1}</span>
+                  <span style={{ color: checks[i] ? "var(--text)" : "var(--muted)" }}>{label}</span>
+                </div>
+              ))}
+              <div style={{ fontSize: 11, color: "var(--muted)" }}>Auto-filled as each party verifies. Not manually editable.</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Service details — Car → services → items ── */}
+      <div className="card">
+        <div className="card-header"><h3>Service Details</h3></div>
+        <div className="card-body" style={{ padding: "12px 16px" }}>
+          {Object.keys(svcGroups).length ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {Object.entries(svcGroups).map(([car, svcs]) => (
+                <div key={car}>
+                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>🚗 {car}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingLeft: 12, borderLeft: "2px solid var(--border)" }}>
+                    {svcs.map(s => {
+                      const t = serviceTotals(s);
+                      const isTire = SERVICE_CATALOG[s.service_type]?.kind === "tire";
+                      const variantStr = s.variant && Object.values(s.variant).filter(Boolean).join(" / ");
+                      return (
+                        <div key={s.id} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
+                            <span style={{ fontSize: 13, fontWeight: 700 }}>
+                              {s.service_type}{variantStr ? <span style={{ color: "var(--muted)", fontWeight: 500 }}> · {variantStr}</span> : ""}
+                            </span>
+                            <span style={{ fontFamily: "var(--font-head)", fontWeight: 700, color: "var(--accent)", whiteSpace: "nowrap" }}>KWD {t.total.toFixed(3)}</span>
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12 }}>
+                            {isTire ? (<>
+                              {s.tire_id && (
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span></span>
+                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.unit_price).toFixed(3)}</span>
+                                </div>
+                              )}
+                              {s.staggered && s.rear_tire_id && (
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span></span>
+                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.rear_unit_price).toFixed(3)}</span>
+                                </div>
+                              )}
+                              {!s.tire_id && !s.rear_tire_id && <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — tires with customer{s.description ? ` · ${s.description}` : ""}</div>}
+                            </>) : (
+                              (s.parts || []).filter(p => p.name || Number(p.price) > 0).length ? (s.parts || []).filter(p => p.name || Number(p.price) > 0).map(p => (
+                                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}</span>
+                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(p.price).toFixed(3)}</span>
+                                </div>
+                              )) : <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — parts with customer{s.description ? ` · ${s.description}` : ""}</div>
+                            )}
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, color: "var(--muted)", borderTop: "1px dashed var(--border)", paddingTop: 3, marginTop: 2 }}>
+                              <span>Labor{s.labor_disc && Number(s.labor_disc.value) ? ` (disc ${s.labor_disc.type === "pct" ? s.labor_disc.value + "%" : "KD " + s.labor_disc.value})` : ""}{s.price_disc && Number(s.price_disc.value) ? ` · parts disc ${s.price_disc.type === "pct" ? s.price_disc.value + "%" : "KD " + s.price_disc.value}` : ""}</span>
+                              <span>KWD {t.netLabor.toFixed(3)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            /* legacy orders without service blocks */
+            (j.items && j.items.length) ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {j.items.map(it => (
+                  <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
+                    <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span></span>
+                    <span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <p style={{ fontSize: 13, color: "var(--muted)" }}>{j.service_details || "—"}</p>
+          )}
         </div>
       </div>
 
@@ -2841,8 +2932,46 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
                   {job.customer_name}
                   {job.customer_mobile && <a href={`tel:${job.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ marginLeft: 8, fontSize: 13, fontWeight: 500, color: "var(--accent)" }}>{job.customer_mobile}</a>}
                 </div>
-                <div className="job-card-service">{job.service_type} · {job.car_brand} {job.car_model}</div>
-                {itemsSummary(job) && <div className="job-card-service" style={{ marginTop: 2, color: "var(--text)" }}>📦 {itemsSummary(job)}</div>}
+                {(job.items && job.items.length) ? (
+                  <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 7 }}>
+                    {(() => {
+                      // group items → services → cars
+                      const svcMap = {};
+                      job.items.forEach(it => {
+                        const k = it.service_id || it.id;
+                        if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, isTire: it.kind === "tire", qty: 0, products: [], car: it.car_label || `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "—" };
+                        if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim() }); }
+                        else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name });
+                      });
+                      const carGroups = {};
+                      Object.values(svcMap).forEach(l => { (carGroups[l.car] = carGroups[l.car] || []).push(l); });
+                      return Object.entries(carGroups).map(([car, lines]) => (
+                        <div key={car}>
+                          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text)", marginBottom: 2 }}>🚗 {car}</div>
+                          <div style={{ paddingLeft: 16, display: "flex", flexDirection: "column", gap: 2 }}>
+                            {lines.map(l => (
+                              <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12, lineHeight: 1.45 }}>
+                                <span style={{ whiteSpace: "nowrap", fontWeight: 600, color: "var(--text)" }}>
+                                  <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
+                                </span>
+                                <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right" }}>
+                                  {l.products.map((p, i) => (
+                                    <span key={i}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.n}</span>
+                                  ))}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                ) : (
+                  <>
+                    <div className="job-card-service">{job.service_type} · {job.car_brand} {job.car_model}</div>
+                    {itemsSummary(job) && <div className="job-card-service" style={{ marginTop: 2, color: "var(--text)" }}>📦 {itemsSummary(job)}</div>}
+                  </>
+                )}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
                 <StatusPill status={job.status} />
