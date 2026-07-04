@@ -42,6 +42,12 @@ const STATUS_FLOW = [
 ];
 
 const DONE_STATUSES = ["done", "invoiced", "paid"];
+// Verification timestamps: keep/assign a time when a check completes, clear when it un-completes
+const verStamp = (job, key, done) => {
+  const vt = { ...(job.ver_times || {}) };
+  if (done) { if (!vt[key]) vt[key] = new Date().toISOString(); } else vt[key] = null;
+  return vt;
+};
 
 const CHECK_LABELS = [
   "Sales — confirmed tires/products match the car (at order)",
@@ -62,8 +68,9 @@ function deriveChecks(job) {
   const c2 = items.length > 0 && items.every(it => itemCk[it.id]);
   // #3 technicians verified every part matches the ORDER details
   const c3 = !!job.tech_arrival_match || (products.length > 0 && products.every(it => ordCk[it.id]));
-  // #4 technicians verified every part matches the CUSTOMER'S CAR
-  const c4 = products.length > 0 && products.every(it => carCk[it.id]);
+  // #4 technicians verified every part matches the CUSTOMER'S CAR (office-approved mismatch counts, flagged as override)
+  const mm = job.tech_mismatch || {};
+  const c4 = products.length > 0 && products.every(it => carCk[it.id] || (mm[it.id] && (mm[it.id].resolution === "approved" || mm[it.id].resolution === "dont_fit")));
   return [c1, c2, c3, c4];
 }
 
@@ -177,10 +184,12 @@ const ROLES = [
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const today = () => new Date().toISOString().split("T")[0];
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" }) : "—";
-const fmtTime = (d) => d ? new Date(d).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "—";
+const fmtTime = (d) => d ? new Date(d).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "—";
 const fmtDateTime = (d) => d ? `${fmtDate(d)} ${fmtTime(d)}` : "—";
 const statusMeta = (key) => key === "cancelled"
   ? { key: "cancelled", label: "Cancelled", color: "#DC2626" }
+  : key === "incomplete"
+  ? { key: "incomplete", label: "Incomplete", color: "#B45309" }
   : (STATUS_FLOW.find((s) => s.key === key) || STATUS_FLOW[0]);
 const nextStatus = (key) => {
   const idx = STATUS_FLOW.findIndex((s) => s.key === key);
@@ -2137,6 +2146,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     });
     const common = {
       ...f,
+      ver_times: { ...(editJob?.ver_times || {}), c1: f.sales_match_confirmed ? ((editJob?.ver_times || {}).c1 || new Date().toISOString()) : null },
       services,
       service_type: headline,
       items,
@@ -2164,6 +2174,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
         patch.tech_checks = {};
         patch.tech_checks_order = {};
         patch.tech_checks_car = {};
+        patch.ver_times = { c1: patch.sales_match_confirmed === false ? null : ((editJob.ver_times || {}).c1 || null), c2: null, c3: null, c4: null };
         patch.items_edited_at = new Date().toISOString();
       }
       await updateJob(editJob.id, patch);
@@ -2536,9 +2547,10 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
   const isPaid = j.payment_status === "paid";
   const isCancelled = j.status === "cancelled";
   const [verOpen, setVerOpen] = useState(false);
-  const [payEdit, setPayEdit] = useState(false);
   const checks = deriveChecks(j);
   const passed = checks.filter(Boolean).length;
+  const mismEntries = Object.values(j.tech_mismatch || {});
+  const c4Override = checks[3] && mismEntries.some(m => m.resolution === "approved" || m.resolution === "dont_fit");
 
   // group services by their linked car for the Service Details section
   const svcCarLabel = (s) => {
@@ -2562,6 +2574,16 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
       {isCancelled && (
         <div style={{ background: "#FEE2E2", border: "1px solid #FCA5A5", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#991B1B" }}>
           ✕ This order is <strong>cancelled</strong>{j.cancel_reason && j.cancel_reason !== "—" ? ` — ${j.cancel_reason}` : ""}.
+        </div>
+      )}
+      {j.partial_completion && j.status !== "incomplete" && (
+        <div style={{ background: "#FFFBEB", border: "1px solid #F59E0B", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#92400E" }}>
+          ◐ <strong>Partially completed</strong> — not fitted: {j.unfitted_items || "see verification"}. Schedule a follow-up job for the remaining items.
+        </div>
+      )}
+      {j.status === "incomplete" && (
+        <div style={{ background: "#FFFBEB", border: "1px solid #F59E0B", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#92400E" }}>
+          ⚠ This order is <strong>incomplete</strong> — {j.incomplete_reason || "stopped in the field"}. Office confirmed stop{j.incomplete_at ? ` · ${fmtDate(j.incomplete_at)} ${fmtTime(j.incomplete_at)}` : ""}.
         </div>
       )}
 
@@ -2606,19 +2628,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
           <div className="card-body" style={{ padding: "12px 16px" }}>
             <OrderActions job={j} onAction={(patch) => patchJob(patch)} />
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10, fontSize: 12 }}>
-              {/* payment link as a compact chip */}
-              {!payEdit ? (
-                j.payment_link ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: "3px 8px", background: "var(--bg)" }}>
-                    🔗 <button className="btn btn-ghost btn-sm" style={{ padding: "1px 6px" }} onClick={() => { navigator.clipboard && navigator.clipboard.writeText(j.payment_link); }}>Copy link</button>
-                    <button className="btn btn-ghost btn-sm" style={{ padding: "1px 6px" }} onClick={() => setPayEdit(true)}>✎</button>
-                  </span>
-                ) : (
-                  <button className="btn btn-ghost btn-sm" onClick={() => setPayEdit(true)}>+ Payment link</button>
-                )
-              ) : (
-                <span style={{ flex: "1 1 100%" }}><PaymentLinkEditor value={j.payment_link} onSave={(link) => { patchJob({ payment_link: link }); setPayEdit(false); }} /></span>
-              )}
+              <PaymentLinkEditor value={j.payment_link} onSave={(link) => patchJob({ payment_link: link })} compact />
               <span style={{ flex: "1 1 100%" }}><AccountingEditor xeroRef={j.xero_ref} invoiceNo={j.invoice_no} onSave={(patch) => patchJob(patch)} /></span>
             </div>
             <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--muted)" }}>
@@ -2638,7 +2648,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
             {checks.map((done, i) => (
-              <div key={i} title={CHECK_LABELS[i]} style={{ height: 8, borderRadius: 5, background: done ? "var(--success)" : "var(--border)", transition: "background .2s" }} />
+              <div key={i} title={CHECK_LABELS[i]} style={{ height: 8, borderRadius: 5, background: done ? (i === 3 && c4Override ? "#D97706" : "var(--success)") : "var(--border)", transition: "background .2s" }} />
             ))}
           </div>
           {verOpen && (
@@ -2646,9 +2656,21 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
               {CHECK_LABELS.map((label, i) => (
                 <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
                   <span style={{ width: 16, height: 16, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, background: checks[i] ? "var(--success)" : "var(--bg)", color: checks[i] ? "#fff" : "var(--muted)", border: checks[i] ? "none" : "1px solid var(--border)", flexShrink: 0 }}>{checks[i] ? "✓" : i + 1}</span>
-                  <span style={{ color: checks[i] ? "var(--text)" : "var(--muted)" }}>{label}</span>
+                  <span style={{ color: checks[i] ? "var(--text)" : "var(--muted)", flex: 1 }}>{label}</span>
+                  {checks[i] && (j.ver_times || {})[`c${i + 1}`] && (
+                    <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{fmtDate((j.ver_times)[`c${i + 1}`])} {fmtTime((j.ver_times)[`c${i + 1}`])}</span>
+                  )}
                 </div>
               ))}
+              {mismEntries.length > 0 && (
+                <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                  {mismEntries.map((m, i) => (
+                    <div key={i} style={{ fontSize: 11.5, color: m.resolution === "approved" ? "#92400E" : "#991B1B", fontWeight: 600 }}>
+                      {m.resolution === "approved" ? "✓ Office-approved despite mismatch" : m.resolution === "dont_fit" ? "⛔ Office confirmed — not fitted" : "⚠ Mismatch reported"} — {m.reason}{m.at ? ` · ${fmtDate(m.at)} ${fmtTime(m.at)}` : ""}
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={{ fontSize: 11, color: "var(--muted)" }}>Auto-filled as each party verifies. Not manually editable.</div>
             </div>
           )}
@@ -2682,13 +2704,13 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                               {s.tire_id && (
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                                   <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span></span>
-                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.unit_price).toFixed(3)}</span>
+                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.qty) || 0) * (Number(s.unit_price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )}
                               {s.staggered && s.rear_tire_id && (
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                                   <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span></span>
-                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.rear_unit_price).toFixed(3)}</span>
+                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.rear_unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.rear_qty) || 0) * (Number(s.rear_unit_price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )}
                               {!s.tire_id && !s.rear_tire_id && <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — tires with customer{s.description ? ` · ${s.description}` : ""}</div>}
@@ -2696,7 +2718,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                               (s.parts || []).filter(p => p.name || Number(p.price) > 0).length ? (s.parts || []).filter(p => p.name || Number(p.price) > 0).map(p => (
                                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                                   <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}</span>
-                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(p.price).toFixed(3)}</span>
+                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(p.price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(p.qty) || 1) * (Number(p.price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )) : <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — parts with customer{s.description ? ` · ${s.description}` : ""}</div>
                             )}
@@ -2719,7 +2741,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                 {j.items.map(it => (
                   <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
                     <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span></span>
-                    <span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</span>
+                    <span style={{ whiteSpace: "nowrap" }}><span style={{ color: "var(--muted)", fontWeight: 500 }}>@ {Number(it.unit_price || 0).toFixed(3)} · </span><span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</span></span>
                   </div>
                 ))}
               </div>
@@ -2786,19 +2808,36 @@ function PaymentLinkEditor({ value, onSave, compact }) {
   const [link, setLink] = useState(value || "");
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [editing, setEditing] = useState(false);
   useEffect(() => { setLink(value || ""); }, [value]);
   const copy = async () => {
     if (!link) return;
     try { await navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
   };
-  const save = () => { onSave(link); setSaved(true); setTimeout(() => setSaved(false), 1500); };
+  const save = () => { onSave(link); setSaved(true); setTimeout(() => setSaved(false), 1500); if (compact) setEditing(false); };
+  const chip = (active) => ({
+    display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer",
+    border: `1px solid ${active ? "#BBF7D0" : "var(--border)"}`, borderRadius: 8, padding: "3px 10px",
+    background: active ? "#F0FDF4" : "var(--bg)", color: active ? "#15803D" : "var(--muted)",
+    fontSize: 12, fontWeight: 600, userSelect: "none",
+  });
+  if (compact && !editing) {
+    return value ? (
+      <span style={{ display: "inline-flex", gap: 6 }} onClick={e => e.stopPropagation()}>
+        <span style={chip(true)} onClick={copy}>🔗 {copied ? "✓ Copied" : "Copy link"}</span>
+        <span style={chip(false)} onClick={() => setEditing(true)}>✎</span>
+      </span>
+    ) : (
+      <span style={chip(false)} onClick={(e) => { e.stopPropagation(); setEditing(true); }}>+ Payment link</span>
+    );
+  }
   return (
-    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }} onClick={e => e.stopPropagation()}>
       <input className="filter-input" style={{ flex: 1, minWidth: 160 }} value={link}
-        placeholder="Paste payment link…" onChange={e => setLink(e.target.value)}
-        onClick={e => e.stopPropagation()} />
-      <button className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); save(); }}>{saved ? "✓ Saved" : "Save"}</button>
-      <button className="btn btn-ghost btn-sm" disabled={!link} onClick={(e) => { e.stopPropagation(); copy(); }}>{copied ? "✓ Copied" : "Copy"}</button>
+        placeholder="Paste payment link…" onChange={e => setLink(e.target.value)} autoFocus={compact} />
+      <button className="btn btn-ghost btn-sm" onClick={save}>{saved ? "✓ Saved" : "Save"}</button>
+      <button className="btn btn-ghost btn-sm" disabled={!link} onClick={copy}>{copied ? "✓ Copied" : "Copy"}</button>
+      {compact && <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(false); setLink(value || ""); }}>✕</button>}
     </div>
   );
 }
@@ -2808,24 +2847,23 @@ function PaymentLinkEditor({ value, onSave, compact }) {
 // Payment status stays visible so it's never hidden, just not enforced.
 function OrderActions({ job, onAction, compact }) {
   const isPaid = job.payment_status === "paid";
-  const btn = compact ? "btn btn-sm" : "btn";
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
-  return (
-    <div style={{ display: "flex", gap: compact ? 6 : 10, flexWrap: "wrap", alignItems: "center" }}>
-      <button className={`${btn} ${isPaid ? "btn-success" : "btn-ghost"}`}
-        onClick={stop(() => onAction({ payment_status: isPaid ? "pending" : "paid", status: isPaid ? job.status : (job.status === "draft" ? "booked" : job.status) }))}>
-        {isPaid ? "✓ Paid" : "Mark Paid"}
-      </button>
-      <button className={`${btn} ${job.parts_released ? "btn-success" : "btn-ghost"}`}
-        onClick={stop(() => onAction({ parts_released: !job.parts_released }))}>
-        {job.parts_released ? "✓ Parts Ready" : "Parts Ready"}
-      </button>
-      <button className={`${btn} ${job.techs_released ? "btn-success" : "btn-ghost"}`}
-        onClick={stop(() => onAction({ techs_released: !job.techs_released }))}>
-        {"Show Technicians"}
-      </button>
-    </div>
-  );
+  {
+    // chip format — unified on rows and inside order details
+    const chip = (active) => ({
+      display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer",
+      border: `1px solid ${active ? "#BBF7D0" : "var(--border)"}`, borderRadius: 8, padding: "3px 10px",
+      background: active ? "#F0FDF4" : "var(--bg)", color: active ? "#15803D" : "var(--muted)",
+      fontSize: 12, fontWeight: 600, userSelect: "none",
+    });
+    return (
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={chip(isPaid)} onClick={stop(() => onAction({ payment_status: isPaid ? "pending" : "paid", status: isPaid ? job.status : (job.status === "draft" ? "booked" : job.status) }))}>{isPaid ? "✓" : "○"} Paid</span>
+        <span style={chip(job.parts_released)} onClick={stop(() => onAction({ parts_released: !job.parts_released }))}>{job.parts_released ? "✓" : "○"} Parts Ready</span>
+        <span style={chip(job.techs_released)} onClick={stop(() => onAction({ techs_released: !job.techs_released }))}>{job.techs_released ? "✓" : "○"} Show Technicians</span>
+      </div>
+    );
+  }
 }
 
 function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
@@ -3019,7 +3057,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
 // Delivered unlocks. Persists to DB (parts_status, item_checks).
 function DistributorView({ jobs, onUpdate }) {
   const [view, setView] = useState("order"); // order | supplier
-  const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled");
+  const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled" && j.status !== "incomplete");
 
   // per-item collect action (used by supplier view too) — writes to the job
   const collectItem = (job, itemId) => {
@@ -3029,8 +3067,11 @@ function DistributorView({ jobs, onUpdate }) {
   };
   const confirmItem = (job, itemId, val) => {
     const item_checks = { ...(job.item_checks || {}), [itemId]: val };
-    const next = { ...job, item_checks };
-    onUpdate(next); updateJob(job.id, { item_checks });
+    const collectable = (job.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
+    const done = collectable.length > 0 && collectable.every(it => item_checks[it.id]);
+    const ver_times = verStamp(job, "c2", done);
+    const next = { ...job, item_checks, ver_times };
+    onUpdate(next); updateJob(job.id, { item_checks, ver_times });
   };
 
   // Supplier groups across active orders (includes collected, for ✅ + progress)
@@ -3156,31 +3197,9 @@ function DistributorHistoryView({ jobs }) {
   const histSuppliers = [...new Set(history.map(h => h.supplier || "Unassigned"))].sort();
   const histFiltered = histSupplier === "all" ? history : history.filter(h => (h.supplier || "Unassigned") === histSupplier);
 
-  // Simple collection report (today + all-time counts)
-  const todayStr = today();
-  const isToday = (w) => w && new Date(w).toISOString().split("T")[0] === todayStr;
-  const collectedToday = history.filter(h => isToday(h.when)).length;
-  const ordersDelivered = new Set(history.filter(h => h.orderDelivered).map(h => h.orderId)).size;
-  const ordersPending = new Set(history.filter(h => !h.orderDelivered).map(h => h.orderId)).size;
-
   return (
     <>
       <div className="page-header"><div className="page-title">Collected History</div></div>
-
-      {/* Collection report */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
-        {[
-          { label: "Collected today", value: collectedToday, color: "var(--accent)" },
-          { label: "Total collected", value: history.length, color: "var(--text)" },
-          { label: "Orders delivered", value: ordersDelivered, color: "var(--success)" },
-          { label: "Awaiting delivery", value: ordersPending, color: "#D97706" },
-        ].map(s => (
-          <div key={s.label} style={{ flex: "1 1 100px", minWidth: 100, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "12px 14px", textAlign: "center" }}>
-            <div style={{ fontFamily: "var(--font-head)", fontSize: 24, fontWeight: 700, color: s.color }}>{s.value}</div>
-            <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".4px" }}>{s.label}</div>
-          </div>
-        ))}
-      </div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 4 }}>
@@ -3262,7 +3281,11 @@ function DistributorCard({ job, onUpdate }) {
 
   const patch = (p) => { const next = { ...j, ...p }; setJ(next); onUpdate(next); updateJob(j.id, p); };
 
-  const toggleMatch = (id) => patch({ item_checks: { ...checks, [id]: !checks[id] } });
+  const toggleMatch = (id) => {
+    const item_checks = { ...checks, [id]: !checks[id] };
+    const done = items.length > 0 && items.every(it => item_checks[it.id]);
+    patch({ item_checks, ver_times: verStamp(j, "c2", done) });
+  };
   const markCollected = (id) => {
     if (!checks[id]) return; // must confirm match first
     patch({ collected_items: { ...collected, [id]: new Date().toISOString() } });
@@ -3321,7 +3344,7 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck }) {
     .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
     .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
 
-  const isDone = (j) => j.truck_status === "completed" || j.status === "done";
+  const isDone = (j) => j.truck_status === "completed" || j.status === "done" || j.status === "incomplete";
   const active = todayJobs.filter(j => !isDone(j));
   const completed = todayJobs.filter(isDone);
   const inProgress = active.filter(j => j.truck_status === "processing" || j.truck_status === "arrived").length;
@@ -3368,7 +3391,7 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
   const [pickTruck, setPickTruck] = useState(ACTIVE_TRUCKS[0]);
   const myTruck = lockedTruck || pickTruck;
   const [dateStr, setDateStr] = useState(today());
-  const isDone = (j) => j.truck_status === "completed" || j.status === "done";
+  const isDone = (j) => j.truck_status === "completed" || j.status === "done" || j.status === "incomplete";
   const done = jobs
     .filter(j => j.assigned_truck === myTruck && isDone(j) && j.status !== "cancelled")
     .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return !dateStr || d === dateStr; })
@@ -3402,7 +3425,7 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {done.map((job, i) => (
-          <div key={job.id} onClick={() => onSelectJob && onSelectJob(job)} style={{ background: "var(--card)", border: "1px solid var(--border)", borderLeft: "3px solid var(--success)", borderRadius: 10, padding: "12px 14px", cursor: onSelectJob ? "pointer" : "default", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div key={job.id} onClick={() => onSelectJob && onSelectJob(job)} style={{ background: "var(--card)", border: "1px solid var(--border)", borderLeft: `3px solid ${job.status === "incomplete" ? "#B45309" : "var(--success)"}`, borderRadius: 10, padding: "12px 14px", cursor: onSelectJob ? "pointer" : "default", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <div style={{ fontWeight: 600, fontSize: 14 }}>
                 <span className="my-job-num" style={{ marginRight: 6 }}>#{i + 1}</span>
@@ -3411,8 +3434,8 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{job.service_type} · {job.area}</div>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontWeight: 700, color: "var(--success)" }}>KWD {Number(job.total || 0).toFixed(3)}</div>
-              <div style={{ fontSize: 11, color: "var(--success)" }}>✓ Done</div>
+              <div style={{ fontWeight: 700, color: job.status === "incomplete" ? "#B45309" : "var(--success)" }}>KWD {Number(job.total || 0).toFixed(3)}</div>
+              <div style={{ fontSize: 11, color: job.status === "incomplete" ? "#B45309" : "var(--success)", fontWeight: 600 }}>{job.status === "incomplete" ? "⚠ Incomplete" : "✓ Done"}</div>
             </div>
           </div>
         ))}
@@ -3436,32 +3459,85 @@ function TechJobCard({ job, index, onUpdate }) {
   const started = j.truck_status === "processing" || completed;
   const partsReceived = !!j.parts_received || j.truck_status === "arrived" || started;
 
-  // Parts can arrive any time — before driving, on arrival, or mid-job
-  const markPartsReceived = () => patch({ parts_received: true, truck_status: started && !completed ? "processing" : "arrived" });
   const startJob = () => patch({ truck_status: "processing" });
-  const toggleOrd = (id) => patch({ tech_checks_order: { ...ordChecks, [id]: !ordChecks[id] } });
-  const toggleCar = (id) => patch({ tech_checks_car: { ...carChecks, [id]: !carChecks[id] } });
+  const toggleOrd = (id) => {
+    const tech_checks_order = { ...ordChecks, [id]: !ordChecks[id] };
+    const done = productItems.length > 0 && productItems.every(it => tech_checks_order[it.id]);
+    const p = { tech_checks_order, ver_times: verStamp(j, "c3", done) };
+    // completing "parts match the order" = parts received (auto — no separate button)
+    if (done && !started && !completed) { p.parts_received = true; p.truck_status = "arrived"; }
+    patch(p);
+  };
+  const toggleCar = (id) => {
+    const tech_checks_car = { ...carChecks, [id]: !carChecks[id] };
+    const done = productItems.length > 0 && productItems.every(it => tech_checks_car[it.id] || (mism[it.id] && (mism[it.id].resolution === "approved" || mism[it.id].resolution === "dont_fit")));
+    patch({ tech_checks_car, ver_times: verStamp(j, "c4", done) });
+  };
 
+  const mism = j.tech_mismatch || {};
+  // an item is "resolved" for stage ② if checked OK, office-approved, or office said don't fit
+  const itemCarOk = (it) => carChecks[it.id] || (mism[it.id] && (mism[it.id].resolution === "approved" || mism[it.id].resolution === "dont_fit"));
+  const dontFitItems = productItems.filter(it => mism[it.id] && mism[it.id].resolution === "dont_fit");
+  const hasDontFit = dontFitItems.length > 0;
   const s2count = productItems.filter(it => ordChecks[it.id]).length;
-  const s3count = productItems.filter(it => carChecks[it.id]).length;
+  const s3count = productItems.filter(itemCarOk).length;
   const s2done = hasProducts && s2count === productItems.length;
-  const s3done = hasProducts && s3count === productItems.length;
+  const s3done = hasProducts && productItems.every(itemCarOk);
+
+  // ── Mismatch flow (stage ②): flag item → office decides. Inline UI (no browser popups — they're blocked in some mobile browsers) ──
+  const [flagging, setFlagging] = useState(null);      // item id whose reason input is open
+  const [flagReason, setFlagReason] = useState("");
+  const [confirmStop, setConfirmStop] = useState(false); // inline stop confirmation
+  const startFlag = (id) => { setFlagging(id); setFlagReason(""); };
+  const saveFlag = (id) => {
+    const reason = flagReason.trim();
+    if (!reason) return;
+    setFlagging(null); setFlagReason("");
+    patch({ tech_mismatch: { ...mism, [id]: { reason, at: new Date().toISOString(), resolution: null } }, tech_checks_car: { ...carChecks, [id]: false }, ver_times: verStamp(j, "c4", false) });
+  };
+  const clearMismatch = (id) => { const m = { ...mism }; delete m[id]; setConfirmStop(false); patch({ tech_mismatch: m }); };
+  const resolveMismatch = (id, resolution) => {
+    const m = { ...mism, [id]: { ...mism[id], resolution, resolved_at: new Date().toISOString() } };
+    const done = productItems.every(it => carChecks[it.id] || (m[it.id] && (m[it.id].resolution === "approved" || m[it.id].resolution === "dont_fit")));
+    setConfirmStop(false);
+    patch({ tech_mismatch: m, ver_times: verStamp(j, "c4", done) });
+  };
+  const approveMismatch = (id) => resolveMismatch(id, "approved");
+  const dontFitMismatch = (id) => resolveMismatch(id, "dont_fit");
+  const stopIncomplete = () => {
+    const reasons = Object.values(mism).map(x => x.reason).filter(Boolean).join(" · ");
+    setConfirmStop(false);
+    patch({ status: "incomplete", incomplete_at: new Date().toISOString(), incomplete_reason: reasons || "Mismatch — office confirmed stop" });
+  };
   const canComplete = !hasProducts || (s2done && s3done);
-  const complete = () => { if (canComplete && !completed) patch({ truck_status: "completed", status: "done" }); };
+  const complete = () => {
+    if (!canComplete || completed) return;
+    const p = { truck_status: "completed", status: "done" };
+    if (hasDontFit) {
+      p.partial_completion = true;
+      p.unfitted_items = dontFitItems.map(it => `${it.qty}× ${it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name} — ${mism[it.id].reason}`).join(" · ");
+    }
+    patch(p);
+  };
 
   const ts = completed ? "completed" : started ? "processing" : partsReceived ? "arrived" : "scheduled";
   const tsLabel = ts === "arrived" ? "parts received" : ts === "processing" ? "in progress" : ts;
   const statusColor = ts === "completed" ? "#15803D" : ts === "processing" ? "#D97706" : ts === "arrived" ? "#2563EB" : "#94A3B8";
   const pillBg = ts === "completed" ? "#DCFCE7" : ts === "processing" ? "#FEF3C7" : ts === "arrived" ? "#DBEAFE" : "#F1F5F9";
 
-  // Per-service summary lines for the collapsed view: service + qty + car
-  const summaryLines = items.map(it => {
-    const svc = shortService(it.service_type);
-    const isTire = it.kind === "tire";
-    const qtyPart = isTire ? (it.tire_id ? `×${it.qty}` : "(labor)") : (Number(it.qty) > 1 ? `×${it.qty}` : "");
-    const carPart = it.car_label || (j.car_brand ? `${j.car_brand} ${j.car_model}`.trim() : "");
-    return { key: it.id, text: [svc, qtyPart].filter(Boolean).join(" "), car: carPart };
-  });
+  // Collapsed summary: car → services → product summaries (sales-row structure)
+  const collapsedGroups = (() => {
+    const svcMap = {};
+    items.forEach(it => {
+      const k = it.service_id || it.id;
+      if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, isTire: it.kind === "tire", qty: 0, products: [], car: it.car_label || `${j.car_brand || ""} ${j.car_model || ""}`.trim() || "—" };
+      if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim() }); }
+      else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name });
+    });
+    const groups = {};
+    Object.values(svcMap).forEach(l => { (groups[l.car] = groups[l.car] || []).push(l); });
+    return Object.entries(groups);
+  })();
 
   // A stage section: done → slim green ✓ header (tap to reopen); active → full body
   const Stage = ({ num, title, done, meta, children, muted }) => {
@@ -3480,105 +3556,175 @@ function TechJobCard({ job, index, onUpdate }) {
     );
   };
 
-  const checkRow = (it, checked, onToggle, verb) => (
-    <label key={it.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: checked ? "#F0FDF4" : "var(--bg)", cursor: "pointer" }}>
-      <input type="checkbox" checked={!!checked} onChange={onToggle} style={{ marginTop: 2 }} />
-      <span style={{ fontSize: 12.5 }}>
-        <strong>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""}${it.position ? ` (${it.position})` : ""}` : it.name}</strong> × {it.qty}
-        {it.kind === "tire" && itemSpec(it) && <div style={{ fontSize: 11.5, color: "var(--text)", fontWeight: 600, marginTop: 1 }}>{itemSpec(it)}</div>}
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 1 }}>{verb}</div>
-      </span>
-    </label>
+  // Verification checklist structured like Service Details: car → service → products (no prices)
+  const verGroups = (() => {
+    const svcMap = {};
+    productItems.forEach(it => {
+      const k = it.service_id || it.id;
+      if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, variant: it.variant, car: it.car_label || `${j.car_brand || ""} ${j.car_model || ""}`.trim() || "—", items: [] };
+      svcMap[k].items.push(it);
+    });
+    const g = {};
+    Object.values(svcMap).forEach(s => { (g[s.car] = g[s.car] || []).push(s); });
+    return Object.entries(g);
+  })();
+  const verChecklist = (checkMap, toggle, withMismatch) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {verGroups.map(([car, svcs]) => (
+        <div key={car}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>🚗 {car}</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingLeft: 10, borderLeft: "2px solid var(--border)" }}>
+            {svcs.map(s => {
+              const variantStr = s.variant && Object.values(s.variant).filter(Boolean).join(" / ");
+              return (
+                <div key={s.key} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 9, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 5 }}>{s.service_type}{variantStr ? <span style={{ color: "var(--muted)", fontWeight: 500 }}> · {variantStr}</span> : ""}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                    {s.items.map(it => {
+                      const m = withMismatch ? mism[it.id] : null;
+                      const itemLabel = (
+                        <span style={{ fontSize: 12.5 }}>
+                          <span style={{ color: "var(--accent)", fontWeight: 700 }}>{it.qty}×</span> <strong>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""}${it.position ? ` (${it.position})` : ""}` : it.name}</strong>
+                          {it.kind === "tire" && itemSpec(it) ? <span style={{ color: "var(--muted)" }}> · {itemSpec(it)}</span> : ""}
+                          {it.kind === "part" && it.supplier ? <span style={{ fontSize: 10, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "0 5px", marginLeft: 5 }}>{it.supplier}</span> : ""}
+                        </span>
+                      );
+                      if (m && !m.resolution) return (
+                        <div key={it.id} style={{ border: "1px solid #FCA5A5", borderRadius: 8, padding: "8px 10px", background: "#FEF2F2" }}>
+                          {itemLabel}
+                          <div style={{ fontSize: 12, color: "#991B1B", fontWeight: 600, margin: "5px 0" }}>⚠ Doesn't match: {m.reason}</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            <button type="button" className="btn btn-sm" style={{ background: "#FEF3C7", border: "1px solid #F59E0B", color: "#92400E", fontWeight: 700 }} onClick={() => approveMismatch(it.id)}>✓ Office approved — proceed with fitting</button>
+                            <button type="button" className="btn btn-sm" style={{ background: "#FEE2E2", border: "1px solid #DC2626", color: "#991B1B", fontWeight: 700 }} onClick={() => dontFitMismatch(it.id)}>⛔ Office confirmed — don't fit this item</button>
+                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => clearMismatch(it.id)}>↩ Undo (flagged by mistake)</button>
+                          </div>
+                        </div>
+                      );
+                      if (m && m.resolution === "dont_fit") return (
+                        <div key={it.id} style={{ border: "1px solid #DC2626", borderRadius: 8, padding: "7px 9px", background: "#FEF2F2", opacity: .9 }}>
+                          {itemLabel}
+                          <div style={{ fontSize: 11.5, color: "#991B1B", fontWeight: 700, marginTop: 3 }}>⛔ Office confirmed — don't fit · {m.reason}</div>
+                          {m.resolved_at && <div style={{ fontSize: 10.5, color: "#B91C1C" }}>{fmtDate(m.resolved_at)} {fmtTime(m.resolved_at)}</div>}
+                        </div>
+                      );
+                      if (m && m.resolution === "approved") return (
+                        <div key={it.id} style={{ border: "1px solid #F59E0B", borderRadius: 8, padding: "7px 9px", background: "#FFFBEB" }}>
+                          {itemLabel}
+                          <div style={{ fontSize: 11.5, color: "#92400E", fontWeight: 700, marginTop: 3 }}>✓ Office-approved despite mismatch · {m.reason}</div>
+                          {m.approved_at && <div style={{ fontSize: 10.5, color: "#B45309" }}>{fmtDate(m.approved_at)} {fmtTime(m.approved_at)}</div>}
+                        </div>
+                      );
+                      return (
+                        <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 9px", background: checkMap[it.id] ? "#F0FDF4" : "var(--card)" }}>
+                          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!checkMap[it.id]} onChange={() => toggle(it.id)} style={{ marginTop: 2 }} />
+                            {itemLabel}
+                          </label>
+                          {withMismatch && !checkMap[it.id] && flagging !== it.id && (
+                            <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", marginTop: 4, marginLeft: 24, padding: "1px 6px" }} onClick={() => startFlag(it.id)}>⚠ Doesn't match customer's car</button>
+                          )}
+                          {withMismatch && flagging === it.id && (
+                            <div style={{ marginTop: 6, marginLeft: 24, display: "flex", flexDirection: "column", gap: 6 }}>
+                              <input className="filter-input" style={{ width: "100%" }} autoFocus value={flagReason}
+                                placeholder="What doesn't match? (required — e.g. car needs 21-inch, tire is 20)"
+                                onChange={e => setFlagReason(e.target.value)} />
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button type="button" className="btn btn-sm" style={{ background: "#FEE2E2", border: "1px solid #DC2626", color: "#991B1B", fontWeight: 700 }} disabled={!flagReason.trim()} onClick={() => saveFlag(it.id)}>Report mismatch</button>
+                                <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setFlagging(null); setFlagReason(""); }}>Cancel</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 
   return (
     <div className="my-job-card" style={{ borderLeft: `4px solid ${statusColor}`, padding: 0, overflow: "hidden" }}>
       {/* Collapsed summary — always visible, tap to expand */}
-      <div onClick={() => setOpen(o => !o)} style={{ cursor: "pointer", padding: "12px 14px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+      <div onClick={() => setOpen(o => !o)} style={{ cursor: "pointer", padding: "12px 14px" }}>
+        {/* 1 · order number / time */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
             <span className="my-job-num">#{index + 1}</span>
             <span style={{ fontFamily: "var(--font-head)", fontSize: 18, fontWeight: 700 }}>⏰ {fmtTime(j.scheduled_at)}</span>
             {j.is_overtime ? <span style={{ fontSize: 9, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 4, fontWeight: 700 }}>OT</span> : ""}
           </div>
-          <div style={{ fontWeight: 600, fontSize: 14, marginTop: 3 }}>{j.customer_name} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· {j.area}</span></div>
-          {summaryLines.length > 0 && (
-            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-              {summaryLines.map(line => (
-                <div key={line.key} style={{ fontSize: 12, color: "var(--muted)", display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  <span style={{ fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap" }}>{line.text}</span>
-                  {line.car && <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>🚗 {line.car}</span>}
-                </div>
-              ))}
-            </div>
+          <span style={{ fontSize: 14, color: "var(--muted)" }}>{open ? "▲" : "▼"}</span>
+        </div>
+        {/* 2 · customer / mobile */}
+        <div style={{ fontWeight: 600, fontSize: 14, marginTop: 4 }}>
+          {j.customer_name} · <a href={`tel:${j.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ color: "var(--accent)", fontWeight: 600 }}>{j.customer_mobile}</a>
+        </div>
+        {/* 3 · full address — tap to navigate */}
+        <div style={{ fontSize: 12.5, marginTop: 2 }}>
+          {j.map_link ? (
+            <a href={j.map_link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: "var(--accent)", fontWeight: 500, textDecoration: "underline", textDecorationColor: "rgba(212,132,10,.4)" }}>
+              📍 {j.area}, Blk {j.block}{j.street ? `, St ${j.street}` : ""}{j.lane ? `, Ln ${j.lane}` : ""}{j.house ? `, ${j.house}` : ""}
+            </a>
+          ) : (
+            <span style={{ color: "var(--muted)" }}>📍 {j.area}, Blk {j.block}{j.street ? `, St ${j.street}` : ""}{j.lane ? `, Ln ${j.lane}` : ""}{j.house ? `, ${j.house}` : ""}</span>
           )}
         </div>
-        <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontWeight: 700, color: "var(--accent)", fontSize: 14 }}>KWD {Number(j.total || 0).toFixed(3)}</div>
-          <span style={{ display: "inline-block", marginTop: 4, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 7px", borderRadius: 6, background: pillBg, color: statusColor }}>{tsLabel}</span>
-          <div style={{ fontSize: 15, color: "var(--muted)", marginTop: 2 }}>{open ? "▲" : "▼"}</div>
+        {/* 4–5 · car → services / items */}
+        {collapsedGroups.length > 0 && (
+          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+            {collapsedGroups.map(([car, lines]) => (
+              <div key={car}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>🚗 {car}</div>
+                <div style={{ paddingLeft: 14, display: "flex", flexDirection: "column", gap: 2 }}>
+                  {lines.map(l => (
+                    <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 14, fontSize: 12, lineHeight: 1.45 }}>
+                      <span style={{ whiteSpace: "nowrap", fontWeight: 600 }}>
+                        <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
+                      </span>
+                      <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right" }}>
+                        {l.products.map((p, i) => (
+                          <span key={i}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.n}</span>
+                        ))}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* 6 · total — highlighted like the sales row · 7 · note */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 7 }}>
+          <span style={{ fontSize: 12, color: "#B45309", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.notes ? `⚠ ${j.notes}` : ""}</span>
+          <span style={{ fontFamily: "var(--font-head)", fontWeight: 700, color: "var(--accent)", fontSize: 15, whiteSpace: "nowrap" }}>KWD {Number(j.total || 0).toFixed(3)}</span>
         </div>
       </div>
 
       {!open ? null : (
       <div style={{ padding: "0 12px 12px" }}>
 
-        {/* Stage 1 · Order summary — one calm panel */}
-        <Stage num={1} title="Order summary" done={false} meta={null}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <span><strong>{j.customer_name}</strong></span>
-              <a href={`tel:${j.customer_mobile}`} style={{ color: "var(--accent)", fontWeight: 600 }}>📞 {j.customer_mobile}</a>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-              <span style={{ color: "var(--muted)" }}>📍 {j.area}, Blk {j.block}{j.street ? `, St ${j.street}` : ""}{j.lane ? `, Ln ${j.lane}` : ""}{j.house ? `, ${j.house}` : ""}</span>
-              {j.map_link && <a className="btn btn-ghost btn-sm" href={j.map_link} target="_blank" rel="noreferrer" style={{ flexShrink: 0 }}>🧭 Navigate</a>}
-            </div>
-            <div style={{ color: "var(--muted)" }}>🚗 {j.car_brand} {j.car_model} {j.car_year}{j.car_plate ? ` · ${j.car_plate}` : ""}</div>
-            {j.notes && <div style={{ color: "#B45309" }}>⚠ {j.notes}</div>}
-            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-              {items.map(it => (
-                <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12.5 }}>
-                  <span>
-                    <strong>{it.kind === "tire" ? (it.tire_id ? `${it.brand} ${it.pattern || ""}${it.position ? ` (${it.position})` : ""}` : `${it.service_type} (labor)`) : it.name}</strong>
-                    {it.kind === "tire" && it.tire_id && itemSpec(it) ? <span style={{ color: "var(--muted)" }}> · {itemSpec(it)}</span> : ""}
-                  </span>
-                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>×{it.qty}</span>
-                </div>
-              ))}
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
-                <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Order total</span>
-                <span style={{ fontFamily: "var(--font-head)", fontWeight: 700, color: "var(--accent)" }}>KWD {Number(j.total || 0).toFixed(3)}</span>
-              </div>
-            </div>
-          </div>
-        </Stage>
-
-        {/* Actions — parts can arrive any time; starting is never blocked */}
-        {!completed && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "2px 0 10px" }}>
-            {!partsReceived
-              ? <button className="btn btn-primary btn-sm" onClick={markPartsReceived}>📦 Parts received</button>
-              : <span style={{ fontSize: 12, fontWeight: 700, color: "var(--success)", alignSelf: "center" }}>📦 Parts received ✓</span>}
-            {!started && <button className="btn btn-primary btn-sm" onClick={startJob}>▶ Start Job</button>}
+        {!completed && !started && (
+          <div style={{ margin: "2px 0 10px" }}>
+            <button className="btn btn-primary btn-sm" onClick={startJob}>▶ Start Job</button>
           </div>
         )}
 
         {hasProducts ? (
           <>
             {/* Stage 2 · parts vs ORDER */}
-            <Stage num={2} title="Verify parts match the order" done={s2done} meta={`${s2count}/${productItems.length}`}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {productItems.map(it => checkRow(it, ordChecks[it.id], () => toggleOrd(it.id), "Matches the order details (spec, qty, product)"))}
-              </div>
+            <Stage num={1} title="Verify parts match the order" done={s2done} meta={`${s2count}/${productItems.length}`}>
+              {verChecklist(ordChecks, toggleOrd)}
             </Stage>
 
             {/* Stage 3 · parts vs CAR */}
-            <Stage num={3} title="Verify parts match the customer's car" done={s3done} meta={`${s3count}/${productItems.length}`}>
+            <Stage num={2} title="Verify parts match the customer's car" done={s3done} meta={`${s3count}/${productItems.length}`}>
               <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Check against the actual car — even if the order was confirmed by the customer.</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {productItems.map(it => checkRow(it, carChecks[it.id], () => toggleCar(it.id), `Fits this car${it.car_label ? `: ${it.car_label}` : ""}`))}
-              </div>
+              {verChecklist(carChecks, toggleCar, true)}
             </Stage>
           </>
         ) : (
@@ -3589,15 +3735,30 @@ function TechJobCard({ job, index, onUpdate }) {
         )}
 
         {/* Stage 4 · Complete */}
-        <Stage num={hasProducts ? 4 : 2} title="Complete job" done={completed} meta={completed ? "done" : null}>
+        <Stage num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? "done" : null}>
           {!completed && (
-            <>
-              <button className="btn btn-success btn-sm" disabled={!canComplete} onClick={complete}
-                title={!canComplete ? "Finish stages 2 and 3 first" : ""}>
-                Complete Job
-              </button>
-              {!canComplete && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>Finish both verifications to unlock.</span>}
-            </>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div>
+                <button className="btn btn-success btn-sm" disabled={!canComplete} onClick={complete}
+                  title={!canComplete ? "Finish stages 1 and 2 first" : ""}>
+                  {hasDontFit ? "Complete Job (partial — skip don't-fit items)" : "Complete Job"}
+                </button>
+                {!canComplete && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>Finish both verifications to unlock.</span>}
+              </div>
+              {hasDontFit && !confirmStop && (
+                <button type="button" className="btn btn-sm" style={{ alignSelf: "flex-start", background: "#FEE2E2", border: "1px solid #DC2626", color: "#991B1B", fontWeight: 700 }} onClick={() => setConfirmStop(true)}>⛔ Stop job — mark incomplete</button>
+              )}
+              {hasDontFit && confirmStop && (
+                <div style={{ border: "1px solid #DC2626", borderRadius: 8, padding: "8px 10px", background: "#FEF2F2" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#991B1B", marginBottom: 6 }}>Mark this order incomplete?</div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>It will move to history and won't be completed today. This can't be undone from the truck.</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button type="button" className="btn btn-sm" style={{ background: "#DC2626", border: "1px solid #DC2626", color: "#fff", fontWeight: 700 }} onClick={stopIncomplete}>Yes — mark incomplete</button>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setConfirmStop(false)}>Back</button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </Stage>
       </div>
@@ -3610,13 +3771,27 @@ function HistoryView({ jobs, onSelectJob }) {
   const [search, setSearch] = useState("");
   const [filterTruck, setFilterTruck] = useState("all");
   const [filterAgent, setFilterAgent] = useState("all");
+  const [quick, setQuick] = useState("all"); // all | completed | cancelled | paid | unpaid
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
-  const doneJobs = jobs.filter(j => DONE_STATUSES.includes(j.status));
-  const agents = [...new Set(doneJobs.map(j => j.sales_agent).filter(Boolean))];
+  // History = completed orders + cancelled orders (permanent record)
+  const histJobs = jobs.filter(j => DONE_STATUSES.includes(j.status) || j.status === "cancelled" || j.status === "incomplete");
+  const agents = [...new Set(histJobs.map(j => j.sales_agent).filter(Boolean))];
 
-  const filtered = doneJobs.filter(j => {
+  const filtered = histJobs.filter(j => {
+    const cancelled = j.status === "cancelled";
+    const incomplete = j.status === "incomplete";
+    if (quick === "completed" && (cancelled || incomplete)) return false;
+    if (quick === "cancelled" && !cancelled) return false;
+    if (quick === "incomplete" && !incomplete) return false;
+    if (quick === "paid" && (cancelled || incomplete || j.payment_status !== "paid")) return false;
+    if (quick === "unpaid" && (cancelled || incomplete || j.payment_status === "paid")) return false;
     if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
     if (filterAgent !== "all" && j.sales_agent !== filterAgent) return false;
+    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
+    if (dateFrom && d < dateFrom) return false;
+    if (dateTo && d > dateTo) return false;
     if (search) {
       const s = search.toLowerCase();
       if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.service_details?.toLowerCase().includes(s)) return false;
@@ -3624,14 +3799,25 @@ function HistoryView({ jobs, onSelectJob }) {
     return true;
   }).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
 
-  const totalRevenue = filtered.reduce((s, j) => s + Number(j.total || 0), 0);
+  const completedShown = filtered.filter(j => j.status !== "cancelled" && j.status !== "incomplete");
+  const totalRevenue = completedShown.reduce((s, j) => s + Number(j.total || 0), 0);
+
+  const QUICK = [
+    { key: "all", label: "All" },
+    { key: "completed", label: "Completed" },
+    { key: "cancelled", label: "Cancelled" },
+    { key: "incomplete", label: "Incomplete" },
+    { key: "paid", label: "Paid" },
+    { key: "unpaid", label: "Not paid" },
+  ];
 
   return (
     <>
       <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{filtered.length}</div><div className="stat-lbl">Completed jobs</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>KWD {totalRevenue.toFixed(3)}</div><div className="stat-lbl">Total revenue</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{doneJobs.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid invoices</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{completedShown.length}</div><div className="stat-lbl">Completed jobs</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>KWD {totalRevenue.toFixed(3)}</div><div className="stat-lbl">Revenue (excl. cancelled)</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{completedShown.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid invoices</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--danger)" }}>{filtered.filter(j => j.status === "cancelled").length}</div><div className="stat-lbl">Cancelled</div></div>
       </div>
 
       <div className="page-header">
@@ -3648,10 +3834,19 @@ function HistoryView({ jobs, onSelectJob }) {
               {agents.map(a => <option key={a}>{a}</option>)}
             </select>
           )}
+          <input type="date" className="filter-select" value={dateFrom} onChange={e => setDateFrom(e.target.value)} title="From date" />
+          <input type="date" className="filter-select" value={dateTo} onChange={e => setDateTo(e.target.value)} title="To date" />
         </div>
       </div>
 
-      {filtered.length === 0 && <div className="empty"><h3>No history yet</h3><p>Completed jobs will appear here.</p></div>}
+      {/* Quick status filter pills */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        {QUICK.map(q => (
+          <button key={q.key} className={`btn btn-sm ${quick === q.key ? "btn-primary" : "btn-ghost"}`} onClick={() => setQuick(q.key)}>{q.label}</button>
+        ))}
+      </div>
+
+      {filtered.length === 0 && <div className="empty"><h3>No orders found</h3><p>Completed and cancelled orders will appear here.</p></div>}
 
       {filtered.map(job => (
         <div key={job.id} className="history-job-card" onClick={() => onSelectJob(job)}>
@@ -3660,6 +3855,15 @@ function HistoryView({ jobs, onSelectJob }) {
               <div style={{ fontWeight: 600, fontSize: 14 }}>{job.customer_name}</div>
               <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>{job.service_type} · {job.car_brand} {job.car_model}</div>
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{fmtDateTime(job.scheduled_at)} · {job.assigned_truck} · {job.sales_agent}</div>
+              {job.status === "cancelled" && job.cancel_reason && job.cancel_reason !== "—" && (
+                <div style={{ fontSize: 12, color: "#991B1B", marginTop: 4 }}>✕ {job.cancel_reason}{job.cancelled_at ? ` · ${fmtDate(job.cancelled_at)}` : ""}</div>
+              )}
+              {job.status === "incomplete" && (
+                <div style={{ fontSize: 12, color: "#B45309", marginTop: 4 }}>⚠ {job.incomplete_reason || "Incomplete"}{job.incomplete_at ? ` · ${fmtDate(job.incomplete_at)}` : ""}</div>
+              )}
+              {job.partial_completion && job.status !== "incomplete" && (
+                <div style={{ fontSize: 12, color: "#B45309", marginTop: 4 }}>◐ Partial — not fitted: {job.unfitted_items || "see order"}</div>
+              )}
             </div>
             <div style={{ textAlign: "right", flexShrink: 0 }}>
               <div style={{ fontWeight: 700, color: "var(--accent)", fontSize: 15 }}>KWD {Number(job.total || 0).toFixed(3)}</div>
