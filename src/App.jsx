@@ -414,6 +414,24 @@ function RescheduleModal({ job, jobs, onClose, onSaved }) {
   );
 }
 
+async function fetchQuotes(mobile) {
+  const digits = (mobile || "").replace(/\D/g, "");
+  if (digits.length < 6) return [];
+  try {
+    const d = await sb(`/quotes?customer_mobile=like.*${digits.slice(-8)}&order=created_at.desc&limit=10&select=*`);
+    return d || [];
+  } catch { return []; }
+}
+async function fetchTireById(id) {
+  const SELECTS = [
+    "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,oem,notes,in_stock",
+    "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,in_stock",
+  ];
+  for (const sel of SELECTS) {
+    try { const d = await sb(`/tires?id=eq.${encodeURIComponent(id)}&select=${sel}&limit=1`); if (d && d[0]) return d[0]; } catch {}
+  }
+  return MOCK_TIRES.find(t => String(t.id) === String(id)) || null;
+}
 async function searchTires(q) {
   const term = (q || "").trim();
   if (term.length < 2) return [];
@@ -1964,6 +1982,51 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     setSelectedAddr(a); setAddrMode("pick");
     setF(p => ({ ...p, area: a.area, governorate: a.governorate || govFor(a.area), block: a.block, street: a.street, lane: a.lane || "", house: a.house, map_link: a.map_link || "" }));
   };
+  // ── From quote: pull a confirmed Tire System quote into this order ──
+  const [quoteOpen, setQuoteOpen] = useState(false);
+  const [quoteMobileQ, setQuoteMobileQ] = useState("");
+  const [quoteResults, setQuoteResults] = useState(null); // null = not searched
+  const [quoteBusy, setQuoteBusy] = useState(false);
+  const searchQuotes = async () => {
+    const m = (quoteMobileQ || f.customer_mobile || "").trim();
+    if (!m) return;
+    setQuoteBusy(true);
+    const r = await fetchQuotes(m);
+    setQuoteResults(r); setQuoteBusy(false);
+  };
+  const applyQuoteLine = (q, line) => {
+    const svc = newService("Tire Change & Balancing");
+    const fillFront = (ln) => Object.assign(svc, { tire_id: ln.tire_id, brand: ln.brand, pattern: ln.pattern, size: ln.size, year: ln.year || "", unit_price: Number(ln.price) || 0 });
+    if (q.staggered && line.position) {
+      const front = (q.lines || []).find(l => l.position === "front") || line;
+      const rear = (q.lines || []).find(l => l.position === "rear");
+      svc.staggered = true; fillFront(front);
+      svc.qty = 2; svc.rear_qty = 2;
+      if (rear) Object.assign(svc, { rear_tire_id: rear.tire_id, rear_brand: rear.brand, rear_pattern: rear.pattern, rear_size: rear.size, rear_year: rear.year || "", rear_unit_price: Number(rear.price) || 0 });
+      svc.labor = catalogLabor(svc.service_type, svc.variant, 4);
+    } else {
+      fillFront(line);
+      svc.qty = Number(q.qty) || 4;
+      svc.labor = catalogLabor(svc.service_type, svc.variant, svc.qty);
+    }
+    setServices(prev => {
+      const isEmptyTire = (s) => s.kind === "tire" && !s.tire_id && !s.staggered && !(Number(s.unit_price) > 0) && !(s.description || "").trim();
+      const others = prev.map(s => ({ ...s, _open: false }));
+      if (others.length === 1 && isEmptyTire(others[0])) return [{ ...svc, _open: true }];
+      return others.concat({ ...svc, _open: true });
+    });
+    // set the customer mobile from the quote; auto-select the customer if they exist
+    const digits = (s) => (s || "").replace(/\D/g, "");
+    const cust = customers.find(x => digits(x.mobile).slice(-8) === digits(q.customer_mobile).slice(-8));
+    if (cust && !selectedCustomer) {
+      setSelectedCustomer(cust);
+      setF(p => ({ ...p, customer_id: cust.id, customer_name: cust.name, customer_mobile: cust.mobile, area: cust.area || p.area }));
+    } else if (!f.customer_mobile) {
+      setF(p => ({ ...p, customer_mobile: q.customer_mobile }));
+    }
+    setQuoteOpen(false);
+  };
+
   // Explicit inline saves — write to the customer profile immediately (optimistic + background persist)
   const saveInlineCar = (sid) => {
     const s = f.services.find(x => x.id === sid);
@@ -2007,10 +2070,18 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
 
   // Apply prefill from customer profile: "New Order" (customer only) or "Reorder" (copy services)
   useEffect(() => {
-    if (!prefillOrder || !prefillOrder.customer) return;
+    if (!prefillOrder) return;
     const c = prefillOrder.customer;
-    setSelectedCustomer(c);
-    setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, area: c.area || p.area }));
+    if (c) {
+      setSelectedCustomer(c);
+      setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, area: c.area || p.area }));
+    }
+    // Deep link from the Tire System: prefilled service blocks (tire already picked)
+    if (prefillOrder.services && prefillOrder.services.length) {
+      const services = prefillOrder.services.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: null }));
+      setF(p => ({ ...p, services, ...(prefillOrder.mobile && !c ? { customer_mobile: prefillOrder.mobile } : {}) }));
+    }
+    if (!c) return;
     const src = prefillOrder.sourceJob;
     if (src) {
       // Rebuild service blocks from the source job (copy services/cars/prices/discounts;
@@ -2217,7 +2288,46 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           <div className="form-grid">
 
             {/* 1 — Customer by mobile */}
-            <div className="form-section-title">1 · Customer</div>
+            <div className="form-section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>1 · Customer</span>
+              {!isEdit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setQuoteOpen(o => !o); if (!quoteOpen) { setQuoteMobileQ(f.customer_mobile || ""); setQuoteResults(null); } }}>📋 From quote</button>}
+            </div>
+            {quoteOpen && (
+              <div className="form-full" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--bg)", marginBottom: 10 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+                  <input type="tel" className="filter-input" style={{ flex: 1 }} value={quoteMobileQ} placeholder="Customer mobile from the quote…"
+                    onChange={e => setQuoteMobileQ(e.target.value)} onKeyDown={e => e.key === "Enter" && searchQuotes()} />
+                  <button type="button" className="btn btn-primary btn-sm" onClick={searchQuotes} disabled={quoteBusy}>{quoteBusy ? "…" : "Search"}</button>
+                </div>
+                {quoteResults && quoteResults.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>No quotes found for this mobile. Quotes appear here once sent from the Tire System.</div>}
+                {quoteResults && quoteResults.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 260, overflowY: "auto" }}>
+                    {quoteResults.map(q => (
+                      <div key={q.id} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 5 }}>
+                          {fmtDate(q.created_at)} {fmtTime(q.created_at)}{q.agent ? ` · ${q.agent}` : ""}{q.staggered ? " · staggered" : ` · qty ${q.qty || 4}`}{q.cash_pct ? ` · cash ${q.cash_pct}%` : ""}
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {(q.staggered
+                            ? [(q.lines || []).find(l => l.position === "front")].filter(Boolean)
+                            : (q.lines || [])
+                          ).map((line, li) => (
+                            <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+                              <span>
+                                <strong>{line.brand} {line.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {line.size}{line.year ? ` · ${line.year}` : ""}</span>
+                                {q.staggered && (() => { const r = (q.lines || []).find(l => l.position === "rear"); return r ? <div style={{ fontSize: 11.5, color: "var(--muted)" }}>+ rear: <strong style={{ color: "var(--text)" }}>{r.brand} {r.pattern}</strong> · {r.size}</div> : null; })()}
+                                <span style={{ color: "var(--accent)", fontWeight: 700 }}> @ {Number(line.price).toFixed(0)} KD</span>
+                              </span>
+                              <button type="button" className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => applyQuoteLine(q, line)}>Use</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="form-full">
               {!selectedCustomer ? (
                 <div className="search-wrap">
@@ -4153,6 +4263,14 @@ export default function App() {
   const [editingJob, setEditingJob] = useState(null);
   const [prefillSlot, setPrefillSlot] = useState(null);
   const [prefillOrder, setPrefillOrder] = useState(null);
+  // Deep link from the Tire System: ?tire_id=…&qty=4&mobile=… → open New Order prefilled
+  const [deepLink, setDeepLink] = useState(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      if (q.get("tire_id")) return { tire_id: q.get("tire_id"), qty: Math.max(1, Number(q.get("qty")) || 4), mobile: (q.get("mobile") || "").trim() };
+    } catch {}
+    return null;
+  });
   const [rescheduleJob, setRescheduleJob] = useState(null);
   const [showNewCustomer, setShowNewCustomer] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
@@ -4195,6 +4313,29 @@ export default function App() {
     setSelectedJob(null);
     setSelectedCustomer(null);
   }, [role]);
+
+  useEffect(() => {
+    if (!authed || loading || !deepLink) return;
+    if (role !== "sales" && role !== "purchaser") return;
+    const dl = deepLink; setDeepLink(null);
+    try { window.history.replaceState({}, "", window.location.pathname); } catch {}
+    (async () => {
+      const t = await fetchTireById(dl.tire_id);
+      const svc = newService("Tire Change & Balancing");
+      if (t) Object.assign(svc, {
+        tire_id: t.id, brand: t.brand, pattern: t.pattern, size: tireSize(t), year: t.year,
+        cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0,
+        load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "",
+        oem: t.oem || "", tire_note: t.notes || "",
+      });
+      svc.qty = dl.qty;
+      svc.labor = catalogLabor(svc.service_type, svc.variant, dl.qty);
+      const digits = (s) => (s || "").replace(/\D/g, "");
+      const customer = dl.mobile ? customers.find(x => digits(x.mobile).slice(-8) === digits(dl.mobile).slice(-8)) : null;
+      setPrefillOrder({ customer: customer || null, services: [svc], mobile: dl.mobile });
+      setShowNew(true);
+    })();
+  }, [authed, loading, deepLink, role, customers]);
 
   const handleJobUpdate = (updated) => {
     setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
