@@ -489,7 +489,52 @@ const MOCK_QUOTES = [
       { position: "front", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "295/40R21", year: "2025", price: 95 },
       { position: "rear", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "305/35R21", year: "2025", price: 98 },
     ] },
+  { id: "mq-4", customer_mobile: "60998877", agent: "Hussain", qty: 4, staggered: false, cash_pct: 0,
+    status: "lost", lost_reason: "RR1-High Price", lost_at: new Date(Date.now() - 3600000 * 20).toISOString(),
+    created_at: new Date(Date.now() - 3600000 * 60).toISOString(),
+    lines: [ { tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "295/40R21", year: "2025", price: 95 } ] },
 ];
+// ─── Quote lifecycle: status, follow-up cadence, lost reasons ─────────────────
+// Lost reasons — RR labels mirror Trengo; used for the "why we lose" breakdown.
+const LOST_REASONS = [
+  "RR1-High Price",
+  "RR2-Time",
+  "RR3-Brand NA or Old",
+  "RR4-Postpone - Inquiry only",
+  "Bought elsewhere",
+  "No answer",
+  "Changed mind",
+];
+async function updateQuote(id, patch) {
+  try { await sb(`/quotes?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
+}
+// Effective status of a quote. Stamped status wins; legacy quotes without a
+// stamp fall back to the derived order match (same mobile + after quote).
+function quoteStatus(q, jobs) {
+  const st = q.status || "open";
+  if (st === "success" || st === "booked") {
+    const job = (jobs || []).find(j => j.id === q.booked_job_id) || quoteBookingMatch(q, jobs || []);
+    return { status: "success", job };
+  }
+  if (st === "lost") return { status: "lost", job: null };
+  const job = quoteBookingMatch(q, jobs || []);
+  return job ? { status: "success", job } : { status: "open", job: null };
+}
+// Follow-up cadence: 24h after quote → 3d after 1st contact → 7d after 2nd/3rd.
+// Manual snooze (followup_at) overrides the ladder. suggestLost after 3 touches.
+const FOLLOWUP_STEPS_H = [24, 72, 168];
+function followupState(q, status) {
+  if ((status || q.status || "open") !== "open") return { due: false, suggestLost: false, snoozed: false };
+  const n = Number(q.followup_count) || 0;
+  if (q.followup_at) {
+    const due = Date.now() >= new Date(q.followup_at).getTime();
+    return { due, suggestLost: due && n >= 3, snoozed: !due };
+  }
+  const anchor = q.last_contact_at || q.created_at;
+  const stepH = FOLLOWUP_STEPS_H[Math.min(n, FOLLOWUP_STEPS_H.length - 1)];
+  const due = Date.now() >= new Date(anchor).getTime() + stepH * 3600000;
+  return { due, suggestLost: due && n >= 3, snoozed: false };
+}
 async function fetchAllQuotes() {
   try { const d = await sb("/quotes?select=*&order=created_at.desc&limit=500"); return d || []; }
   catch { return MOCK_QUOTES; }
@@ -2059,6 +2104,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
   const [quoteMobileQ, setQuoteMobileQ] = useState("");
   const [quoteResults, setQuoteResults] = useState(null); // null = not searched
   const [quoteBusy, setQuoteBusy] = useState(false);
+  const [usedQuoteId, setUsedQuoteId] = useState(null); // quote that fed this order → stamped Success on submit
   const searchQuotes = async () => {
     const m = (quoteMobileQ || f.customer_mobile || "").trim();
     if (!m) return;
@@ -2066,7 +2112,8 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     const r = await fetchQuotes(m);
     setQuoteResults(r); setQuoteBusy(false);
   };
-const applyQuoteLine = (q, line) => {
+  const applyQuoteLine = (q, line) => {
+    setUsedQuoteId(q.id);
     const svc = quoteToService(q, line);
     setServices(prev => {
       const isEmptyTire = (s) => s.kind === "tire" && !s.tire_id && !s.staggered && !(Number(s.unit_price) > 0) && !(s.description || "").trim();
@@ -2130,6 +2177,7 @@ const applyQuoteLine = (q, line) => {
   // Apply prefill from customer profile: "New Order" (customer only) or "Reorder" (copy services)
   useEffect(() => {
     if (!prefillOrder) return;
+    if (prefillOrder.quoteId) setUsedQuoteId(prefillOrder.quoteId);
     const c = prefillOrder.customer;
     if (c) {
       setSelectedCustomer(c);
@@ -2326,7 +2374,7 @@ const applyQuoteLine = (q, line) => {
       tech_checks: {}, tech_checks_order: {}, tech_checks_car: {}, parts_received: false,
     };
     const created = await createJob(job);
-    onCreated(created);
+    onCreated(created, usedQuoteId);
     setSaving(false);
     onClose();
   };
@@ -2361,10 +2409,16 @@ const applyQuoteLine = (q, line) => {
                 {quoteResults && quoteResults.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>No quotes found for this mobile. Quotes appear here once sent from the Tire System.</div>}
                 {quoteResults && quoteResults.length > 0 && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 260, overflowY: "auto" }}>
-                    {quoteResults.map(q => (
-                      <div key={q.id} style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
-                        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 5 }}>
-                          {fmtDate(q.created_at)} {fmtTime(q.created_at)}{q.agent ? ` · ${q.agent}` : ""}{q.staggered ? " · staggered" : ` · qty ${q.qty || 4}`}{q.cash_pct ? ` · cash ${q.cash_pct}%` : ""}
+                    {quoteResults.map(q => {
+                      const st = quoteStatus(q, jobs);
+                      const isSuccess = st.status === "success";
+                      const isLost = st.status === "lost";
+                      return (
+                      <div key={q.id} style={{ background: isSuccess ? "#F0FDF4" : "var(--card)", border: `1px solid ${isSuccess ? "#BBF7D0" : "var(--border)"}`, borderRadius: 8, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          <span>{fmtDate(q.created_at)} {fmtTime(q.created_at)}{q.agent ? ` · ${q.agent}` : ""}{q.staggered ? " · staggered" : ` · qty ${q.qty || 4}`}{q.cash_pct ? ` · cash ${q.cash_pct}%` : ""}</span>
+                          {isSuccess && <span style={{ fontSize: 10, fontWeight: 700, color: "#15803D", background: "#DCFCE7", borderRadius: 5, padding: "1px 7px" }}>✓ Converted{st.job ? ` · ${fmtDate(st.job.scheduled_at)}` : ""}</span>}
+                          {isLost && <span style={{ fontSize: 10, fontWeight: 700, color: "#991B1B", background: "#FEE2E2", borderRadius: 5, padding: "1px 7px" }}>✕ Lost{q.lost_reason ? ` · ${q.lost_reason}` : ""}</span>}
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                           {(q.staggered
@@ -2377,12 +2431,13 @@ const applyQuoteLine = (q, line) => {
                                 {q.staggered && (() => { const r = (q.lines || []).find(l => l.position === "rear"); return r ? <div style={{ fontSize: 11.5, color: "var(--muted)" }}>+ rear: <strong style={{ color: "var(--text)" }}>{r.brand} {r.pattern}</strong> · {r.size}</div> : null; })()}
                                 <span style={{ color: "var(--accent)", fontWeight: 700 }}> @ {Number(line.price).toFixed(0)} KD</span>
                               </span>
-                              <button type="button" className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => applyQuoteLine(q, line)}>Use</button>
+                              <button type="button" className={`btn btn-sm ${isSuccess ? "btn-ghost" : "btn-primary"}`} style={{ flexShrink: 0 }} onClick={() => applyQuoteLine(q, line)}>{isSuccess ? "Use again" : "Use"}</button>
                             </div>
                           ))}
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -4301,61 +4356,92 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
   );
 }
 
+
 // ─── Quotes Dashboard (sales) ─────────────────────────────────────────────────
-// Every quote sent from the Tire System, with conversion tracking. A quote
-// counts as "booked" when a matching order exists (same mobile, created after
-// the quote — strongest match: the order contains one of the quoted tires).
-function QuotesView({ quotes, jobs, customers, onBook, onSelectJob }) {
-  const [statusF, setStatusF] = useState("all"); // all | booked | open | followup
+// Full quote lifecycle: open → success (order created) or lost (with reason).
+// Stamped status is the source of truth; legacy quotes fall back to the
+// derived order match. Follow-up ladder: 24h → 3d → 7d, snooze overrides.
+function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdate }) {
+  const [statusF, setStatusF] = useState("all"); // all | success | open | followup | lost
   const [agentF, setAgentF] = useState("all");
   const [search, setSearch] = useState("");
+  const [action, setAction] = useState(null); // { id, type: "lost" | "snooze" }
+  const [lostReason, setLostReason] = useState(LOST_REASONS[0]);
+  const [snoozeDate, setSnoozeDate] = useState("");
 
   const enriched = quotes.map(q => {
-    const job = quoteBookingMatch(q, jobs);
+    const st = quoteStatus(q, jobs);
+    const fu = followupState(q, st.status);
     const cust = customers.find(c => last8(c.mobile) && last8(c.mobile) === last8(q.customer_mobile));
-    return { ...q, _job: job, _booked: !!job, _cust: cust, _value: quoteValue(q), _ageH: (Date.now() - new Date(q.created_at).getTime()) / 36e5 };
+    return { ...q, _st: st.status, _job: st.job, _fu: fu, _cust: cust, _value: quoteValue(q) };
   });
 
   const agents = [...new Set(enriched.map(q => q.agent || "—"))].sort();
   const total = enriched.length;
-  const bookedCount = enriched.filter(q => q._booked).length;
-  const conv = total ? Math.round((bookedCount / total) * 100) : 0;
-  const pipeline = enriched.filter(q => !q._booked).reduce((s, q) => s + q._value, 0);
-  const followupCount = enriched.filter(q => !q._booked && q._ageH >= 24).length;
+  const successCount = enriched.filter(q => q._st === "success").length;
+  const lostCount = enriched.filter(q => q._st === "lost").length;
+  const openList = enriched.filter(q => q._st === "open");
+  const conv = total ? Math.round((successCount / total) * 100) : 0;
+  const pipeline = openList.reduce((s, q) => s + q._value, 0);
+  const followupCount = openList.filter(q => q._fu.due).length;
 
   const perAgent = agents.map(a => {
     const list = enriched.filter(q => (q.agent || "—") === a);
-    const b = list.filter(q => q._booked).length;
-    return { agent: a, total: list.length, booked: b, conv: list.length ? Math.round((b / list.length) * 100) : 0 };
+    const b = list.filter(q => q._st === "success").length;
+    return { agent: a, total: list.length, success: b, conv: list.length ? Math.round((b / list.length) * 100) : 0 };
   }).sort((x, y) => y.total - x.total);
 
+  // "why we lose" breakdown (shown on the Lost filter)
+  const lostByReason = {};
+  enriched.filter(q => q._st === "lost").forEach(q => {
+    const r = q.lost_reason || "—";
+    lostByReason[r] = (lostByReason[r] || 0) + 1;
+  });
+
   const filtered = enriched.filter(q => {
-    if (statusF === "booked" && !q._booked) return false;
-    if (statusF === "open" && q._booked) return false;
-    if (statusF === "followup" && (q._booked || q._ageH < 24)) return false;
+    if (statusF === "success" && q._st !== "success") return false;
+    if (statusF === "open" && q._st !== "open") return false;
+    if (statusF === "lost" && q._st !== "lost") return false;
+    if (statusF === "followup" && !(q._st === "open" && q._fu.due)) return false;
     if (agentF !== "all" && (q.agent || "—") !== agentF) return false;
     if (search) {
       const s = search.toLowerCase();
-      const hay = `${q.customer_mobile || ""} ${q.customer_name || ""} ${q._cust?.name || ""} ${(q.lines || []).map(l => `${l.brand || ""} ${l.pattern || ""} ${l.size || ""}`).join(" ")}`.toLowerCase();
+      const hay = `${q.customer_mobile || ""} ${q.customer_name || ""} ${q._cust?.name || ""} ${q.lost_reason || ""} ${(q.lines || []).map(l => `${l.brand || ""} ${l.pattern || ""} ${l.size || ""}`).join(" ")}`.toLowerCase();
       if (!hay.includes(s)) return false;
     }
     return true;
   }).sort((a, b) => statusF === "followup"
-    ? new Date(a.created_at) - new Date(b.created_at)   // oldest first — call these first
+    ? new Date(a.created_at) - new Date(b.created_at)   // oldest first — coldest lead gets called first
     : new Date(b.created_at) - new Date(a.created_at));
 
   const QUICK = [
     { key: "all", label: `All (${total})` },
-    { key: "booked", label: `Booked (${bookedCount})` },
-    { key: "open", label: `Not booked (${total - bookedCount})` },
+    { key: "success", label: `✓ Success (${successCount})` },
+    { key: "open", label: `Open (${openList.length})` },
     { key: "followup", label: `⏰ Follow up (${followupCount})` },
+    { key: "lost", label: `✕ Lost (${lostCount})` },
   ];
+
+  const markContacted = (q) => {
+    onQuoteUpdate(q.id, { last_contact_at: new Date().toISOString(), followup_count: (Number(q.followup_count) || 0) + 1, followup_at: null });
+    setAction(null);
+  };
+  const confirmLost = (q) => {
+    onQuoteUpdate(q.id, { status: "lost", lost_reason: lostReason, lost_at: new Date().toISOString() });
+    setAction(null);
+  };
+  const confirmSnooze = (q) => {
+    if (!snoozeDate) return;
+    onQuoteUpdate(q.id, { followup_at: new Date(`${snoozeDate}T09:00:00`).toISOString() });
+    setAction(null); setSnoozeDate("");
+  };
+  const reopen = (q) => onQuoteUpdate(q.id, { status: "open", lost_reason: null, lost_at: null, followup_at: null });
 
   return (
     <>
       <div className="stats-grid">
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{total}</div><div className="stat-lbl">Quotes sent</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{bookedCount}</div><div className="stat-lbl">Booked</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{successCount}</div><div className="stat-lbl">Success</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{conv}%</div><div className="stat-lbl">Conversion</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {pipeline.toFixed(0)}</div><div className="stat-lbl">Open pipeline (est.)</div></div>
       </div>
@@ -4374,7 +4460,7 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob }) {
           {perAgent.map(p => (
             <button key={p.agent} className={`btn btn-sm ${agentF === p.agent ? "btn-primary" : "btn-ghost"}`}
               onClick={() => setAgentF(agentF === p.agent ? "all" : p.agent)}>
-              {p.agent} · {p.booked}/{p.total} · {p.conv}%
+              {p.agent} · {p.success}/{p.total} · {p.conv}%
             </button>
           ))}
         </div>
@@ -4387,15 +4473,28 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob }) {
         ))}
       </div>
 
+      {/* Why we lose — reason breakdown, visible on the Lost filter */}
+      {statusF === "lost" && lostCount > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#991B1B" }}>Why we lose:</span>
+          {Object.entries(lostByReason).sort((a, b) => b[1] - a[1]).map(([r, n]) => (
+            <span key={r} style={{ fontSize: 12, fontWeight: 600, color: "#991B1B", background: "#fff", border: "1px solid #FECACA", borderRadius: 6, padding: "2px 8px" }}>{r}: {n}</span>
+          ))}
+        </div>
+      )}
+
       {filtered.length === 0 && <div className="empty"><h3>No quotes here</h3><p>Quotes sent from the Tire System appear automatically.</p></div>}
 
       {filtered.map(q => {
-        const needsFollowup = !q._booked && q._ageH >= 24;
+        const isSuccess = q._st === "success";
+        const isLost = q._st === "lost";
+        const due = q._st === "open" && q._fu.due;
         const custName = q._cust?.name || q.customer_name || "";
         const front = q.staggered ? (q.lines || []).find(l => l.position === "front") : null;
         const rear = q.staggered ? (q.lines || []).find(l => l.position === "rear") : null;
+        const borderCol = isSuccess ? "var(--success)" : isLost ? "#DC2626" : due ? "#F59E0B" : "var(--border)";
         return (
-          <div key={q.id} className="dist-card" style={{ borderLeft: `3px solid ${q._booked ? "var(--success)" : needsFollowup ? "#F59E0B" : "var(--border)"}` }}>
+          <div key={q.id} className="dist-card" style={{ borderLeft: `3px solid ${borderCol}`, opacity: isLost ? .8 : 1 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 14, fontFamily: "var(--font-head)" }}>
@@ -4403,12 +4502,17 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob }) {
                 </div>
                 <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>
                   {fmtDate(q.created_at)} {fmtTime(q.created_at)} · {quoteAge(q.created_at)}{q.agent ? ` · ${q.agent}` : ""}{q.cash_pct ? ` · cash ${q.cash_pct}%` : ""}
+                  {Number(q.followup_count) > 0 ? ` · 📞 ×${q.followup_count}` : ""}
                 </div>
               </div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-                {q._booked ? (
-                  <span className="status-pill" style={{ background: "#DCFCE7", color: "#15803D", cursor: "pointer" }} onClick={() => onSelectJob(q._job)}>✓ Booked →</span>
-                ) : needsFollowup ? (
+                {isSuccess ? (
+                  <span className="status-pill" style={{ background: "#DCFCE7", color: "#15803D", cursor: q._job ? "pointer" : "default" }} onClick={() => q._job && onSelectJob(q._job)}>✓ Success{q._job ? " →" : ""}</span>
+                ) : isLost ? (
+                  <span className="status-pill" style={{ background: "#FEE2E2", color: "#991B1B" }}>✕ Lost</span>
+                ) : q._fu.snoozed ? (
+                  <span className="status-pill" style={{ background: "#EFF6FF", color: "#1D4ED8" }}>💤 {fmtDate(q.followup_at)}</span>
+                ) : due ? (
                   <span className="status-pill" style={{ background: "#FEF3C7", color: "#92400E" }}>⏰ Follow up</span>
                 ) : (
                   <span className="status-pill" style={{ background: "#F1F5F9", color: "#64748B" }}>Open</span>
@@ -4417,13 +4521,19 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob }) {
               </div>
             </div>
 
+            {isLost && (
+              <div style={{ fontSize: 12, color: "#991B1B", fontWeight: 600, marginBottom: 6 }}>
+                ✕ {q.lost_reason || "No reason recorded"}{q.lost_at ? ` · ${fmtDate(q.lost_at)}` : ""}
+              </div>
+            )}
+
             {q.staggered ? (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
                 <div>
                   <div>F: <strong>{front?.brand} {front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {front?.size}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(front?.price || 0).toFixed(0)} KD</span></div>
                   <div>R: <strong>{rear?.brand} {rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {rear?.size}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(rear?.price || 0).toFixed(0)} KD</span></div>
                 </div>
-                {!q._booked && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, null)}>Book</button>}
+                {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, null)}>Book</button>}
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -4433,13 +4543,49 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob }) {
                       <strong>{line.brand} {line.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {line.size}{line.year ? ` · ${line.year}` : ""} · qty {q.qty || 4}</span>
                       <span style={{ color: "var(--accent)", fontWeight: 700 }}> @ {Number(line.price || 0).toFixed(0)} KD</span>
                     </span>
-                    {!q._booked && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, line)}>Book</button>}
+                    {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, line)}>Book</button>}
                   </div>
                 ))}
               </div>
             )}
 
-            {q._booked && q._job && (
+            {/* Follow-up actions (open quotes only) */}
+            {q._st === "open" && (
+              <div style={{ marginTop: 8 }}>
+                {q._fu.suggestLost && (
+                  <div style={{ fontSize: 12, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "6px 10px", marginBottom: 6, fontWeight: 600 }}>
+                    ⚠ {q.followup_count} follow-ups with no booking — consider marking it lost.
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => markContacted(q)}>📞 Contacted</button>
+                  <button className={`btn btn-sm ${action?.id === q.id && action?.type === "snooze" ? "btn-primary" : "btn-ghost"}`} onClick={() => setAction(action?.id === q.id && action?.type === "snooze" ? null : { id: q.id, type: "snooze" })}>💤 Snooze</button>
+                  <button className={`btn btn-sm ${action?.id === q.id && action?.type === "lost" ? "btn-primary" : "btn-ghost"}`} style={{ color: action?.id === q.id && action?.type === "lost" ? undefined : "var(--danger)" }} onClick={() => setAction(action?.id === q.id && action?.type === "lost" ? null : { id: q.id, type: "lost" })}>✕ Lost</button>
+                </div>
+                {action?.id === q.id && action?.type === "snooze" && (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+                    <input type="date" className="filter-input" value={snoozeDate} min={today()} onChange={e => setSnoozeDate(e.target.value)} />
+                    <button className="btn btn-primary btn-sm" disabled={!snoozeDate} onClick={() => confirmSnooze(q)}>Set follow-up date</button>
+                  </div>
+                )}
+                {action?.id === q.id && action?.type === "lost" && (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+                    <select className="filter-input" value={lostReason} onChange={e => setLostReason(e.target.value)}>
+                      {LOST_REASONS.map(r => <option key={r}>{r}</option>)}
+                    </select>
+                    <button className="btn btn-sm" style={{ background: "#DC2626", color: "#fff", fontWeight: 700 }} onClick={() => confirmLost(q)}>Confirm lost</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {isLost && (
+              <div style={{ marginTop: 8 }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => reopen(q)}>↩ Reopen</button>
+              </div>
+            )}
+
+            {isSuccess && q._job && (
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 → Order:
                 <span style={{ fontWeight: 600, color: "var(--text)", cursor: "pointer", textDecoration: "underline", textDecorationColor: "rgba(212,132,10,.4)" }} onClick={() => onSelectJob(q._job)}>
@@ -4454,6 +4600,7 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob }) {
     </>
   );
 }
+
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [authed, setAuthed] = useState(false);
@@ -4588,15 +4735,28 @@ export default function App() {
     setPrefillOrder({ customer, sourceJob });
     setShowNew(true);
   };
+
   const handleBookQuote = (quote, line) => {
     setSelectedJob(null);
     setSelectedCustomer(null);
     const svc = quoteToService(quote, line);
     const customer = customers.find(x => last8(x.mobile) === last8(quote.customer_mobile)) || null;
     setPrefillSlot(null);
-    setPrefillOrder({ customer, services: [svc], mobile: quote.customer_mobile });
+    setPrefillOrder({ customer, services: [svc], mobile: quote.customer_mobile, quoteId: quote.id });
     setShowNew(true);
   };
+
+  // Stamp a quote as Success the moment its order is created (source of truth)
+  const stampQuoteSuccess = (quoteId, job) => {
+    if (!quoteId || !job) return;
+    setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, status: "success", booked_job_id: job.id } : q));
+    updateQuote(quoteId, { status: "success", booked_job_id: job.id });
+  };
+  const handleQuoteUpdate = (quoteId, patch) => {
+    setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, ...patch } : q));
+    updateQuote(quoteId, patch);
+  };
+
   const handleCarCreated = (car) => {
     setCars(prev => [car, ...prev]);
     setShowAddCar(false);
@@ -4715,7 +4875,7 @@ export default function App() {
             <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
-            <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} />
+            <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
@@ -4783,7 +4943,7 @@ export default function App() {
           jobs={jobs}
           prefill={prefillSlot}
           onClose={() => { setShowNew(false); setPrefillSlot(null); setPrefillOrder(null); }}
-          onCreated={j => setJobs(prev => [j, ...prev])}
+          onCreated={(j, quoteId) => { setJobs(prev => [j, ...prev]); stampQuoteSuccess(quoteId, j); }}
           onNewCustomer={handleNewCustomer}
           onCarCreated={handleCarCreated}
           onAddressCreated={handleAddressCreated}
