@@ -422,6 +422,78 @@ async function fetchQuotes(mobile) {
     return d || [];
   } catch { return []; }
 }
+// ─── Quotes dashboard helpers (shared quotes table from the Tire System) ──────
+const last8 = (m) => (m || "").replace(/\D/g, "").slice(-8);
+const quoteAge = (d) => {
+  const h = (Date.now() - new Date(d).getTime()) / 36e5;
+  if (h < 1) return "just now";
+  if (h < 24) return `${Math.floor(h)}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+};
+// Estimated tires-only value of a quote (cheapest option × qty; staggered = F+R pairs)
+function quoteValue(q) {
+  if (q.staggered) {
+    const f = (q.lines || []).find(l => l.position === "front");
+    const r = (q.lines || []).find(l => l.position === "rear");
+    return (Number(f?.price) || 0) * 2 + (Number(r?.price) || 0) * 2;
+  }
+  const prices = (q.lines || []).map(l => Number(l.price) || 0).filter(p => p > 0);
+  return (prices.length ? Math.min(...prices) : 0) * (Number(q.qty) || 4);
+}
+// Find the order that converted a quote: same mobile, created after the quote
+// (1h grace). Strongest match = an order containing one of the quoted tires.
+function quoteBookingMatch(quote, jobs) {
+  const qm = last8(quote.customer_mobile);
+  if (!qm) return null;
+  const after = new Date(quote.created_at).getTime() - 3600000;
+  const qTireIds = new Set((quote.lines || []).map(l => String(l.tire_id)).filter(Boolean));
+  const candidates = jobs.filter(j =>
+    j.status !== "cancelled" &&
+    last8(j.customer_mobile) === qm &&
+    new Date(j.created_at || j.scheduled_at || 0).getTime() >= after
+  );
+  const strong = candidates.find(j => (j.items || []).some(it => it.tire_id && qTireIds.has(String(it.tire_id))));
+  return strong || candidates[0] || null;
+}
+// Build an order service block from a quote line (line optional; staggered uses F+R)
+function quoteToService(q, line) {
+  const svc = newService("Tire Change & Balancing");
+  const fillFront = (ln) => ln && Object.assign(svc, { tire_id: ln.tire_id, brand: ln.brand, pattern: ln.pattern, size: ln.size, year: ln.year || "", unit_price: Number(ln.price) || 0 });
+  if (q.staggered) {
+    const front = (q.lines || []).find(l => l.position === "front") || line || (q.lines || [])[0];
+    const rear = (q.lines || []).find(l => l.position === "rear");
+    svc.staggered = true; fillFront(front);
+    svc.qty = 2; svc.rear_qty = 2;
+    if (rear) Object.assign(svc, { rear_tire_id: rear.tire_id, rear_brand: rear.brand, rear_pattern: rear.pattern, rear_size: rear.size, rear_year: rear.year || "", rear_unit_price: Number(rear.price) || 0 });
+    svc.labor = catalogLabor(svc.service_type, svc.variant, 4);
+  } else {
+    fillFront(line || (q.lines || [])[0]);
+    svc.qty = Number(q.qty) || 4;
+    svc.labor = catalogLabor(svc.service_type, svc.variant, svc.qty);
+  }
+  return svc;
+}
+const MOCK_QUOTES = [
+  { id: "mq-1", customer_mobile: "99001234", agent: "Hussain", qty: 4, staggered: false, cash_pct: 0,
+    created_at: new Date(Date.now() - 3600000 * 5).toISOString(),
+    lines: [
+      { tire_id: "mt-1", brand: "Michelin", pattern: "Pilot Sport 4", size: "215/60R16", year: "2025", price: 38 },
+      { tire_id: "mt-4", brand: "RoadX", pattern: "RXMotion", size: "225/55R18", year: "2026", price: 32 },
+    ] },
+  { id: "mq-2", customer_mobile: "55112233", agent: "Alaa", qty: 4, staggered: false, cash_pct: 2,
+    created_at: new Date(Date.now() - 3600000 * 30).toISOString(),
+    lines: [ { tire_id: "mt-3", brand: "Michelin", pattern: "Primacy", size: "275/55R20", year: "2024", price: 55 } ] },
+  { id: "mq-3", customer_mobile: "51234567", agent: "Alaa", qty: 2, staggered: true, cash_pct: 0,
+    created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
+    lines: [
+      { position: "front", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "295/40R21", year: "2025", price: 95 },
+      { position: "rear", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "305/35R21", year: "2025", price: 98 },
+    ] },
+];
+async function fetchAllQuotes() {
+  try { const d = await sb("/quotes?select=*&order=created_at.desc&limit=500"); return d || []; }
+  catch { return MOCK_QUOTES; }
+}
 async function fetchTireById(id) {
   const SELECTS = [
     "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,oem,notes,in_stock",
@@ -1994,21 +2066,8 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     const r = await fetchQuotes(m);
     setQuoteResults(r); setQuoteBusy(false);
   };
-  const applyQuoteLine = (q, line) => {
-    const svc = newService("Tire Change & Balancing");
-    const fillFront = (ln) => Object.assign(svc, { tire_id: ln.tire_id, brand: ln.brand, pattern: ln.pattern, size: ln.size, year: ln.year || "", unit_price: Number(ln.price) || 0 });
-    if (q.staggered && line.position) {
-      const front = (q.lines || []).find(l => l.position === "front") || line;
-      const rear = (q.lines || []).find(l => l.position === "rear");
-      svc.staggered = true; fillFront(front);
-      svc.qty = 2; svc.rear_qty = 2;
-      if (rear) Object.assign(svc, { rear_tire_id: rear.tire_id, rear_brand: rear.brand, rear_pattern: rear.pattern, rear_size: rear.size, rear_year: rear.year || "", rear_unit_price: Number(rear.price) || 0 });
-      svc.labor = catalogLabor(svc.service_type, svc.variant, 4);
-    } else {
-      fillFront(line);
-      svc.qty = Number(q.qty) || 4;
-      svc.labor = catalogLabor(svc.service_type, svc.variant, svc.qty);
-    }
+const applyQuoteLine = (q, line) => {
+    const svc = quoteToService(q, line);
     setServices(prev => {
       const isEmptyTire = (s) => s.kind === "tire" && !s.tire_id && !s.staggered && !(Number(s.unit_price) > 0) && !(s.description || "").trim();
       const others = prev.map(s => ({ ...s, _open: false }));
@@ -4242,7 +4301,159 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
   );
 }
 
+// ─── Quotes Dashboard (sales) ─────────────────────────────────────────────────
+// Every quote sent from the Tire System, with conversion tracking. A quote
+// counts as "booked" when a matching order exists (same mobile, created after
+// the quote — strongest match: the order contains one of the quoted tires).
+function QuotesView({ quotes, jobs, customers, onBook, onSelectJob }) {
+  const [statusF, setStatusF] = useState("all"); // all | booked | open | followup
+  const [agentF, setAgentF] = useState("all");
+  const [search, setSearch] = useState("");
 
+  const enriched = quotes.map(q => {
+    const job = quoteBookingMatch(q, jobs);
+    const cust = customers.find(c => last8(c.mobile) && last8(c.mobile) === last8(q.customer_mobile));
+    return { ...q, _job: job, _booked: !!job, _cust: cust, _value: quoteValue(q), _ageH: (Date.now() - new Date(q.created_at).getTime()) / 36e5 };
+  });
+
+  const agents = [...new Set(enriched.map(q => q.agent || "—"))].sort();
+  const total = enriched.length;
+  const bookedCount = enriched.filter(q => q._booked).length;
+  const conv = total ? Math.round((bookedCount / total) * 100) : 0;
+  const pipeline = enriched.filter(q => !q._booked).reduce((s, q) => s + q._value, 0);
+  const followupCount = enriched.filter(q => !q._booked && q._ageH >= 24).length;
+
+  const perAgent = agents.map(a => {
+    const list = enriched.filter(q => (q.agent || "—") === a);
+    const b = list.filter(q => q._booked).length;
+    return { agent: a, total: list.length, booked: b, conv: list.length ? Math.round((b / list.length) * 100) : 0 };
+  }).sort((x, y) => y.total - x.total);
+
+  const filtered = enriched.filter(q => {
+    if (statusF === "booked" && !q._booked) return false;
+    if (statusF === "open" && q._booked) return false;
+    if (statusF === "followup" && (q._booked || q._ageH < 24)) return false;
+    if (agentF !== "all" && (q.agent || "—") !== agentF) return false;
+    if (search) {
+      const s = search.toLowerCase();
+      const hay = `${q.customer_mobile || ""} ${q.customer_name || ""} ${q._cust?.name || ""} ${(q.lines || []).map(l => `${l.brand || ""} ${l.pattern || ""} ${l.size || ""}`).join(" ")}`.toLowerCase();
+      if (!hay.includes(s)) return false;
+    }
+    return true;
+  }).sort((a, b) => statusF === "followup"
+    ? new Date(a.created_at) - new Date(b.created_at)   // oldest first — call these first
+    : new Date(b.created_at) - new Date(a.created_at));
+
+  const QUICK = [
+    { key: "all", label: `All (${total})` },
+    { key: "booked", label: `Booked (${bookedCount})` },
+    { key: "open", label: `Not booked (${total - bookedCount})` },
+    { key: "followup", label: `⏰ Follow up (${followupCount})` },
+  ];
+
+  return (
+    <>
+      <div className="stats-grid">
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{total}</div><div className="stat-lbl">Quotes sent</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{bookedCount}</div><div className="stat-lbl">Booked</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{conv}%</div><div className="stat-lbl">Conversion</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {pipeline.toFixed(0)}</div><div className="stat-lbl">Open pipeline (est.)</div></div>
+      </div>
+
+      <div className="page-header">
+        <div className="page-title">Quotes</div>
+        <div className="filters">
+          <input className="filter-input" placeholder="Search mobile, name, tire…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 200 }} />
+        </div>
+      </div>
+
+      {/* Per-agent performance — tap to filter */}
+      {perAgent.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <button className={`btn btn-sm ${agentF === "all" ? "btn-primary" : "btn-ghost"}`} onClick={() => setAgentF("all")}>All agents</button>
+          {perAgent.map(p => (
+            <button key={p.agent} className={`btn btn-sm ${agentF === p.agent ? "btn-primary" : "btn-ghost"}`}
+              onClick={() => setAgentF(agentF === p.agent ? "all" : p.agent)}>
+              {p.agent} · {p.booked}/{p.total} · {p.conv}%
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Status filter pills */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        {QUICK.map(qk => (
+          <button key={qk.key} className={`btn btn-sm ${statusF === qk.key ? "btn-primary" : "btn-ghost"}`} onClick={() => setStatusF(qk.key)}>{qk.label}</button>
+        ))}
+      </div>
+
+      {filtered.length === 0 && <div className="empty"><h3>No quotes here</h3><p>Quotes sent from the Tire System appear automatically.</p></div>}
+
+      {filtered.map(q => {
+        const needsFollowup = !q._booked && q._ageH >= 24;
+        const custName = q._cust?.name || q.customer_name || "";
+        const front = q.staggered ? (q.lines || []).find(l => l.position === "front") : null;
+        const rear = q.staggered ? (q.lines || []).find(l => l.position === "rear") : null;
+        return (
+          <div key={q.id} className="dist-card" style={{ borderLeft: `3px solid ${q._booked ? "var(--success)" : needsFollowup ? "#F59E0B" : "var(--border)"}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14, fontFamily: "var(--font-head)" }}>
+                  {custName || "Unknown customer"} · <a href={`tel:${q.customer_mobile}`} style={{ color: "var(--accent)", fontWeight: 600 }}>{q.customer_mobile}</a>
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>
+                  {fmtDate(q.created_at)} {fmtTime(q.created_at)} · {quoteAge(q.created_at)}{q.agent ? ` · ${q.agent}` : ""}{q.cash_pct ? ` · cash ${q.cash_pct}%` : ""}
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+                {q._booked ? (
+                  <span className="status-pill" style={{ background: "#DCFCE7", color: "#15803D", cursor: "pointer" }} onClick={() => onSelectJob(q._job)}>✓ Booked →</span>
+                ) : needsFollowup ? (
+                  <span className="status-pill" style={{ background: "#FEF3C7", color: "#92400E" }}>⏰ Follow up</span>
+                ) : (
+                  <span className="status-pill" style={{ background: "#F1F5F9", color: "#64748B" }}>Open</span>
+                )}
+                <span style={{ fontWeight: 700, color: "var(--accent)", fontSize: 13 }}>~KWD {q._value.toFixed(0)}</span>
+              </div>
+            </div>
+
+            {q.staggered ? (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
+                <div>
+                  <div>F: <strong>{front?.brand} {front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {front?.size}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(front?.price || 0).toFixed(0)} KD</span></div>
+                  <div>R: <strong>{rear?.brand} {rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {rear?.size}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(rear?.price || 0).toFixed(0)} KD</span></div>
+                </div>
+                {!q._booked && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, null)}>Book</button>}
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {(q.lines || []).map((line, li) => (
+                  <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
+                    <span>
+                      <strong>{line.brand} {line.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {line.size}{line.year ? ` · ${line.year}` : ""} · qty {q.qty || 4}</span>
+                      <span style={{ color: "var(--accent)", fontWeight: 700 }}> @ {Number(line.price || 0).toFixed(0)} KD</span>
+                    </span>
+                    {!q._booked && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, line)}>Book</button>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {q._booked && q._job && (
+              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                → Order:
+                <span style={{ fontWeight: 600, color: "var(--text)", cursor: "pointer", textDecoration: "underline", textDecorationColor: "rgba(212,132,10,.4)" }} onClick={() => onSelectJob(q._job)}>
+                  {q._job.customer_name} · {fmtDate(q._job.scheduled_at)} · {q._job.assigned_truck}
+                </span>
+                <StatusPill status={q._job.status} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [authed, setAuthed] = useState(false);
@@ -4255,6 +4466,7 @@ export default function App() {
   const [customers, setCustomers] = useState([]);
   const [cars, setCars] = useState([]);
   const [addresses, setAddresses] = useState([]);
+  const [quotes, setQuotes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("schedule");
   const [selectedJob, setSelectedJob] = useState(null);
@@ -4296,8 +4508,9 @@ export default function App() {
   useEffect(() => {
     if (!authed) return;
     setLoading(true);
-    Promise.all([fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses()]).then(([j, c, cr, ad]) => {
+    Promise.all([fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes()]).then(([j, c, cr, ad, qs]) => {
       setJobs(j);
+      setQuotes(qs);
       setCustomers(c);
       setCars(cr);
       setAddresses(ad);
@@ -4375,7 +4588,15 @@ export default function App() {
     setPrefillOrder({ customer, sourceJob });
     setShowNew(true);
   };
-
+  const handleBookQuote = (quote, line) => {
+    setSelectedJob(null);
+    setSelectedCustomer(null);
+    const svc = quoteToService(quote, line);
+    const customer = customers.find(x => last8(x.mobile) === last8(quote.customer_mobile)) || null;
+    setPrefillSlot(null);
+    setPrefillOrder({ customer, services: [svc], mobile: quote.customer_mobile });
+    setShowNew(true);
+  };
   const handleCarCreated = (car) => {
     setCars(prev => [car, ...prev]);
     setShowAddCar(false);
@@ -4392,6 +4613,7 @@ export default function App() {
 
   const allTabs = [
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
+    { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
     { key: "history",    label: "History",         icon: "🕘", roles: ["sales", "purchaser"] },
     { key: "customers",  label: "Customers",       icon: "👥", roles: ["sales", "purchaser"] },
     { key: "myjobs",     label: "My Jobs",         icon: "🔧", roles: ["technician"] },
@@ -4491,6 +4713,9 @@ export default function App() {
 
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
             <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
+            <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
