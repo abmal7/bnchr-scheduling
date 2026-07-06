@@ -67,6 +67,11 @@ const STATUS_FLOW = [
 ];
 
 const DONE_STATUSES = ["done", "invoiced", "paid"];
+// Operational stage of an order, the way the sales team thinks about it:
+// Booked (sales placed it) → Started (technician working) → Successful (done & completed)
+const jobStarted = (j) => j.truck_status === "processing" || ["en_route", "on_site"].includes(j.status);
+const jobSuccessful = (j) => DONE_STATUSES.includes(j.status) || j.truck_status === "completed";
+const jobBookedStage = (j) => j.status !== "cancelled" && j.status !== "incomplete" && !jobStarted(j) && !jobSuccessful(j);
 // Verification timestamps: keep/assign a time when a check completes, clear when it un-completes
 const verStamp = (job, key, done) => {
   const vt = { ...(job.ver_times || {}) };
@@ -3193,7 +3198,12 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
 
   const filtered = jobs.filter(j => {
     if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
-    if (filterStatus !== "all" && j.status !== filterStatus) return false;
+    if (filterStatus === "booked" && !jobBookedStage(j)) return false;
+    if (filterStatus === "started" && !jobStarted(j)) return false;
+    if (filterStatus === "successful" && !jobSuccessful(j)) return false;
+    if (filterStatus === "paid" && j.payment_status !== "paid") return false;
+    if (filterStatus === "unpaid" && (j.payment_status === "paid" || j.status === "cancelled")) return false;
+    if (filterStatus === "cancelled" && j.status !== "cancelled") return false;
     if (filterDate) { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; if (d !== filterDate) return false; }
     if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
     return true;
@@ -3225,8 +3235,13 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
               {TRUCKS.map(t => <option key={t}>{t}</option>)}
             </select>
             <select className="filter-select" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-              <option value="all">All Statuses</option>
-              {STATUS_FLOW.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+              <option value="all">All Orders</option>
+              <option value="booked">Booked — from sales</option>
+              <option value="started">Started — technician working</option>
+              <option value="successful">Successful — done &amp; completed</option>
+              <option value="paid">Paid</option>
+              <option value="unpaid">Unpaid</option>
+              <option value="cancelled">Cancelled</option>
             </select>
             {filterDate && <button className="btn btn-ghost btn-sm" onClick={() => setFilterDate("")}>Clear Date</button>}
           </div>
