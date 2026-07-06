@@ -4877,9 +4877,18 @@ export default function App() {
     setShowAddCar(false);
   };
 
+  // Keep the customer's headline area in step with their addresses:
+  // the last address added or edited becomes the area shown on the card.
+  const syncCustomerArea = (customerId, area) => {
+    if (!customerId || !area) return;
+    setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, area } : c));
+    setSelectedCustomer(prev => (prev && prev.id === customerId) ? { ...prev, area } : prev);
+    updateCustomer(customerId, { area });
+  };
   const handleAddressCreated = (addr) => {
     setAddresses(prev => [addr, ...prev]);
     setShowAddAddr(false);
+    syncCustomerArea(addr.customer_id, addr.area);
   };
   const handleAddAddress = (customer) => {
     setAddAddrTarget(customer);
@@ -4897,6 +4906,7 @@ export default function App() {
   const handleAddressUpdated = (a) => {
     setAddresses(prev => prev.map(x => x.id === a.id ? a : x));
     setShowAddAddr(false); setEditAddrTarget(null);
+    syncCustomerArea(a.customer_id, a.area);
   };
   const handleAddressDeleted = (id) => {
     setAddresses(prev => prev.filter(x => x.id !== id));
