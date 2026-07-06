@@ -3360,7 +3360,9 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
                 <StatusPill status={job.status} />
-                {job.truck_status && job.truck_status !== "scheduled" && (
+                {job.truck_status && job.truck_status !== "scheduled"
+                  && !(job.truck_status === "completed" && DONE_STATUSES.includes(job.status))
+                  && !(job.truck_status === "processing" && ["en_route", "on_site"].includes(job.status)) && (
                   <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 7px", borderRadius: 6,
                     background: job.truck_status === "completed" ? "#DCFCE7" : job.truck_status === "processing" ? "#FEF3C7" : "#DBEAFE",
                     color: job.truck_status === "completed" ? "#15803D" : job.truck_status === "processing" ? "#92400E" : "#1D4ED8" }}>
