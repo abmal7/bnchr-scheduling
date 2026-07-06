@@ -18,6 +18,18 @@ async function sb(path, opts = {}) {
   return res.status === 204 ? null : res.json();
 }
 
+// Fetch ALL rows past PostgREST's 1000-row page cap (loops in pages of 1000).
+async function sbAll(path) {
+  const sep = path.includes("?") ? "&" : "?";
+  const out = [];
+  for (let page = 0; page < 50; page++) {           // safety ceiling: 50k rows
+    const batch = await sb(`${path}${sep}limit=1000&offset=${page * 1000}`);
+    if (batch && batch.length) out.push(...batch);
+    if (!batch || batch.length < 1000) break;
+  }
+  return out;
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 const PASSWORD = "bnchr901";
 // Per-truck technician logins — each truck has its own password.
@@ -536,7 +548,7 @@ function followupState(q, status) {
   return { due, suggestLost: due && n >= 3, snoozed: false };
 }
 async function fetchAllQuotes() {
-  try { const d = await sb("/quotes?select=*&order=created_at.desc&limit=500"); return d || []; }
+  try { const d = await sbAll("/quotes?select=*&order=created_at.desc"); return d || []; }
   catch { return MOCK_QUOTES; }
 }
 async function fetchTireById(id) {
@@ -981,15 +993,15 @@ const MOCK_JOBS = [
 
 // ─── DB Layer ─────────────────────────────────────────────────────────────────
 async function fetchJobs() {
-  try { const d = await sb("/jobs?select=*&order=scheduled_at.desc"); return d || []; }
+  try { const d = await sbAll("/jobs?select=*&order=scheduled_at.desc"); return d || []; }
   catch { return MOCK_JOBS; }
 }
 async function fetchCustomers() {
-  try { const d = await sb("/customers?select=*&order=name.asc"); return d || []; }
+  try { const d = await sbAll("/customers?select=*&order=name.asc"); return d || []; }
   catch { return MOCK_CUSTOMERS; }
 }
 async function fetchCars() {
-  try { const d = await sb("/customer_cars?select=*"); return d || []; }
+  try { const d = await sbAll("/customer_cars?select=*"); return d || []; }
   catch { return MOCK_CARS; }
 }
 async function createJob(job) {
@@ -1008,7 +1020,7 @@ async function createCar(car) {
   catch { return { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
 }
 async function fetchAddresses() {
-  try { const d = await sb("/customer_addresses?select=*"); return d || []; }
+  try { const d = await sbAll("/customer_addresses?select=*"); return d || []; }
   catch { return MOCK_ADDRESSES; }
 }
 async function createAddress(a) {
