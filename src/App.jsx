@@ -5056,6 +5056,26 @@ export default function App() {
   const handleCarUpdated = (car) => {
     setCars(prev => prev.map(c => c.id === car.id ? car : c));
     setShowAddCar(false); setEditCarTarget(null);
+    // Propagate the correction to ACTIVE orders referencing this car.
+    // Completed / cancelled / incomplete orders keep their historical snapshot.
+    const label = `${car.brand || ""} ${car.model || ""}${car.year ? " " + car.year : ""}`.replace(/\s+/g, " ").trim();
+    const frozen = (j) => DONE_STATUSES.includes(j.status) || j.status === "cancelled" || j.status === "incomplete";
+    setJobs(prev => prev.map(j => {
+      if (frozen(j)) return j;
+      const refsTop = j.car_id === car.id;
+      const refsItem = (j.items || []).some(it => it.car_id === car.id);
+      if (!refsTop && !refsItem) return j;
+      const patch = {};
+      if (refsTop) {
+        patch.car_brand = car.brand || "";
+        patch.car_model = car.model || "";
+        patch.car_year = car.year || "";
+        patch.car_plate = car.plate || "";
+      }
+      if (refsItem) patch.items = (j.items || []).map(it => it.car_id === car.id ? { ...it, car_label: label } : it);
+      updateJob(j.id, patch);
+      return { ...j, ...patch };
+    }));
   };
   const handleCarDeleted = (id) => {
     setCars(prev => prev.filter(c => c.id !== id));
