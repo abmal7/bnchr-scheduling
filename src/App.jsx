@@ -2276,12 +2276,14 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     setSaving(true);
     // Create any inline new cars first, link their ids back to the service blocks
     let services = f.services;
+    const createdCars = [];
     if (selectedCustomer) {
       const withCars = [];
       for (const s of services) {
         if (s.new_car && (s.new_car.brand || s.new_car.model)) {
           const car = await createCar({ ...s.new_car, customer_id: selectedCustomer.id, created_at: new Date().toISOString() });
           if (onCarCreated) onCarCreated(car);
+          createdCars.push(car);
           withCars.push({ ...s, car_id: car.id, new_car: null });
         } else {
           withCars.push(s);
@@ -2289,6 +2291,10 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       }
       services = withCars;
     }
+    // Cars available to this order: profile cars + any created inline just now
+    const allCars = [...formCustomerCars, ...createdCars];
+    // Top-level car snapshot for reporting — the first car linked on the order
+    const primaryCar = services.map(s => allCars.find(c => c.id === s.car_id)).find(Boolean) || null;
     const scheduledAt = new Date(`${f.scheduled_date}T${String(f.start_hour).padStart(2, "0")}:00:00`);
     const totalLabor = services.reduce((s, svc) => s + serviceTotals(svc).netLabor, 0);
     const headline = [...new Set(services.map(s => s.service_type))].join(" + ");
@@ -2299,7 +2305,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       : (() => { const ps = (s.parts || []).filter(p => p.name); return ps.length ? `${s.service_type}: ${ps.map(p => p.name).join(", ")}` : `${s.service_type} (labor only)`; })()).filter(Boolean).join(" · ");
     const totQtyOf = (s) => s.staggered ? (Number(s.qty) || 0) + (Number(s.rear_qty) || 0) : (Number(s.qty) || 4);
     const carLabelFor = (cid) => {
-      const c = (formCustomerCars || []).find(x => x.id === cid);
+      const c = allCars.find(x => x.id === cid);
       return c ? `${c.brand} ${c.model}${c.year ? " " + c.year : ""}`.trim() : "";
     };
     const items = services.flatMap(s => {
@@ -2358,6 +2364,11 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     });
     const common = {
       ...f,
+      car_id: primaryCar ? primaryCar.id : (f.car_id || null),
+      car_brand: primaryCar ? (primaryCar.brand || "") : (f.car_brand || ""),
+      car_model: primaryCar ? (primaryCar.model || "") : (f.car_model || ""),
+      car_year: primaryCar ? (primaryCar.year || "") : (f.car_year || ""),
+      car_plate: primaryCar ? (primaryCar.plate || "") : (f.car_plate || ""),
       ver_times: { ...(editJob?.ver_times || {}), c1: f.sales_match_confirmed ? ((editJob?.ver_times || {}).c1 || new Date().toISOString()) : null },
       services,
       service_type: headline,
