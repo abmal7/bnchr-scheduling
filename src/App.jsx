@@ -4415,28 +4415,101 @@ function EditCustomerModal({ customer, onClose, onUpdated }) {
 
 function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer }) {
   const [search, setSearch] = useState("");
+  const [areaF, setAreaF] = useState("all");
+  const [govF, setGovF] = useState("all");
+  const [brandF, setBrandF] = useState("all");
+  const [sortBy, setSortBy] = useState("name");
 
-  const filtered = customers.filter(c =>
-    !search || c.name.toLowerCase().includes(search.toLowerCase()) || c.mobile.includes(search)
-  ).sort((a, b) => a.name.localeCompare(b.name));
+  const digits = (s) => (s || "").replace(/\D/g, "");
+  const q = search.trim();
+  const qDigits = digits(q);
+  // digits-only query → mobile mode; 8+ digits → EXACT match (last 8)
+  const mobileMode = q.length > 0 && qDigits.length > 0 && digits(q).length === q.replace(/[\s()+-]/g, "").length;
+
+  // per-customer vehicle lookup (brands + count)
+  const brandsByCust = {}, carCount = {};
+  cars.forEach(car => {
+    if (!car.customer_id) return;
+    (brandsByCust[car.customer_id] = brandsByCust[car.customer_id] || new Set()).add(car.brand);
+    carCount[car.customer_id] = (carCount[car.customer_id] || 0) + 1;
+  });
+
+  const areaOptions = [...new Set(customers.map(c => c.area).filter(Boolean))].sort();
+  const brandOptions = [...new Set(cars.map(c => c.brand).filter(Boolean))].sort();
+  const GOVS = ["Al Asimah", "Hawalli", "Farwaniya", "Mubarak Al-Kabeer", "Ahmadi", "Jahra"];
+
+  const filtered = customers.filter(c => {
+    if (q) {
+      if (mobileMode) {
+        const m = digits(c.mobile);
+        if (qDigits.length >= 8) { if (m.slice(-8) !== qDigits.slice(-8)) return false; } // exact
+        else if (!m.includes(qDigits)) return false;                                       // narrowing
+      } else if (!(c.name || "").toLowerCase().includes(q.toLowerCase())) return false;
+    }
+    if (areaF !== "all" && c.area !== areaF) return false;
+    if (govF !== "all" && govFor(c.area) !== govF) return false;
+    if (brandF !== "all" && !(brandsByCust[c.id] && brandsByCust[c.id].has(brandF))) return false;
+    return true;
+  }).sort((a, b) => {
+    if (sortBy === "recent") return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    if (sortBy === "vehicles") return (carCount[b.id] || 0) - (carCount[a.id] || 0);
+    return (a.name || "").localeCompare(b.name || "");
+  });
+
+  const CAP = 200;
+  const shown = filtered.slice(0, CAP);
+  const hasFilters = q || areaF !== "all" || govF !== "all" || brandF !== "all";
+  const clearAll = () => { setSearch(""); setAreaF("all"); setGovF("all"); setBrandF("all"); };
 
   return (
     <>
       <div className="page-header">
         <div className="page-title">Customers ({customers.length})</div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <div className="search-wrap" style={{ width: 240 }}>
-            <span className="search-icon">🔍</span>
-            <input className="search-input" placeholder="Search name or mobile…" value={search} onChange={e => setSearch(e.target.value)} />
-          </div>
-          <button className="btn btn-primary" onClick={onNewCustomer}>+ New Customer</button>
-        </div>
+        <button className="btn btn-primary" onClick={onNewCustomer}>+ New Customer</button>
       </div>
 
-      {filtered.length === 0 && <div className="empty"><h3>No customers yet</h3><p>Customers are created when you add a new job.</p></div>}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        <div className="search-wrap" style={{ flex: "1 1 220px", minWidth: 200 }}>
+          <span className="search-icon">{mobileMode ? "📱" : "🔍"}</span>
+          <input className="search-input" placeholder="Mobile (exact) or name…" value={search}
+            onChange={e => setSearch(e.target.value)} inputMode="search" />
+        </div>
+        <select className="filter-select" value={govF} onChange={e => { setGovF(e.target.value); setAreaF("all"); }}>
+          <option value="all">All Governorates</option>
+          {GOVS.map(g => <option key={g}>{g}</option>)}
+        </select>
+        <select className="filter-select" value={areaF} onChange={e => setAreaF(e.target.value)}>
+          <option value="all">All Areas</option>
+          {(govF === "all" ? areaOptions : areaOptions.filter(a => govFor(a) === govF)).map(a => <option key={a}>{a}</option>)}
+        </select>
+        <select className="filter-select" value={brandF} onChange={e => setBrandF(e.target.value)}>
+          <option value="all">All Car Brands</option>
+          {brandOptions.map(b => <option key={b}>{b}</option>)}
+        </select>
+        <select className="filter-select" value={sortBy} onChange={e => setSortBy(e.target.value)}>
+          <option value="name">Sort: Name A–Z</option>
+          <option value="recent">Sort: Recently added</option>
+          <option value="vehicles">Sort: Most vehicles</option>
+        </select>
+        {hasFilters && <button className="btn btn-ghost btn-sm" onClick={clearAll}>✕ Clear</button>}
+      </div>
+
+      {hasFilters && (
+        <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
+          {filtered.length} customer{filtered.length !== 1 ? "s" : ""} match
+          {mobileMode && qDigits.length >= 8 ? " (exact mobile)" : ""}
+        </div>
+      )}
+
+      {filtered.length === 0 && (
+        <div className="empty">
+          <h3>No customers found</h3>
+          <p>{mobileMode ? "No customer with this mobile — check the number, or create them as new." : "Try different filters or search terms."}</p>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
-        {filtered.map(c => {
+        {shown.map(c => {
           const cCars = cars.filter(car => car.customer_id === c.id);
           const cJobs = jobs.filter(j => j.customer_id === c.id);
           const totalSpent = cJobs.reduce((s, j) => s + Number(j.total || 0), 0);
@@ -4464,6 +4537,12 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
           );
         })}
       </div>
+
+      {filtered.length > CAP && (
+        <div style={{ textAlign: "center", padding: "16px 0", fontSize: 13, color: "var(--muted)" }}>
+          Showing first {CAP} of {filtered.length} — refine the search or filters to see the rest.
+        </div>
+      )}
     </>
   );
 }
