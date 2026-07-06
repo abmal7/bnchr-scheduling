@@ -1013,10 +1013,26 @@ async function fetchCars() {
 }
 async function createJob(job) {
   try { const r = await sb("/jobs", { method: "POST", body: JSON.stringify(job) }); return r?.[0] || { ...job, id: `local-${Date.now()}` }; }
-  catch { return { ...job, id: `local-${Date.now()}` }; }
+  catch (e) {
+    console.error("Order create FAILED:", e?.message || e);
+    alert("⚠ Could not save the new order to the server — it will disappear on refresh.\n\n" + String(e?.message || e).slice(0, 300));
+    return { ...job, id: `local-${Date.now()}` };
+  }
 }
+// Real columns on the jobs table — every PATCH is filtered to these, so a
+// stray UI-only key can never reject the whole save.
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at"]);
 async function updateJob(id, patch) {
-  try { await sb(`/jobs?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
+  const clean = {};
+  Object.keys(patch || {}).forEach(k => { if (JOB_COLUMNS.has(k)) clean[k] = patch[k]; });
+  try {
+    await sb(`/jobs?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(clean) });
+    return true;
+  } catch (e) {
+    console.error("Order save FAILED:", e?.message || e);
+    alert("⚠ Could not save to the server — this change will be lost on refresh.\n\n" + String(e?.message || e).slice(0, 300));
+    return false;
+  }
 }
 async function createCustomer(c) {
   try { const r = await sb("/customers", { method: "POST", body: JSON.stringify(c) }); return r?.[0] || { ...c, id: `lc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
