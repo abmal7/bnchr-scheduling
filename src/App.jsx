@@ -46,6 +46,12 @@ const TRUCK_PASSWORDS = {
   T2: "t2bnchr",
   T4: "t4bnchr",
 };
+// Per-agent sales logins — the agent is locked to the session and auto-fills
+// on every new order. The shared PASSWORD still works for sales (no agent lock).
+const SALES_AGENT_PASSWORDS = {
+  Alaa: "alaa901",
+  Hussain: "hussain901",
+};
 const TRUCKS = ["T1", "T2", "T4", "T5", "T6"];
 
 const STATUS_FLOW = [
@@ -2080,7 +2086,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCarCreated, onAddressCreated }) {
+function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCarCreated, onAddressCreated, defaultAgent }) {
   const isEdit = !!editJob;
   // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
   const hydrateServices = (job) => {
@@ -2108,7 +2114,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     assigned_truck: prefill?.truck || "T1", start_hour: prefill?.hour ?? null, duration: 1,
     overtime: false, is_overtime: false,
     scheduled_date: prefill?.date || today(),
-    lead_from: "WhatsApp", sales_agent: "",
+    lead_from: "WhatsApp", sales_agent: defaultAgent || "",
     xero_ref: "", invoice_no: "", payment_through: "Link", payment_status: "pending", payment_link: "", notes: "",
     status: "draft",
     checks: [false, false, false, false],
@@ -5070,6 +5076,8 @@ export default function App() {
   const [role, setRole] = useState(() => loadSession()?.role || "sales");
   const [loginTruck, setLoginTruck] = useState(ACTIVE_TRUCKS[0]); // chosen truck at login
   const [sessionTruck, setSessionTruck] = useState(() => loadSession()?.truck || null); // locked truck (technician)
+  const [loginAgent, setLoginAgent] = useState(SALES_AGENTS[0]);  // chosen agent at login
+  const [sessionAgent, setSessionAgent] = useState(() => loadSession()?.agent || null); // locked agent (sales)
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState(false);
   const [jobs, setJobs] = useState([]);
@@ -5107,16 +5115,19 @@ export default function App() {
   const [showEditCustomer, setShowEditCustomer] = useState(false);
   const [usingMock, setUsingMock] = useState(false);
 
-  const saveSession = (truck) => {
-    try { localStorage.setItem("bnchr_session", JSON.stringify({ role, truck })); } catch {}
+  const saveSession = (truck, agent) => {
+    try { localStorage.setItem("bnchr_session", JSON.stringify({ role, truck, agent: agent || null })); } catch {}
   };
   const login = () => {
     if (role === "technician") {
       // each truck has its own password; log in locked to that truck
-      if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setAuthed(true); setPwErr(false); saveSession(loginTruck); }
+      if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setSessionAgent(null); setAuthed(true); setPwErr(false); saveSession(loginTruck, null); }
       else setPwErr(true);
+    } else if (role === "sales" && pw === SALES_AGENT_PASSWORDS[loginAgent]) {
+      // per-agent login: orders auto-fill this agent
+      setSessionTruck(null); setSessionAgent(loginAgent); setAuthed(true); setPwErr(false); saveSession(null, loginAgent);
     } else {
-      if (pw === PASSWORD) { setSessionTruck(null); setAuthed(true); setPwErr(false); saveSession(null); }
+      if (pw === PASSWORD) { setSessionTruck(null); setSessionAgent(null); setAuthed(true); setPwErr(false); saveSession(null, null); }
       else setPwErr(true);
     }
   };
@@ -5384,9 +5395,27 @@ export default function App() {
                 </div>
               </div>
             )}
-            <input type="password" placeholder={role === "technician" ? `${loginTruck} password` : "Team password"} value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && login()} />
+            {role === "sales" && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, marginBottom: 6 }}>Who's working?</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {SALES_AGENTS.map(a => {
+                    const active = loginAgent === a;
+                    return (
+                      <button key={a} type="button" onClick={() => { setLoginAgent(a); setPwErr(false); }}
+                        style={{ flex: 1, minWidth: 90, padding: "8px 4px", borderRadius: 8, cursor: "pointer", fontWeight: 700,
+                          background: active ? "var(--accent)" : "var(--bg)", color: active ? "#fff" : "var(--text)",
+                          border: `2px solid ${active ? "var(--accent)" : "var(--border)"}` }}>
+                        {active ? "✓ " : ""}{a}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <input type="password" placeholder={role === "technician" ? `${loginTruck} password` : role === "sales" ? `${loginAgent}'s password (or team password)` : "Team password"} value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && login()} />
             {pwErr && <div className="login-error">Incorrect password.</div>}
-            <button className="btn btn-primary" style={{ width: "100%" }} onClick={login}>Enter{role === "technician" ? ` as ${loginTruck}` : ""}</button>
+            <button className="btn btn-primary" style={{ width: "100%" }} onClick={login}>Enter{role === "technician" ? ` as ${loginTruck}` : role === "sales" ? ` as ${loginAgent}` : ""}</button>
           </div>
         </div>
       </>
@@ -5402,7 +5431,7 @@ export default function App() {
         <div className="topbar">
           <div className="topbar-left">
             <div className="logo">BNCHR<span>+</span></div>
-            <span className="badge-role">{role}{sessionTruck ? ` · ${sessionTruck}` : ""}</span>
+            <span className="badge-role">{role}{sessionTruck ? ` · ${sessionTruck}` : ""}{sessionAgent ? ` · ${sessionAgent}` : ""}</span>
             <nav className="nav-tabs">
               {tabs.map(t => (
                 <button key={t.key} className={`nav-tab ${tab === t.key ? "active" : ""}`}
@@ -5414,7 +5443,7 @@ export default function App() {
           </div>
           <div className="topbar-right">
             {usingMock && <span style={{ fontSize: 11, color: "var(--accent)", border: "1px solid #FDE68A", background: "#FFFBEB", borderRadius: 6, padding: "2px 8px" }}>Demo Data</span>}
-            <button className="btn-logout" onClick={() => { setAuthed(false); setPw(""); setSessionTruck(null); try { localStorage.removeItem("bnchr_session"); } catch {} }}>Sign out</button>
+            <button className="btn-logout" onClick={() => { setAuthed(false); setPw(""); setSessionTruck(null); setSessionAgent(null); try { localStorage.removeItem("bnchr_session"); } catch {} }}>Sign out</button>
           </div>
         </div>
 
@@ -5498,6 +5527,7 @@ export default function App() {
 
       {editingJob && (
         <NewJobModal
+          defaultAgent={sessionAgent}
           editJob={editingJob}
           customers={customers}
           cars={cars}
@@ -5513,6 +5543,7 @@ export default function App() {
 
       {showNew && (
         <NewJobModal
+          defaultAgent={sessionAgent}
           prefillOrder={prefillOrder}
           customers={customers}
           cars={cars}
