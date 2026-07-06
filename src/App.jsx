@@ -4619,6 +4619,202 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
 }
 
 
+
+// ─── Reports (sales) ──────────────────────────────────────────────────────────
+// Auto-generated replacement for the manual daily/monthly Excel reports.
+// Everything computes live from jobs + quotes + customers. Trengo call counts
+// are not in the system yet, so inquiry-based metrics stay in Trengo for now.
+const MONTHLY_TARGET = 45000; // KWD — edit here when the target changes
+
+function ReportsView({ jobs, quotes, customers }) {
+  const todayD = new Date(); todayD.setHours(0, 0, 0, 0);
+  const iso = (d) => d.toISOString().split("T")[0];
+  const [from, setFrom] = useState(iso(todayD));
+  const [to, setTo] = useState(iso(todayD));
+
+  const preset = (key) => {
+    const d = new Date(todayD);
+    if (key === "today") { setFrom(iso(d)); setTo(iso(d)); }
+    if (key === "week") { const s = new Date(d); s.setDate(d.getDate() - d.getDay()); setFrom(iso(s)); setTo(iso(d)); } // week starts Sunday
+    if (key === "month") { setFrom(iso(new Date(d.getFullYear(), d.getMonth(), 1))); setTo(iso(d)); }
+    if (key === "lastmonth") {
+      setFrom(iso(new Date(d.getFullYear(), d.getMonth() - 1, 1)));
+      setTo(iso(new Date(d.getFullYear(), d.getMonth(), 0)));
+    }
+  };
+
+  const fmtKD = (n) => Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const jobDate = (j) => (j.scheduled_at || j.created_at || "").split("T")[0];
+  const inRange = jobs.filter(j => j.status !== "cancelled" && jobDate(j) >= from && jobDate(j) <= to);
+
+  // ── headline KPIs ──
+  const totalSales = inRange.reduce((s, j) => s + (Number(j.total) || 0), 0);
+  const orders = inRange.length;
+  const ticket = orders ? totalSales / orders : 0;
+
+  // new vs loyal: customer existed before the period start = loyal
+  let newC = 0, loyalC = 0;
+  const seen = new Set();
+  inRange.forEach(j => {
+    const key = j.customer_id || last8(j.customer_mobile);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    const c = customers.find(x => x.id === j.customer_id) ||
+              customers.find(x => last8(x.mobile) === last8(j.customer_mobile));
+    if (c && c.created_at && c.created_at.split("T")[0] < from) loyalC++; else newC++;
+  });
+
+  // quotes in range + conversion
+  const qInRange = quotes.filter(q => { const d = (q.created_at || "").split("T")[0]; return d >= from && d <= to; });
+  const qSuccess = qInRange.filter(q => quoteStatus(q, jobs).status === "success").length;
+  const qConv = qInRange.length ? Math.round((qSuccess / qInRange.length) * 100) : 0;
+
+  // ── month target (always current month, independent of selected range) ──
+  const mStart = iso(new Date(todayD.getFullYear(), todayD.getMonth(), 1));
+  const monthSales = jobs.filter(j => j.status !== "cancelled" && jobDate(j) >= mStart && jobDate(j) <= iso(todayD))
+    .reduce((s, j) => s + (Number(j.total) || 0), 0);
+  const tPct = Math.min(100, Math.round((monthSales / MONTHLY_TARGET) * 100));
+
+  // ── per-agent ──
+  const agentNames = [...new Set([...SALES_AGENTS, ...inRange.map(j => j.sales_agent).filter(Boolean), ...qInRange.map(q => q.agent).filter(Boolean)])];
+  const perAgent = agentNames.map(a => {
+    const aj = inRange.filter(j => j.sales_agent === a);
+    const aq = qInRange.filter(q => q.agent === a);
+    const aqs = aq.filter(q => quoteStatus(q, jobs).status === "success").length;
+    return { agent: a, orders: aj.length, sales: aj.reduce((s, j) => s + (Number(j.total) || 0), 0),
+             quotes: aq.length, conv: aq.length ? Math.round((aqs / aq.length) * 100) : null };
+  }).filter(p => p.orders || p.quotes).sort((x, y) => y.sales - x.sales);
+
+  // ── services breakdown (count · % of orders · KD · % of sales) ──
+  const svcStats = {};
+  let svcCount = 0;
+  inRange.forEach(j => {
+    const blocks = (j.services && j.services.length) ? j.services : [{ service_type: j.service_type || "Other", _fallbackTotal: Number(j.total) || 0 }];
+    blocks.forEach(s => {
+      const t = s.service_type || "Other";
+      const rev = s._fallbackTotal != null ? s._fallbackTotal : serviceTotals(s).total;
+      svcStats[t] = svcStats[t] || { n: 0, kd: 0 };
+      svcStats[t].n++; svcStats[t].kd += rev; svcCount++;
+    });
+  });
+  const svcRows = Object.entries(svcStats).map(([t, v]) => ({ type: t, ...v })).sort((a, b) => b.kd - a.kd);
+  const tireKD = svcRows.filter(r => /tire|patch|rotation|wheel/i.test(r.type)).reduce((s, r) => s + r.kd, 0);
+
+  // ── daily bars ──
+  const days = [];
+  for (let d = new Date(from + "T00:00:00"); iso(d) <= to; d.setDate(d.getDate() + 1)) days.push(iso(d));
+  const byDay = days.map(d => ({ d, kd: inRange.filter(j => jobDate(j) === d).reduce((s, j) => s + (Number(j.total) || 0), 0) }));
+  const maxDay = Math.max(...byDay.map(x => x.kd), 1);
+  const minPos = Math.min(...byDay.filter(x => x.kd > 0).map(x => x.kd), Infinity);
+
+  const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", padding: "8px 10px", borderBottom: "1px solid var(--border)" };
+  const td = { padding: "8px 10px", fontSize: 13, borderBottom: "1px solid var(--border)" };
+
+  return (
+    <>
+      <div className="page-header">
+        <div className="page-title">Reports</div>
+        <div className="filters">
+          <button className="btn btn-ghost btn-sm" onClick={() => preset("today")}>Today</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => preset("week")}>This Week</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => preset("month")}>This Month</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => preset("lastmonth")}>Last Month</button>
+          <input type="date" className="filter-input" value={from} onChange={e => setFrom(e.target.value)} />
+          <input type="date" className="filter-input" value={to} onChange={e => setTo(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="stats-grid">
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>KWD {fmtKD(totalSales)}</div><div className="stat-lbl">Total sales</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{orders}</div><div className="stat-lbl">Orders</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {fmtKD(ticket)}</div><div className="stat-lbl">Avg ticket</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{qConv}%</div><div className="stat-lbl">Quote conversion ({qSuccess}/{qInRange.length})</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{loyalC} / {newC}</div><div className="stat-lbl">Loyal / new customers</div></div>
+      </div>
+
+      {/* Month target */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-body" style={{ padding: "14px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+            <span style={{ fontWeight: 700, fontFamily: "var(--font-head)" }}>Month target · KWD {fmtKD(MONTHLY_TARGET)}</span>
+            <span>Now <strong style={{ color: "var(--accent)" }}>KWD {fmtKD(monthSales)}</strong> · Remaining <strong>KWD {fmtKD(Math.max(0, MONTHLY_TARGET - monthSales))}</strong> · <strong>{tPct}%</strong></span>
+          </div>
+          <div style={{ height: 12, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ width: `${tPct}%`, height: "100%", background: tPct >= 100 ? "var(--success)" : "var(--accent)", transition: "width .3s" }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Daily sales bars */}
+      {days.length > 1 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-body" style={{ padding: "14px 16px" }}>
+            <div style={{ fontWeight: 700, fontFamily: "var(--font-head)", fontSize: 13, marginBottom: 10 }}>Daily sales</div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 120, overflowX: "auto", paddingBottom: 4 }}>
+              {byDay.map(x => (
+                <div key={x.d} title={`${x.d} · KWD ${fmtKD(x.kd)}`} style={{ flex: "1 0 14px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, minWidth: 14 }}>
+                  <span style={{ fontSize: 8.5, color: "var(--muted)", whiteSpace: "nowrap" }}>{x.kd > 0 ? fmtKD(x.kd) : ""}</span>
+                  <div style={{ width: "100%", borderRadius: "3px 3px 0 0", height: `${Math.max(2, (x.kd / maxDay) * 90)}px`,
+                    background: x.kd === maxDay && x.kd > 0 ? "var(--success)" : (x.kd === minPos && x.kd > 0 ? "#DC2626" : "#1A1A1A") }} />
+                  <span style={{ fontSize: 8.5, color: "var(--muted)" }}>{x.d.slice(8)}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>Green = best day · Red = lowest (non-zero) day</div>
+          </div>
+        </div>
+      )}
+
+      {/* Per-agent */}
+      <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
+        <div className="card-header"><h3>Per agent</h3></div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr><th style={th}>Agent</th><th style={th}>Orders</th><th style={th}>Sales (KD)</th><th style={th}>Quotes</th><th style={th}>Conversion</th></tr></thead>
+          <tbody>
+            {perAgent.map(p => (
+              <tr key={p.agent}>
+                <td style={{ ...td, fontWeight: 600 }}>{p.agent}</td>
+                <td style={td}>{p.orders}</td>
+                <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(p.sales)}</td>
+                <td style={td}>{p.quotes}</td>
+                <td style={td}>{p.conv == null ? "—" : p.conv + "%"}</td>
+              </tr>
+            ))}
+            {perAgent.length === 0 && <tr><td style={td} colSpan={5}>No activity in this range.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Services breakdown */}
+      <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
+        <div className="card-header">
+          <h3>Services</h3>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>Tires {totalSales ? Math.round((tireKD / totalSales) * 100) : 0}% · Other {totalSales ? Math.round(((totalSales - tireKD) / totalSales) * 100) : 0}%</span>
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr><th style={th}>Service</th><th style={th}>Number</th><th style={th}>% of services</th><th style={th}>KD</th><th style={th}>% of sales</th></tr></thead>
+          <tbody>
+            {svcRows.map(r => (
+              <tr key={r.type}>
+                <td style={{ ...td, fontWeight: 600 }}>{r.type}</td>
+                <td style={td}>{r.n}</td>
+                <td style={td}>{svcCount ? Math.round((r.n / svcCount) * 100) : 0}%</td>
+                <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(r.kd)}</td>
+                <td style={td}>{totalSales ? Math.round((r.kd / totalSales) * 100) : 0}%</td>
+              </tr>
+            ))}
+            {svcRows.length === 0 && <tr><td style={td} colSpan={5}>No orders in this range.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 20 }}>
+        Call counts and total inquiries live in Trengo and are not included here. Conversion above is quote-based (quotes → booked orders).
+      </div>
+    </>
+  );
+}
+
 // ─── Quotes Dashboard (sales) ─────────────────────────────────────────────────
 // Full quote lifecycle: open → success (order created) or lost (with reason).
 // Stamped status is the source of truth; legacy quotes fall back to the
@@ -5146,6 +5342,7 @@ export default function App() {
   const allTabs = [
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
+    { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
     { key: "history",    label: "History",         icon: "🕘", roles: ["sales", "purchaser"] },
     { key: "customers",  label: "Customers",       icon: "👥", roles: ["sales", "purchaser"] },
     { key: "myjobs",     label: "My Jobs",         icon: "🔧", roles: ["technician"] },
@@ -5253,6 +5450,9 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
+            <ReportsView jobs={jobs} quotes={quotes} customers={customers} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
