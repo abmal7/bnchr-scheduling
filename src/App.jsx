@@ -560,7 +560,8 @@ async function fetchAllQuotes() {
 }
 async function fetchTireById(id) {
   const SELECTS = [
-    "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,oem,notes,in_stock",
+    // matches the real Tire System table exactly (verified 2026-07-06)
+    "id,brand,pattern,type,width,aspect,structure,rim,load_index,speed_rating,country,year,cost,price,sku,supplier,notes,in_stock",
     "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,in_stock",
   ];
   for (const sel of SELECTS) {
@@ -574,7 +575,8 @@ async function searchTires(q) {
   try {
     const m = term.match(/(\d{3})\s*\/?\s*(\d{2})?\s*r?\s*(\d{2})?/i);
     const SELECTS = [
-      "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,oem,notes,in_stock",
+      // matches the real Tire System table exactly (verified 2026-07-06)
+      "id,brand,pattern,type,width,aspect,structure,rim,load_index,speed_rating,country,year,cost,price,sku,supplier,notes,in_stock",
       "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,in_stock",
       "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,in_stock",
     ];
@@ -1446,7 +1448,7 @@ function TireCatalogPicker({ onPick }) {
             <div key={t.id} className="search-item" onClick={() => { onPick(t); setOpen(false); setQ(""); }}>
               <div className="search-item-name">{t.brand}{t.pattern ? " " + t.pattern : ""}</div>
               <div className="search-item-sub">
-                {tireSize(t)}{liSr(t.load_index, t.speed_rating)}{t.oem ? " · " + t.oem : ""}{t.year ? " · " + t.year : ""}{t.country ? " · " + t.country : ""}{t.notes ? " · " + t.notes : ""}
+                {tireSize(t)}{liSr(t.load_index, t.speed_rating)}{t.oem ? " · " + t.oem : ""}{t.year ? " · " + t.year : ""}{t.country ? " · " + t.country : ""}{t.sku ? " · " + t.sku : ""}{t.notes ? " · " + t.notes : ""}
                 {" · "}<strong style={{ color: "var(--accent)" }}>KWD {Number(t.price).toFixed(3)}</strong>
                 {t.in_stock ? <span style={{ color: "var(--success)", marginLeft: 6 }}>● in stock</span>
                             : <span style={{ color: "var(--danger)", marginLeft: 6 }}>● out</span>}
@@ -1652,16 +1654,16 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
   const pickTire = (id, t, svc, pos) => {
     if (pos === "rear") {
       upd(id, { rear_tire_id: t.id, rear_brand: t.brand, rear_pattern: t.pattern, rear_size: `${t.width}/${t.aspect}R${t.rim}`,
-        rear_year: t.year, rear_cost: t.cost, rear_supplier: t.supplier, rear_unit_price: Number(t.price) || 0,
+        rear_year: t.year, rear_cost: t.cost, rear_supplier: t.supplier, rear_unit_price: Number(t.price) || 0, rear_sku: t.sku || "",
         rear_load_index: t.load_index || "", rear_speed_rating: t.speed_rating || "", rear_country: t.country || "", rear_oem: t.oem || "", rear_tire_note: t.notes || "",
         labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc)) });
     } else if (svc.staggered) {
-      upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
+      upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`, sku: t.sku || "",
         load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "", oem: t.oem || "", tire_note: t.notes || "",
         year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0,
         labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc)) });
     } else {
-      upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
+      upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`, sku: t.sku || "",
         load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "", oem: t.oem || "", tire_note: t.notes || "",
         year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0, qty: 4,
         labor: catalogLabor(svc.service_type, svc.variant, 4) });
@@ -2307,6 +2309,30 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       }
       services = withCars;
     }
+    // Quote-sourced tires carry only brand/size/price — pull the full catalog
+    // spec (supplier, cost, LI/SR, SKU, notes) by id before saving, so the
+    // collect list and profitability reports never miss supplier or cost.
+    for (let i = 0; i < services.length; i++) {
+      const s = services[i];
+      if (s.kind !== "tire") continue;
+      if (s.tire_id && (!s.supplier || !s.sku)) {
+        const t = await fetchTireById(s.tire_id);
+        if (t) services[i] = { ...services[i],
+          supplier: s.supplier || t.supplier || "", cost: Number(s.cost) || Number(t.cost) || 0,
+          load_index: s.load_index || t.load_index || "", speed_rating: s.speed_rating || t.speed_rating || "",
+          country: s.country || t.country || "", year: s.year || t.year || "",
+          sku: s.sku || t.sku || "", tire_note: s.tire_note || t.notes || "" };
+      }
+      const s2 = services[i];
+      if (s2.rear_tire_id && (!s2.rear_supplier || !s2.rear_sku)) {
+        const t = await fetchTireById(s2.rear_tire_id);
+        if (t) services[i] = { ...services[i],
+          rear_supplier: s2.rear_supplier || t.supplier || "", rear_cost: Number(s2.rear_cost) || Number(t.cost) || 0,
+          rear_load_index: s2.rear_load_index || t.load_index || "", rear_speed_rating: s2.rear_speed_rating || t.speed_rating || "",
+          rear_country: s2.rear_country || t.country || "", rear_year: s2.rear_year || t.year || "",
+          rear_sku: s2.rear_sku || t.sku || "", rear_tire_note: s2.rear_tire_note || t.notes || "" };
+      }
+    }
     // Cars available to this order: profile cars + any created inline just now
     const allCars = [...formCustomerCars, ...createdCars];
     // Top-level car snapshot for reporting — the first car linked on the order
@@ -2333,7 +2359,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
             id: s.id + "-F", kind: "tire", tire_id: s.tire_id, position: "front",
             brand: s.brand, pattern: s.pattern, size: s.size, year: s.year, load_index: s.load_index, speed_rating: s.speed_rating, country: s.country, oem: s.oem, tire_note: s.tire_note,
             name: `${s.brand} ${s.pattern} (front)`,
-            supplier: s.supplier || "", qty: s.qty, unit_price: s.unit_price,
+            supplier: s.supplier || "", sku: s.sku || "", qty: s.qty, unit_price: s.unit_price,
             cost: s.cost, car_id: s.car_id, car_label,
             service_type: s.service_type, service_id: s.id, variant: s.variant,
           });
@@ -2341,7 +2367,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
             id: s.id + "-R", kind: "tire", tire_id: s.rear_tire_id, position: "rear",
             brand: s.rear_brand, pattern: s.rear_pattern, size: s.rear_size, year: s.rear_year, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note,
             name: `${s.rear_brand} ${s.rear_pattern} (rear)`,
-            supplier: s.rear_supplier || "", qty: s.rear_qty, unit_price: s.rear_unit_price,
+            supplier: s.rear_supplier || "", sku: s.rear_sku || "", qty: s.rear_qty, unit_price: s.rear_unit_price,
             cost: s.rear_cost, car_id: s.car_id, car_label,
             service_type: s.service_type, service_id: s.id, variant: s.variant,
           });
@@ -2356,7 +2382,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           id: s.id, kind: "tire", tire_id: s.tire_id, labor_only: !s.tire_id,
           brand: s.brand, pattern: s.pattern, size: s.size, year: s.year, load_index: s.load_index, speed_rating: s.speed_rating, country: s.country, oem: s.oem, tire_note: s.tire_note,
           name: s.tire_id ? `${s.brand} ${s.pattern}` : `${s.service_type} (labor only)`,
-          supplier: s.supplier || "", qty: s.qty, unit_price: s.unit_price,
+          supplier: s.supplier || "", sku: s.sku || "", qty: s.qty, unit_price: s.unit_price,
           cost: s.cost, car_id: s.car_id, car_label,
           service_type: s.service_type, service_id: s.id, variant: s.variant,
         }];
