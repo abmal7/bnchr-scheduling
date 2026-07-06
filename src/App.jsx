@@ -2793,6 +2793,7 @@ const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 // ─── Job Detail (with order actions) ─────────────────────────────────────────
 function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
   const [j, setJ] = useState(job);
+  useEffect(() => { setJ(job); }, [job]); // follow live updates (edits, realtime sync)
   const [showCancel, setShowCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
 
@@ -3543,6 +3544,7 @@ function DistributorHistoryView({ jobs }) {
 
 function DistributorCard({ job, onUpdate }) {
   const [j, setJ] = useState(job);
+  useEffect(() => { setJ(job); }, [job]); // follow live updates
   // collectable items = tires with a tire OR parts (exclude labor-only lines)
   const items = (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
   const checks = j.item_checks || {};
@@ -3715,6 +3717,7 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
 
 function TechJobCard({ job, index, onUpdate }) {
   const [j, setJ] = useState(job);
+  useEffect(() => { setJ(job); }, [job]); // follow live updates
   const [open, setOpen] = useState(false);
   const [reopened, setReopened] = useState({}); // manually reopened done-stages
   const items = j.items || [];
@@ -4906,6 +4909,7 @@ export default function App() {
         setJobs(j);
         setQuotes(qs);
         setUsingMock(j.some(x => x.id?.startsWith("mock-")));
+        setSelectedJob(prev => prev ? (j.find(x => x.id === prev.id) || prev) : prev);
       } catch {}
     };
     const iv = setInterval(refreshLive, 60000);
@@ -4928,6 +4932,7 @@ export default function App() {
           setJobs(j);
           setQuotes(qs);
           setUsingMock(j.some(x => x.id?.startsWith("mock-")));
+          setSelectedJob(prev => prev ? (j.find(x => x.id === prev.id) || prev) : prev);
         } catch {}
       }, 400);
     };
