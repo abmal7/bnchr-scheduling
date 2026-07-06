@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 // ─── Supabase ────────────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://itpghtviyotueqpspxun.supabase.co";
 const SUPABASE_KEY = "sb_publishable_OhL-LX-sjKOo97uFoN7oMQ_G3j579PE";
+// Realtime client — used ONLY for live push notifications; all reads/writes stay on the REST layer below.
+const sbRealtime = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function sb(path, opts = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
@@ -22,9 +25,13 @@ async function sb(path, opts = {}) {
 async function sbAll(path) {
   const sep = path.includes("?") ? "&" : "?";
   const out = [];
+  const seen = new Set();                            // dedupe guard across pages
   for (let page = 0; page < 50; page++) {           // safety ceiling: 50k rows
     const batch = await sb(`${path}${sep}limit=1000&offset=${page * 1000}`);
-    if (batch && batch.length) out.push(...batch);
+    (batch || []).forEach(r => {
+      const k = r.id != null ? String(r.id) : JSON.stringify(r);
+      if (!seen.has(k)) { seen.add(k); out.push(r); }
+    });
     if (!batch || batch.length < 1000) break;
   }
   return out;
@@ -548,7 +555,7 @@ function followupState(q, status) {
   return { due, suggestLost: due && n >= 3, snoozed: false };
 }
 async function fetchAllQuotes() {
-  try { const d = await sbAll("/quotes?select=*&order=created_at.desc"); return d || []; }
+  try { const d = await sbAll("/quotes?select=*&order=created_at.desc,id.asc"); return d || []; }
   catch { return MOCK_QUOTES; }
 }
 async function fetchTireById(id) {
@@ -993,15 +1000,15 @@ const MOCK_JOBS = [
 
 // ─── DB Layer ─────────────────────────────────────────────────────────────────
 async function fetchJobs() {
-  try { const d = await sbAll("/jobs?select=*&order=scheduled_at.desc"); return d || []; }
+  try { const d = await sbAll("/jobs?select=*&order=scheduled_at.desc,id.asc"); return d || []; }
   catch { return MOCK_JOBS; }
 }
 async function fetchCustomers() {
-  try { const d = await sbAll("/customers?select=*&order=name.asc"); return d || []; }
+  try { const d = await sbAll("/customers?select=*&order=name.asc,id.asc"); return d || []; }
   catch { return MOCK_CUSTOMERS; }
 }
 async function fetchCars() {
-  try { const d = await sbAll("/customer_cars?select=*"); return d || []; }
+  try { const d = await sbAll("/customer_cars?select=*&order=id.asc"); return d || []; }
   catch { return MOCK_CARS; }
 }
 async function createJob(job) {
@@ -1020,7 +1027,7 @@ async function createCar(car) {
   catch { return { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
 }
 async function fetchAddresses() {
-  try { const d = await sbAll("/customer_addresses?select=*"); return d || []; }
+  try { const d = await sbAll("/customer_addresses?select=*&order=id.asc"); return d || []; }
   catch { return MOCK_ADDRESSES; }
 }
 async function createAddress(a) {
@@ -4414,24 +4421,25 @@ function EditCustomerModal({ customer, onClose, onUpdated }) {
 }
 
 function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer }) {
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState("");   // everything: name, mobile, area, cars, notes
+  const [mobileQ, setMobileQ] = useState(""); // phone only — exact
   const [areaF, setAreaF] = useState("all");
   const [govF, setGovF] = useState("all");
   const [brandF, setBrandF] = useState("all");
   const [sortBy, setSortBy] = useState("name");
 
   const digits = (s) => (s || "").replace(/\D/g, "");
-  const q = search.trim();
-  const qDigits = digits(q);
-  // digits-only query → mobile mode; 8+ digits → EXACT match (last 8)
-  const mobileMode = q.length > 0 && qDigits.length > 0 && digits(q).length === q.replace(/[\s()+-]/g, "").length;
+  const q = search.trim().toLowerCase();
+  const mq = digits(mobileQ);
+  const mobileExact = mq.length >= 8;
 
-  // per-customer vehicle lookup (brands + count)
-  const brandsByCust = {}, carCount = {};
+  // per-customer vehicle lookup (brands + count + searchable text)
+  const brandsByCust = {}, carCount = {}, carText = {};
   cars.forEach(car => {
     if (!car.customer_id) return;
     (brandsByCust[car.customer_id] = brandsByCust[car.customer_id] || new Set()).add(car.brand);
     carCount[car.customer_id] = (carCount[car.customer_id] || 0) + 1;
+    carText[car.customer_id] = `${carText[car.customer_id] || ""} ${car.brand || ""} ${car.model || ""}`.toLowerCase();
   });
 
   const areaOptions = [...new Set(customers.map(c => c.area).filter(Boolean))].sort();
@@ -4439,12 +4447,14 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
   const GOVS = ["Al Asimah", "Hawalli", "Farwaniya", "Mubarak Al-Kabeer", "Ahmadi", "Jahra"];
 
   const filtered = customers.filter(c => {
+    if (mq) {
+      const m = digits(c.mobile);
+      if (mobileExact) { if (m.slice(-8) !== mq.slice(-8)) return false; } // 8 digits → exact
+      else if (!m.startsWith(mq)) return false;                            // typing → number starts with
+    }
     if (q) {
-      if (mobileMode) {
-        const m = digits(c.mobile);
-        if (qDigits.length >= 8) { if (m.slice(-8) !== qDigits.slice(-8)) return false; } // exact
-        else if (!m.includes(qDigits)) return false;                                       // narrowing
-      } else if (!(c.name || "").toLowerCase().includes(q.toLowerCase())) return false;
+      const hay = `${c.name || ""} ${c.mobile || ""} ${c.area || ""} ${c.notes || ""}${carText[c.id] || ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
     }
     if (areaF !== "all" && c.area !== areaF) return false;
     if (govF !== "all" && govFor(c.area) !== govF) return false;
@@ -4458,8 +4468,8 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
 
   const CAP = 200;
   const shown = filtered.slice(0, CAP);
-  const hasFilters = q || areaF !== "all" || govF !== "all" || brandF !== "all";
-  const clearAll = () => { setSearch(""); setAreaF("all"); setGovF("all"); setBrandF("all"); };
+  const hasFilters = q || mq || areaF !== "all" || govF !== "all" || brandF !== "all";
+  const clearAll = () => { setSearch(""); setMobileQ(""); setAreaF("all"); setGovF("all"); setBrandF("all"); };
 
   return (
     <>
@@ -4469,9 +4479,14 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
       </div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
-        <div className="search-wrap" style={{ flex: "1 1 220px", minWidth: 200 }}>
-          <span className="search-icon">{mobileMode ? "📱" : "🔍"}</span>
-          <input className="search-input" placeholder="Mobile (exact) or name…" value={search}
+        <div className="search-wrap" style={{ flex: "1 1 170px", minWidth: 160 }}>
+          <span className="search-icon">📱</span>
+          <input className="search-input" placeholder="Mobile — exact" value={mobileQ}
+            onChange={e => setMobileQ(e.target.value)} inputMode="tel" />
+        </div>
+        <div className="search-wrap" style={{ flex: "1 1 200px", minWidth: 180 }}>
+          <span className="search-icon">🔍</span>
+          <input className="search-input" placeholder="Search everything…" value={search}
             onChange={e => setSearch(e.target.value)} inputMode="search" />
         </div>
         <select className="filter-select" value={govF} onChange={e => { setGovF(e.target.value); setAreaF("all"); }}>
@@ -4497,14 +4512,14 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
       {hasFilters && (
         <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
           {filtered.length} customer{filtered.length !== 1 ? "s" : ""} match
-          {mobileMode && qDigits.length >= 8 ? " (exact mobile)" : ""}
+          {mobileExact ? " (exact mobile)" : ""}
         </div>
       )}
 
       {filtered.length === 0 && (
         <div className="empty">
           <h3>No customers found</h3>
-          <p>{mobileMode ? "No customer with this mobile — check the number, or create them as new." : "Try different filters or search terms."}</p>
+          <p>{mq ? "No customer with this mobile — check the number, or create them as new." : "Try different filters or search terms."}</p>
         </div>
       )}
 
@@ -4793,11 +4808,16 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
 }
 
 // ─── App Root ─────────────────────────────────────────────────────────────────
+// Remembered login (survives pull-to-refresh / page reloads; cleared on Sign out)
+const loadSession = () => {
+  try { return JSON.parse(localStorage.getItem("bnchr_session") || "null"); } catch { return null; }
+};
+
 export default function App() {
-  const [authed, setAuthed] = useState(false);
-  const [role, setRole] = useState("sales");
+  const [authed, setAuthed] = useState(() => !!loadSession());
+  const [role, setRole] = useState(() => loadSession()?.role || "sales");
   const [loginTruck, setLoginTruck] = useState(ACTIVE_TRUCKS[0]); // chosen truck at login
-  const [sessionTruck, setSessionTruck] = useState(null);         // locked truck for this session (technician)
+  const [sessionTruck, setSessionTruck] = useState(() => loadSession()?.truck || null); // locked truck (technician)
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState(false);
   const [jobs, setJobs] = useState([]);
@@ -4835,13 +4855,16 @@ export default function App() {
   const [showEditCustomer, setShowEditCustomer] = useState(false);
   const [usingMock, setUsingMock] = useState(false);
 
+  const saveSession = (truck) => {
+    try { localStorage.setItem("bnchr_session", JSON.stringify({ role, truck })); } catch {}
+  };
   const login = () => {
     if (role === "technician") {
       // each truck has its own password; log in locked to that truck
-      if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setAuthed(true); setPwErr(false); }
+      if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setAuthed(true); setPwErr(false); saveSession(loginTruck); }
       else setPwErr(true);
     } else {
-      if (pw === PASSWORD) { setSessionTruck(null); setAuthed(true); setPwErr(false); }
+      if (pw === PASSWORD) { setSessionTruck(null); setAuthed(true); setPwErr(false); saveSession(null); }
       else setPwErr(true);
     }
   };
@@ -4858,6 +4881,51 @@ export default function App() {
       setUsingMock(j.some(x => x.id?.startsWith("mock-")));
       setLoading(false);
     });
+  }, [authed]);
+
+  // Silent live sync: jobs + quotes every 60s, and instantly when the app
+  // returns to the foreground. Customers/cars/addresses reload on page load
+  // only (they change rarely and are heavy on mobile data).
+  useEffect(() => {
+    if (!authed) return;
+    const refreshLive = async () => {
+      if (document.visibilityState === "hidden") return;
+      try {
+        const [j, qs] = await Promise.all([fetchJobs(), fetchAllQuotes()]);
+        setJobs(j);
+        setQuotes(qs);
+        setUsingMock(j.some(x => x.id?.startsWith("mock-")));
+      } catch {}
+    };
+    const iv = setInterval(refreshLive, 60000);
+    const onVis = () => { if (document.visibilityState === "visible") refreshLive(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
+  }, [authed]);
+
+  // Realtime push: any change to jobs/quotes on any device lands here within
+  // ~1s. Events are debounced 400ms, then jobs+quotes refetch (small tables).
+  // The 60s poll above stays as a fallback for dropped websockets on mobile.
+  useEffect(() => {
+    if (!authed) return;
+    let t = null;
+    const bump = () => {
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        try {
+          const [j, qs] = await Promise.all([fetchJobs(), fetchAllQuotes()]);
+          setJobs(j);
+          setQuotes(qs);
+          setUsingMock(j.some(x => x.id?.startsWith("mock-")));
+        } catch {}
+      }, 400);
+    };
+    const ch = sbRealtime
+      .channel("bnchr-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, bump)
+      .on("postgres_changes", { event: "*", schema: "public", table: "quotes" }, bump)
+      .subscribe();
+    return () => { clearTimeout(t); sbRealtime.removeChannel(ch); };
   }, [authed]);
 
   useEffect(() => {
@@ -5071,7 +5139,7 @@ export default function App() {
           </div>
           <div className="topbar-right">
             {usingMock && <span style={{ fontSize: 11, color: "var(--accent)", border: "1px solid #FDE68A", background: "#FFFBEB", borderRadius: 6, padding: "2px 8px" }}>Demo Data</span>}
-            <button className="btn-logout" onClick={() => { setAuthed(false); setPw(""); setSessionTruck(null); }}>Sign out</button>
+            <button className="btn-logout" onClick={() => { setAuthed(false); setPw(""); setSessionTruck(null); try { localStorage.removeItem("bnchr_session"); } catch {} }}>Sign out</button>
           </div>
         </div>
 
