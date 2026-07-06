@@ -72,6 +72,9 @@ const DONE_STATUSES = ["done", "invoiced", "paid"];
 const jobStarted = (j) => j.truck_status === "processing" || ["en_route", "on_site"].includes(j.status);
 const jobSuccessful = (j) => DONE_STATUSES.includes(j.status) || j.truck_status === "completed";
 const jobBookedStage = (j) => j.status !== "cancelled" && j.status !== "incomplete" && !jobStarted(j) && !jobSuccessful(j);
+// "Most recent action" timestamp for history sorting: last save wins,
+// falling back to schedule/creation time for rows that predate updated_at.
+const lastAction = (j) => new Date(j.updated_at || j.items_edited_at || j.cancelled_at || j.incomplete_at || j.scheduled_at || j.created_at || 0).getTime();
 // Verification timestamps: keep/assign a time when a check completes, clear when it un-completes
 const verStamp = (job, key, done) => {
   const vt = { ...(job.ver_times || {}) };
@@ -1048,9 +1051,9 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at"]);
 async function updateJob(id, patch) {
-  const clean = {};
+  const clean = { updated_at: new Date().toISOString() }; // every save stamps "last action"
   Object.keys(patch || {}).forEach(k => { if (JOB_COLUMNS.has(k)) clean[k] = patch[k]; });
   try {
     await sb(`/jobs?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(clean) });
@@ -1337,6 +1340,13 @@ function StyleTag() {
 function StatusPill({ status }) {
   const m = statusMeta(status);
   return <span className="status-pill" style={{ background: m.color + "18", color: m.color, border: `1px solid ${m.color}33` }}>{m.label}</span>;
+}
+
+// Distributor's item verification (checkpoint 2) → per-line "Collected" chip
+const itemOK = (job, itemId) => !!(job.item_checks || {})[itemId];
+function CollectedChip({ ok }) {
+  if (!ok) return null;
+  return <span style={{ fontSize: 9.5, fontWeight: 700, color: "#15803D", background: "#DCFCE7", border: "1px solid #BBF7D0", borderRadius: 5, padding: "1px 5px", whiteSpace: "nowrap", marginLeft: 5 }}>✓ Collected</span>;
 }
 
 // ─── ComboBox: autocomplete that suggests from a list but allows custom input ─
@@ -3040,13 +3050,13 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                             {isTire ? (<>
                               {s.tire_id && (
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span></span>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span><CollectedChip ok={itemOK(j, s.staggered ? s.id + "-F" : s.id)} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.qty) || 0) * (Number(s.unit_price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )}
                               {s.staggered && s.rear_tire_id && (
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span></span>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span><CollectedChip ok={itemOK(j, s.id + "-R")} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.rear_unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.rear_qty) || 0) * (Number(s.rear_unit_price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )}
@@ -3054,7 +3064,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                             </>) : (
                               (s.parts || []).filter(p => p.name || Number(p.price) > 0).length ? (s.parts || []).filter(p => p.name || Number(p.price) > 0).map(p => (
                                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}</span>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}<CollectedChip ok={itemOK(j, p.id)} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(p.price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(p.qty) || 1) * (Number(p.price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )) : <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — parts with customer{s.description ? ` · ${s.description}` : ""}</div>
@@ -3077,7 +3087,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {j.items.map(it => (
                   <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
-                    <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span></span>
+                    <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span><CollectedChip ok={itemOK(j, it.id)} /></span>
                     <span style={{ whiteSpace: "nowrap" }}><span style={{ color: "var(--muted)", fontWeight: 500 }}>@ {Number(it.unit_price || 0).toFixed(3)} · </span><span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</span></span>
                   </div>
                 ))}
@@ -3205,23 +3215,43 @@ function OrderActions({ job, onAction, compact }) {
 
 function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
   const [filterTruck, setFilterTruck] = useState("all");
-  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("active"); // sales default: the working queue
   const [filterDate, setFilterDate] = useState(today());
   const [search, setSearch] = useState("");
   const [boardOpen, setBoardOpen] = useState(true); // Day Board shown by default, collapsible
 
-  const filtered = jobs.filter(j => {
+  const base = jobs.filter(j => {
     if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
-    if (filterStatus === "booked" && !jobBookedStage(j)) return false;
-    if (filterStatus === "started" && !jobStarted(j)) return false;
-    if (filterStatus === "successful" && !jobSuccessful(j)) return false;
-    if (filterStatus === "paid" && j.payment_status !== "paid") return false;
-    if (filterStatus === "unpaid" && (j.payment_status === "paid" || j.status === "cancelled")) return false;
-    if (filterStatus === "cancelled" && j.status !== "cancelled") return false;
     if (filterDate) { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; if (d !== filterDate) return false; }
     if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
     return true;
   });
+  // Active = the working queue: everything not yet successful and not cancelled
+  // (includes Started and Incomplete — both still need sales attention).
+  const isActive = (j) => j.status !== "cancelled" && !jobSuccessful(j);
+  const stageMatch = (j) => {
+    if (filterStatus === "all") return true;
+    if (filterStatus === "active") return isActive(j);
+    if (filterStatus === "booked") return jobBookedStage(j);
+    if (filterStatus === "started") return jobStarted(j) && !jobSuccessful(j);
+    if (filterStatus === "successful") return jobSuccessful(j);
+    if (filterStatus === "paid") return j.payment_status === "paid";
+    if (filterStatus === "unpaid") return j.payment_status !== "paid" && j.status !== "cancelled";
+    if (filterStatus === "cancelled") return j.status === "cancelled";
+    return true;
+  };
+  const counts = {
+    active: base.filter(isActive).length,
+    booked: base.filter(jobBookedStage).length,
+    started: base.filter(j => jobStarted(j) && !jobSuccessful(j)).length,
+    successful: base.filter(jobSuccessful).length,
+    paid: base.filter(j => j.payment_status === "paid").length,
+    unpaid: base.filter(j => j.payment_status !== "paid" && j.status !== "cancelled").length,
+    all: base.length,
+    cancelled: base.filter(j => j.status === "cancelled").length,
+  };
+  const filtered = base.filter(stageMatch)
+    .sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at)); // earliest on top
 
   const totalKD = filtered.reduce((s, j) => s + Number(j.total || 0), 0);
   const done = filtered.filter(j => DONE_STATUSES.includes(j.status)).length;
@@ -3248,18 +3278,25 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
               <option value="all">All Trucks</option>
               {TRUCKS.map(t => <option key={t}>{t}</option>)}
             </select>
-            <select className="filter-select" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-              <option value="all">All Orders</option>
-              <option value="booked">Booked</option>
-              <option value="started">Started</option>
-              <option value="successful">Successful</option>
-              <option value="paid">Paid</option>
-              <option value="unpaid">Unpaid</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
             {filterDate && <button className="btn btn-ghost btn-sm" onClick={() => setFilterDate("")}>Clear Date</button>}
           </div>
           {role === "sales" && <button className="btn btn-primary" onClick={onNewJob}>+ New Job</button>}
+        </div>
+
+        {/* Quick status filters — Active is the sales working queue */}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+          {[
+            { k: "active", label: `Active (${counts.active})` },
+            { k: "booked", label: `Booked (${counts.booked})` },
+            { k: "started", label: `Started (${counts.started})` },
+            { k: "successful", label: `✓ Successful (${counts.successful})` },
+            { k: "paid", label: `Paid (${counts.paid})` },
+            { k: "unpaid", label: `Unpaid (${counts.unpaid})` },
+            { k: "all", label: `All (${counts.all})` },
+            ...(counts.cancelled ? [{ k: "cancelled", label: `✕ Cancelled (${counts.cancelled})` }] : []),
+          ].map(p => (
+            <button key={p.k} className={`btn btn-sm ${filterStatus === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setFilterStatus(p.k)}>{p.label}</button>
+          ))}
         </div>
       </div>
 
@@ -3325,8 +3362,8 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
                       job.items.forEach(it => {
                         const k = it.service_id || it.id;
                         if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, isTire: it.kind === "tire", qty: 0, products: [], car: it.car_label || `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "—" };
-                        if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim() }); }
-                        else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name });
+                        if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim(), ok: itemOK(job, it.id) }); }
+                        else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name, ok: itemOK(job, it.id) });
                       });
                       const carGroups = {};
                       Object.values(svcMap).forEach(l => { (carGroups[l.car] = carGroups[l.car] || []).push(l); });
@@ -3341,7 +3378,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
                                 </span>
                                 <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right" }}>
                                   {l.products.map((p, i) => (
-                                    <span key={i}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.n}</span>
+                                    <span key={i}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.n}{p.ok && <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span>}</span>
                                   ))}
                                 </span>
                               </div>
@@ -3406,7 +3443,8 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
 // Delivered unlocks. Persists to DB (parts_status, item_checks).
 function DistributorView({ jobs, onUpdate }) {
   const [view, setView] = useState("order"); // order | supplier
-  const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled" && j.status !== "incomplete");
+  const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled" && j.status !== "incomplete")
+    .sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at)); // earliest on top
 
   // per-item collect action (used by supplier view too) — writes to the job
   const collectItem = (job, itemId) => {
@@ -3745,7 +3783,7 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
   const done = jobs
     .filter(j => j.assigned_truck === myTruck && isDone(j) && j.status !== "cancelled")
     .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return !dateStr || d === dateStr; })
-    .sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+    .sort((a, b) => lastAction(b) - lastAction(a)); // most recent action first
   const dayTotal = done.reduce((s, j) => s + Number(j.total || 0), 0);
 
   return (
@@ -4148,7 +4186,7 @@ function HistoryView({ jobs, onSelectJob }) {
       if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.service_details?.toLowerCase().includes(s)) return false;
     }
     return true;
-  }).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
+  }).sort((a, b) => lastAction(b) - lastAction(a)); // most recent action first
 
   const completedShown = filtered.filter(j => j.status !== "cancelled" && j.status !== "incomplete");
   const totalRevenue = completedShown.reduce((s, j) => s + Number(j.total || 0), 0);
