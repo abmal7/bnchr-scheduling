@@ -1027,6 +1027,21 @@ async function createAddress(a) {
   try { const r = await sb("/customer_addresses", { method: "POST", body: JSON.stringify(a) }); return r?.[0] || { ...a, id: `laddr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
   catch { return { ...a, id: `laddr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
 }
+async function updateCustomer(id, patch) {
+  try { await sb(`/customers?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
+}
+async function updateCar(id, patch) {
+  try { await sb(`/customer_cars?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
+}
+async function deleteCar(id) {
+  try { await sb(`/customer_cars?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
+}
+async function updateAddress(id, patch) {
+  try { await sb(`/customer_addresses?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
+}
+async function deleteAddress(id) {
+  try { await sb(`/customer_addresses?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
+}
 
 // ─── CSS ─────────────────────────────────────────────────────────────────────
 const css = `
@@ -4114,11 +4129,13 @@ function HistoryView({ jobs, onSelectJob }) {
 }
 
 // ─── Customer Profile Detail ──────────────────────────────────────────────────
-function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSelectJob, onAddCar, onAddAddress, onNewOrder, onReorder }) {
+function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSelectJob, onAddCar, onAddAddress, onNewOrder, onReorder, onEditCustomer, onEditCar, onDeleteCar, onEditAddress, onDeleteAddress }) {
   const customerCars = cars.filter(c => c.customer_id === customer.id);
   const customerAddrs = (addresses || []).filter(a => a.customer_id === customer.id);
   const customerJobs = jobs.filter(j => j.customer_id === customer.id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
   const totalSpent = customerJobs.reduce((s, j) => s + Number(j.total || 0), 0);
+
+  const [confirmDel, setConfirmDel] = useState(null); // { kind: 'car'|'addr', id }
 
   // History filters
   const [histCar, setHistCar] = useState("all");
@@ -4145,7 +4162,10 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
           <div style={{ textAlign: "right" }}>
             <div style={{ fontFamily: "var(--font-head)", fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>KWD {totalSpent.toFixed(3)}</div>
             <div style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.length} jobs total</div>
-            {onNewOrder && <button className="btn btn-primary btn-sm" style={{ marginTop: 8 }} onClick={onNewOrder}>+ New Order</button>}
+            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 8 }}>
+              {onEditCustomer && <button className="btn btn-ghost btn-sm" onClick={onEditCustomer}>✎ Edit</button>}
+              {onNewOrder && <button className="btn btn-primary btn-sm" onClick={onNewOrder}>+ New Order</button>}
+            </div>
           </div>
         </div>
         {customer.notes && <div style={{ fontSize: 13, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px" }}>⚠ {customer.notes}</div>}
@@ -4164,7 +4184,18 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
                 <div className="car-card-info">{car.brand} {car.model} {car.year}</div>
                 <div className="car-card-plate">{car.plate}</div>
               </div>
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.filter(j => j.car_id === car.id).length} jobs</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.filter(j => j.car_id === car.id).length} jobs</span>
+                {onEditCar && <button className="btn btn-ghost btn-sm" onClick={() => onEditCar(car)}>✎</button>}
+                {onDeleteCar && (confirmDel?.kind === "car" && confirmDel?.id === car.id ? (
+                  <span style={{ display: "inline-flex", gap: 4 }}>
+                    <button className="btn btn-sm" style={{ background: "#DC2626", color: "#fff", fontWeight: 700 }} onClick={() => { onDeleteCar(car.id); setConfirmDel(null); }}>Delete?</button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDel(null)}>✕</button>
+                  </span>
+                ) : (
+                  <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => setConfirmDel({ kind: "car", id: car.id })}>🗑</button>
+                ))}
+              </div>
             </div>
           ))}
         </div>
@@ -4182,6 +4213,17 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
               <div>
                 <div className="car-card-info">{a.label || "Address"} — {a.area}</div>
                 <div className="car-card-plate">Block {a.block}, St {a.street}{a.lane ? ", Lane " + a.lane : ""}, {a.house}{a.map_link ? " · 📍 map" : ""}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                {onEditAddress && <button className="btn btn-ghost btn-sm" onClick={() => onEditAddress(a)}>✎</button>}
+                {onDeleteAddress && (confirmDel?.kind === "addr" && confirmDel?.id === a.id ? (
+                  <span style={{ display: "inline-flex", gap: 4 }}>
+                    <button className="btn btn-sm" style={{ background: "#DC2626", color: "#fff", fontWeight: 700 }} onClick={() => { onDeleteAddress(a.id); setConfirmDel(null); }}>Delete?</button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDel(null)}>✕</button>
+                  </span>
+                ) : (
+                  <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => setConfirmDel({ kind: "addr", id: a.id })}>🗑</button>
+                ))}
               </div>
             </div>
           ))}
@@ -4233,16 +4275,23 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
 }
 
 // ─── Add Car Modal ────────────────────────────────────────────────────────────
-function AddCarModal({ customer, onClose, onCreated }) {
-  const [f, setF] = useState({ brand: "", model: "", year: "", plate: "" });
+function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
+  const [f, setF] = useState(editCar
+    ? { brand: editCar.brand || "", model: editCar.model || "", year: editCar.year || "", plate: editCar.plate || "" }
+    : { brand: "", model: "", year: "", plate: "" });
   const [saving, setSaving] = useState(false);
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
 
   const save = async () => {
-    if (!f.brand || !f.model) return;
+    if (!f.brand || (!editCar && !f.model)) return; // imported cars may lack model — editable without one
     setSaving(true);
-    const car = await createCar({ ...f, customer_id: customer.id, created_at: new Date().toISOString() });
-    onCreated(car);
+    if (editCar) {
+      await updateCar(editCar.id, f);
+      onUpdated({ ...editCar, ...f });
+    } else {
+      const car = await createCar({ ...f, customer_id: customer.id, created_at: new Date().toISOString() });
+      onCreated(car);
+    }
     setSaving(false);
     onClose();
   };
@@ -4251,7 +4300,7 @@ function AddCarModal({ customer, onClose, onCreated }) {
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal" style={{ maxWidth: 420 }}>
         <div className="modal-header">
-          <h3>Add Vehicle — {customer.name}</h3>
+          <h3>{editCar ? "Edit Vehicle" : "Add Vehicle"} — {customer.name}</h3>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
@@ -4264,7 +4313,7 @@ function AddCarModal({ customer, onClose, onCreated }) {
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Add Vehicle"}</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : editCar ? "Save Changes" : "Add Vehicle"}</button>
         </div>
       </div>
     </div>
@@ -4273,15 +4322,23 @@ function AddCarModal({ customer, onClose, onCreated }) {
 
 // ─── Customers View ───────────────────────────────────────────────────────────
 // ─── Add Address Modal ────────────────────────────────────────────────────────
-function AddAddressModal({ customer, onClose, onCreated }) {
-  const [f, setF] = useState({ label: "Home", area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "" });
+function AddAddressModal({ customer, editAddr, onClose, onCreated, onUpdated }) {
+  const [f, setF] = useState(editAddr
+    ? { label: editAddr.label || "Home", area: editAddr.area || "", governorate: editAddr.governorate || "", block: editAddr.block || "", street: editAddr.street || "", lane: editAddr.lane || "", house: editAddr.house || "", map_link: editAddr.map_link || "" }
+    : { label: "Home", area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "" });
   const [saving, setSaving] = useState(false);
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
   const save = async () => {
     if (!f.area) return;
     setSaving(true);
-    const a = await createAddress({ ...f, governorate: f.governorate || govFor(f.area), map_link: f.map_link || buildMapsLink({ ...f, governorate: f.governorate || govFor(f.area) }), customer_id: customer.id, created_at: new Date().toISOString() });
-    onCreated(a);
+    const patch = { ...f, governorate: f.governorate || govFor(f.area), map_link: f.map_link || buildMapsLink({ ...f, governorate: f.governorate || govFor(f.area) }) };
+    if (editAddr) {
+      await updateAddress(editAddr.id, patch);
+      onUpdated({ ...editAddr, ...patch });
+    } else {
+      const a = await createAddress({ ...patch, customer_id: customer.id, created_at: new Date().toISOString() });
+      onCreated(a);
+    }
     setSaving(false);
     onClose();
   };
@@ -4289,7 +4346,7 @@ function AddAddressModal({ customer, onClose, onCreated }) {
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal" style={{ maxWidth: 460 }}>
         <div className="modal-header">
-          <h3>Add Address — {customer.name}</h3>
+          <h3>{editAddr ? "Edit Address" : "Add Address"} — {customer.name}</h3>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
@@ -4306,7 +4363,50 @@ function AddAddressModal({ customer, onClose, onCreated }) {
         </div>
         <div className="modal-footer">
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Add Address"}</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : editAddr ? "Save Changes" : "Add Address"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Edit Customer Modal ──────────────────────────────────────────────────────
+function EditCustomerModal({ customer, onClose, onUpdated }) {
+  const [f, setF] = useState({ name: customer.name || "", mobile: customer.mobile || "", area: customer.area || "", notes: customer.notes || "" });
+  const [saving, setSaving] = useState(false);
+  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+  const mobileChanged = f.mobile !== (customer.mobile || "");
+  const save = async () => {
+    if (!f.name || !f.mobile) return;
+    setSaving(true);
+    await updateCustomer(customer.id, f);
+    onUpdated({ ...customer, ...f });
+    setSaving(false);
+    onClose();
+  };
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 460 }}>
+        <div className="modal-header">
+          <h3>Edit Customer — {customer.name}</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          <div className="form-grid">
+            <div className="form-field"><label>Full Name *</label><input value={f.name} onChange={set("name")} /></div>
+            <div className="form-field"><label>Mobile *</label><input value={f.mobile} onChange={set("mobile")} inputMode="tel" /></div>
+            <div className="form-field form-full"><label>Area</label><ComboBox value={f.area} onChange={(v) => setF(p => ({ ...p, area: v }))} options={KW_AREA_NAMES} placeholder="Salmiya" /></div>
+            <div className="form-field form-full"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="VIP, fleet client…" /></div>
+            {mobileChanged && (
+              <div className="form-full" style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#92400E" }}>
+                ⚠ Mobile is what links this customer to their quotes and order history. Change it only to correct a wrong number.
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving || !f.name || !f.mobile}>{saving ? "Saving…" : "Save Changes"}</button>
         </div>
       </div>
     </div>
@@ -4651,6 +4751,9 @@ export default function App() {
   const [addCarTarget, setAddCarTarget] = useState(null);
   const [showAddAddr, setShowAddAddr] = useState(false);
   const [addAddrTarget, setAddAddrTarget] = useState(null);
+  const [editCarTarget, setEditCarTarget] = useState(null);
+  const [editAddrTarget, setEditAddrTarget] = useState(null);
+  const [showEditCustomer, setShowEditCustomer] = useState(false);
   const [usingMock, setUsingMock] = useState(false);
 
   const login = () => {
@@ -4783,6 +4886,28 @@ export default function App() {
     setShowAddAddr(true);
   };
 
+  const handleCarUpdated = (car) => {
+    setCars(prev => prev.map(c => c.id === car.id ? car : c));
+    setShowAddCar(false); setEditCarTarget(null);
+  };
+  const handleCarDeleted = (id) => {
+    setCars(prev => prev.filter(c => c.id !== id));
+    deleteCar(id);
+  };
+  const handleAddressUpdated = (a) => {
+    setAddresses(prev => prev.map(x => x.id === a.id ? a : x));
+    setShowAddAddr(false); setEditAddrTarget(null);
+  };
+  const handleAddressDeleted = (id) => {
+    setAddresses(prev => prev.filter(x => x.id !== id));
+    deleteAddress(id);
+  };
+  const handleCustomerUpdated = (c) => {
+    setCustomers(prev => prev.map(x => x.id === c.id ? c : x));
+    setSelectedCustomer(c);
+    setShowEditCustomer(false);
+  };
+
   const allTabs = [
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
@@ -4878,6 +5003,11 @@ export default function App() {
               onSelectJob={(job) => { setSelectedJob(job); }}
               onAddCar={handleAddCar}
               onAddAddress={handleAddAddress}
+              onEditCustomer={() => setShowEditCustomer(true)}
+              onEditCar={(car) => { setAddCarTarget(selectedCustomer); setEditCarTarget(car); setShowAddCar(true); }}
+              onDeleteCar={handleCarDeleted}
+              onEditAddress={(a) => { setAddAddrTarget(selectedCustomer); setEditAddrTarget(a); setShowAddAddr(true); }}
+              onDeleteAddress={handleAddressDeleted}
               onNewOrder={() => handleNewOrderFor(selectedCustomer)}
               onReorder={(job) => handleNewOrderFor(selectedCustomer, job)}
             />
@@ -4974,16 +5104,28 @@ export default function App() {
       {showAddCar && addCarTarget && (
         <AddCarModal
           customer={addCarTarget}
-          onClose={() => setShowAddCar(false)}
+          editCar={editCarTarget}
+          onClose={() => { setShowAddCar(false); setEditCarTarget(null); }}
           onCreated={handleCarCreated}
+          onUpdated={handleCarUpdated}
         />
       )}
 
       {showAddAddr && addAddrTarget && (
         <AddAddressModal
           customer={addAddrTarget}
-          onClose={() => setShowAddAddr(false)}
+          editAddr={editAddrTarget}
+          onClose={() => { setShowAddAddr(false); setEditAddrTarget(null); }}
           onCreated={handleAddressCreated}
+          onUpdated={handleAddressUpdated}
+        />
+      )}
+
+      {showEditCustomer && selectedCustomer && (
+        <EditCustomerModal
+          customer={selectedCustomer}
+          onClose={() => setShowEditCustomer(false)}
+          onUpdated={handleCustomerUpdated}
         />
       )}
     </>
