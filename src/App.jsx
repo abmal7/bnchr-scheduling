@@ -216,11 +216,25 @@ const today = () => new Date().toISOString().split("T")[0];
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" }) : "—";
 const fmtTime = (d) => d ? new Date(d).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "—";
 const fmtDateTime = (d) => d ? `${fmtDate(d)} ${fmtTime(d)}` : "—";
+// Display vocabulary is deliberately simple — Booked / Started / Successful —
+// while the internal status keys keep driving the workflow underneath
+// (part_ready for the distributor, invoiced/paid for accounting, etc.).
+const STATUS_DISPLAY = {
+  draft:      { label: "Booked",     color: "#64748B" },
+  booked:     { label: "Booked",     color: "#64748B" },
+  part_ready: { label: "Booked",     color: "#64748B" },
+  assigned:   { label: "Booked",     color: "#64748B" },
+  en_route:   { label: "Started",    color: "#EA580C" },
+  on_site:    { label: "Started",    color: "#EA580C" },
+  done:       { label: "Successful", color: "#15803D" },
+  invoiced:   { label: "Successful", color: "#15803D" },
+  paid:       { label: "Successful", color: "#15803D" },
+};
 const statusMeta = (key) => key === "cancelled"
   ? { key: "cancelled", label: "Cancelled", color: "#DC2626" }
   : key === "incomplete"
   ? { key: "incomplete", label: "Incomplete", color: "#B45309" }
-  : (STATUS_FLOW.find((s) => s.key === key) || STATUS_FLOW[0]);
+  : { key: key || "booked", ...(STATUS_DISPLAY[key] || STATUS_DISPLAY.booked) };
 const nextStatus = (key) => {
   const idx = STATUS_FLOW.findIndex((s) => s.key === key);
   return idx < STATUS_FLOW.length - 1 ? STATUS_FLOW[idx + 1] : null;
@@ -3236,9 +3250,9 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
             </select>
             <select className="filter-select" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
               <option value="all">All Orders</option>
-              <option value="booked">Booked — from sales</option>
-              <option value="started">Started — technician working</option>
-              <option value="successful">Successful — done &amp; completed</option>
+              <option value="booked">Booked</option>
+              <option value="started">Started</option>
+              <option value="successful">Successful</option>
               <option value="paid">Paid</option>
               <option value="unpaid">Unpaid</option>
               <option value="cancelled">Cancelled</option>
@@ -3350,7 +3364,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
                   <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 7px", borderRadius: 6,
                     background: job.truck_status === "completed" ? "#DCFCE7" : job.truck_status === "processing" ? "#FEF3C7" : "#DBEAFE",
                     color: job.truck_status === "completed" ? "#15803D" : job.truck_status === "processing" ? "#92400E" : "#1D4ED8" }}>
-                    🚚 {job.truck_status === "arrived" ? "parts received" : job.truck_status === "processing" ? "arrived · processing" : job.truck_status}
+                    🚚 {job.truck_status === "arrived" ? "parts received" : job.truck_status === "processing" ? "started" : job.truck_status === "completed" ? "successful" : job.truck_status}
                   </span>
                 )}
               </div>
@@ -3794,7 +3808,7 @@ function TechJobCard({ job, index, onUpdate }) {
   const started = j.truck_status === "processing" || completed;
   const partsReceived = !!j.parts_received || j.truck_status === "arrived" || started;
 
-  const startJob = () => patch({ truck_status: "processing" });
+  const startJob = () => patch({ truck_status: "processing", status: "on_site" }); // pill shows "Started"
   const toggleOrd = (id) => {
     const tech_checks_order = { ...ordChecks, [id]: !ordChecks[id] };
     const done = productItems.length > 0 && productItems.every(it => tech_checks_order[it.id]);
