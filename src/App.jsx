@@ -4960,6 +4960,23 @@ function ReportsView({ jobs, quotes, customers }) {
   const orders = inRange.length;
   const ticket = orders ? totalSales / orders : 0;
 
+  // cost of a service block (product cost only — labor is contribution)
+  const svcCostOf = (s) => {
+    if (s.kind === "tire") {
+      if (s.staggered) return (Number(s.cost) || 0) * (Number(s.qty) || 2) + (Number(s.rear_cost) || 0) * (Number(s.rear_qty) || 2);
+      return (Number(s.cost) || 0) * (Number(s.qty) || 4);
+    }
+    return (s.parts || []).reduce((t, p) => t + (Number(p.cost) || 0) * (Number(p.qty) || 1), 0);
+  };
+  // collections: sold & delivered but money not in
+  const uncollectedJobs = inRange.filter(j => jobSuccessful(j) && j.payment_status !== "paid");
+  const uncollectedKD = uncollectedJobs.reduce((s, j) => s + (Number(j.total) || 0), 0);
+  // margin watchdog: items sold with no cost entered
+  let zeroCostItems = 0;
+  inRange.forEach(j => (j.items || []).forEach(it => {
+    if (((it.kind === "tire" && it.tire_id) || it.kind === "part") && !(Number(it.cost) > 0)) zeroCostItems++;
+  }));
+
   // new vs loyal: customer existed before the period start = loyal
   let newC = 0, loyalC = 0;
   const seen = new Set();
@@ -5001,8 +5018,9 @@ function ReportsView({ jobs, quotes, customers }) {
     blocks.forEach(s => {
       const t = s.service_type || "Other";
       const rev = s._fallbackTotal != null ? s._fallbackTotal : serviceTotals(s).total;
-      svcStats[t] = svcStats[t] || { n: 0, kd: 0 };
-      svcStats[t].n++; svcStats[t].kd += rev; svcCount++;
+      const cost = s._fallbackTotal != null ? 0 : svcCostOf(s);
+      svcStats[t] = svcStats[t] || { n: 0, kd: 0, cost: 0 };
+      svcStats[t].n++; svcStats[t].kd += rev; svcStats[t].cost += cost; svcCount++;
     });
   });
   const svcRows = Object.entries(svcStats).map(([t, v]) => ({ type: t, ...v })).sort((a, b) => b.kd - a.kd);
@@ -5038,6 +5056,21 @@ function ReportsView({ jobs, quotes, customers }) {
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {fmtKD(ticket)}</div><div className="stat-lbl">Avg ticket</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{qConv}%</div><div className="stat-lbl">Quote conversion ({qSuccess}/{qInRange.length})</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{loyalC} / {newC}</div><div className="stat-lbl">Loyal / new customers</div></div>
+        {(() => {
+          const totalCost = svcRows.reduce((s, r) => s + r.cost, 0);
+          const profit = totalSales - totalCost;
+          const marginPct = totalSales ? Math.round((profit / totalSales) * 100) : 0;
+          return (
+            <div className="stat-card">
+              <div className="stat-num" style={{ color: "#15803D" }}>KWD {fmtKD(profit)}</div>
+              <div className="stat-lbl">Gross profit · {marginPct}% margin{zeroCostItems > 0 ? ` · ⚠ ${zeroCostItems} no-cost item${zeroCostItems > 1 ? "s" : ""}` : ""}</div>
+            </div>
+          );
+        })()}
+        <div className="stat-card">
+          <div className="stat-num" style={{ color: uncollectedKD > 0 ? "#DC2626" : "var(--success)" }}>KWD {fmtKD(uncollectedKD)}</div>
+          <div className="stat-lbl">Uncollected ({uncollectedJobs.length} successful unpaid)</div>
+        </div>
       </div>
 
       {/* Month target */}
@@ -5100,15 +5133,17 @@ function ReportsView({ jobs, quotes, customers }) {
           <span style={{ fontSize: 12, color: "var(--muted)" }}>Tires {totalSales ? Math.round((tireKD / totalSales) * 100) : 0}% · Other {totalSales ? Math.round(((totalSales - tireKD) / totalSales) * 100) : 0}%</span>
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Service</th><th style={th}>Number</th><th style={th}>% of services</th><th style={th}>KD</th><th style={th}>% of sales</th></tr></thead>
+          <thead><tr><th style={th}>Service</th><th style={th}>Number</th><th style={th}>KD</th><th style={th}>% of sales</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
           <tbody>
             {svcRows.map(r => (
               <tr key={r.type}>
                 <td style={{ ...td, fontWeight: 600 }}>{r.type}</td>
                 <td style={td}>{r.n}</td>
-                <td style={td}>{svcCount ? Math.round((r.n / svcCount) * 100) : 0}%</td>
                 <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(r.kd)}</td>
                 <td style={td}>{totalSales ? Math.round((r.kd / totalSales) * 100) : 0}%</td>
+                <td style={td}>{fmtKD(r.cost)}</td>
+                <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{fmtKD(r.kd - r.cost)}</td>
+                <td style={td}>{r.kd ? Math.round(((r.kd - r.cost) / r.kd) * 100) : 0}%</td>
               </tr>
             ))}
             {svcRows.length === 0 && <tr><td style={td} colSpan={5}>No orders in this range.</td></tr>}
@@ -5116,8 +5151,39 @@ function ReportsView({ jobs, quotes, customers }) {
         </table>
       </div>
 
+      {/* Lead sources — marketing ROI */}
+      {(() => {
+        const leads = {};
+        inRange.forEach(j => {
+          const k = j.lead_from || "—";
+          leads[k] = leads[k] || { n: 0, kd: 0 };
+          leads[k].n++; leads[k].kd += Number(j.total) || 0;
+        });
+        const rows = Object.entries(leads).map(([k, v]) => ({ src: k, ...v })).sort((a, b) => b.kd - a.kd);
+        if (!rows.length) return null;
+        return (
+          <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
+            <div className="card-header"><h3>Lead sources</h3></div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr><th style={th}>Source</th><th style={th}>Orders</th><th style={th}>Sales (KD)</th><th style={th}>% of sales</th><th style={th}>Avg ticket</th></tr></thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.src}>
+                    <td style={{ ...td, fontWeight: 600 }}>{r.src}</td>
+                    <td style={td}>{r.n}</td>
+                    <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(r.kd)}</td>
+                    <td style={td}>{totalSales ? Math.round((r.kd / totalSales) * 100) : 0}%</td>
+                    <td style={td}>{fmtKD(r.n ? r.kd / r.n : 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
+
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 20 }}>
-        Call counts and total inquiries live in Trengo and are not included here. Conversion above is quote-based (quotes → booked orders).
+        Profit = revenue minus product cost (labor counts as contribution). Call counts and total inquiries live in Trengo and are not included here. Conversion above is quote-based.
       </div>
     </>
   );
