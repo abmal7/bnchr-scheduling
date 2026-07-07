@@ -3665,7 +3665,10 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
 // Delivered unlocks. Persists to DB (parts_status, item_checks).
 function DistributorView({ jobs, onUpdate }) {
   const [view, setView] = useState("order"); // order | supplier
-  const active = jobs.filter(j => j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled" && j.status !== "incomplete")
+  // Only jobs with something to physically collect reach the distributor —
+  // labor-only orders (skimming, computer check, labor-only replacements) stay out.
+  const hasCollectables = (j) => (j.items || []).some(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
+  const active = jobs.filter(j => hasCollectables(j) && j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled" && j.status !== "incomplete")
     .sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at)); // earliest on top
 
   // per-item collect action (used by supplier view too) — writes to the job
