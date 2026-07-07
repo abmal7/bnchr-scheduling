@@ -4395,8 +4395,8 @@ function HistoryView({ jobs, onSelectJob }) {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  // History = completed orders + cancelled orders (permanent record)
-  const histJobs = jobs.filter(j => DONE_STATUSES.includes(j.status) || j.status === "cancelled" || j.status === "incomplete");
+  // History = successful orders (by status OR technician completion) + cancelled + incomplete
+  const histJobs = jobs.filter(j => jobSuccessful(j) || j.status === "cancelled" || j.status === "incomplete");
   const agents = [...new Set(histJobs.map(j => j.sales_agent).filter(Boolean))];
 
   const filtered = histJobs.filter(j => {
@@ -4424,17 +4424,17 @@ function HistoryView({ jobs, onSelectJob }) {
 
   const QUICK = [
     { key: "all", label: "All" },
-    { key: "completed", label: "Completed" },
+    { key: "completed", label: "✓ Successful" },
     { key: "cancelled", label: "Cancelled" },
     { key: "incomplete", label: "Incomplete" },
     { key: "paid", label: "Paid" },
-    { key: "unpaid", label: "Not paid" },
+    { key: "unpaid", label: "Unpaid" },
   ];
 
   return (
     <>
       <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{completedShown.length}</div><div className="stat-lbl">Completed jobs</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{completedShown.length}</div><div className="stat-lbl">Successful jobs</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>KWD {totalRevenue.toFixed(3)}</div><div className="stat-lbl">Revenue (excl. cancelled)</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{completedShown.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid invoices</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--danger)" }}>{filtered.filter(j => j.status === "cancelled").length}</div><div className="stat-lbl">Cancelled</div></div>
