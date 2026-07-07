@@ -3419,9 +3419,6 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
 
               {job.total ? <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span> : null}
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{job.area}</span>
-              {job.payment_status === "paid"
-                ? <span style={{ fontSize: 11, color: "var(--success)", fontWeight: 700 }}>✓ Paid</span>
-                : <span style={{ fontSize: 11, color: "var(--danger)", fontWeight: 600 }}>Unpaid</span>}
               {role === "sales" && (
                 <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }}
                   onClick={(e) => { e.stopPropagation(); onReschedule(job); }}>↻ Reschedule</button>
