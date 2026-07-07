@@ -94,16 +94,20 @@ function deriveChecks(job) {
   const itemCk = job.item_checks || {};
   const ordCk = job.tech_checks_order || {};
   const carCk = { ...(job.tech_checks || {}), ...(job.tech_checks_car || {}) };
-  const products = items.filter(it => it.tire_id || (Number(it.unit_price) || 0) > 0);
+  // Each checkpoint judges exactly the items its screen shows:
+  // distributor collects physical goods; technicians verify everything on their checklist.
+  // Labor-only lines belong to neither — a checkpoint with nothing to check passes.
+  const collectable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
+  const verifiable  = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
   // #1 sales confirmed match at order submission
   const c1 = !!job.sales_match_confirmed;
-  // #2 distributor confirmed every item matches (before loading)
-  const c2 = items.length > 0 && items.every(it => itemCk[it.id]);
+  // #2 distributor confirmed every collectable item matches (before loading)
+  const c2 = collectable.length === 0 ? true : collectable.every(it => itemCk[it.id]);
   // #3 technicians verified every part matches the ORDER details
-  const c3 = !!job.tech_arrival_match || (products.length > 0 && products.every(it => ordCk[it.id]));
+  const c3 = !!job.tech_arrival_match || (verifiable.length === 0 ? true : verifiable.every(it => ordCk[it.id]));
   // #4 technicians verified every part matches the CUSTOMER'S CAR (office-approved mismatch counts, flagged as override)
   const mm = job.tech_mismatch || {};
-  const c4 = products.length > 0 && products.every(it => carCk[it.id] || (mm[it.id] && (mm[it.id].resolution === "approved" || mm[it.id].resolution === "dont_fit")));
+  const c4 = verifiable.length === 0 ? true : verifiable.every(it => carCk[it.id] || (mm[it.id] && (mm[it.id].resolution === "approved" || mm[it.id].resolution === "dont_fit")));
   return [c1, c2, c3, c4];
 }
 
@@ -3690,7 +3694,7 @@ function DistributorView({ jobs, onUpdate }) {
   const supplierGroups = {};
   active.forEach(j => {
     (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part").forEach(it => {
-      const sup = it.supplier || "Unassigned";
+      const sup = it.supplier || "⚠ No supplier assigned";
       (supplierGroups[sup] = supplierGroups[sup] || []).push({ ...it, _job: j });
     });
   });
