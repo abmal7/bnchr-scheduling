@@ -1198,7 +1198,7 @@ const css = `
   }
   .job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .15s, box-shadow .15s; overflow: hidden; min-width: 0; }
   .job-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(212,132,10,.1); }
-  .job-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .job-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; } .job-card-top .status-pill { flex-shrink: 0; margin-left: auto; }
   .job-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
   .job-card-name { font-weight: 600; font-size: 15px; }
   .job-card-service { color: var(--muted); font-size: 13px; margin-top: 2px; }
@@ -3548,7 +3548,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
           <div key={job.id} className="job-card" onClick={() => onSelectJob(job)}>
             <div className="job-card-top">
               <div>
-                <div className="job-card-name" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div className="job-card-name" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1, minWidth: 0 }}>
                   <span>{job.customer_name}</span>
                   {job.customer_mobile && <a href={`tel:${job.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)" }}>{job.customer_mobile}</a>}
                   {job.assigned_truck && <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text, whiteSpace: "nowrap" }}>{job.assigned_truck}</span>}
@@ -3581,10 +3581,10 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                           <div style={{ paddingLeft: 16, display: "flex", flexDirection: "column", gap: 2 }}>
                             {lines.map(l => (
                               <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, lineHeight: 1.45 }}>
-                                <span style={{ whiteSpace: "nowrap", fontWeight: 600, color: "var(--text)", flexShrink: 0 }}>
+                                <span style={{ whiteSpace: "nowrap", fontWeight: 600, color: "var(--text)", flexShrink: 0, width: 92 }}>
                                   <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
                                 </span>
-                                <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right", flex: "1 1 auto", minWidth: 0, display: "block" }}>
+                                <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: "1 1 auto", minWidth: 0, display: "block" }}>
                                   {l.products.slice(0, 2).map((p, i) => {
                                     const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
                                     return <span key={i} title={p.n}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {short}{p.ok && <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span>}</span>;
@@ -4290,10 +4290,10 @@ function TechJobCard({ job, index, onUpdate }) {
                 <div style={{ paddingLeft: 14, display: "flex", flexDirection: "column", gap: 2 }}>
                   {lines.map(l => (
                     <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 14, fontSize: 12, lineHeight: 1.45 }}>
-                      <span style={{ whiteSpace: "nowrap", fontWeight: 600, flexShrink: 0 }}>
+                      <span style={{ whiteSpace: "nowrap", fontWeight: 600, flexShrink: 0, width: 92 }}>
                         <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
                       </span>
-                      <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right", flex: "1 1 auto", minWidth: 0, display: "block" }}>
+                      <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: "1 1 auto", minWidth: 0, display: "block" }}>
                         {l.products.slice(0, 2).map((p, i) => {
                           const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
                           return <span key={i} title={p.n}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {short}</span>;
