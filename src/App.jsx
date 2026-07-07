@@ -3585,9 +3585,13 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                                   <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
                                 </span>
                                 <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right" }}>
-                                  {l.products.map((p, i) => (
-                                    <span key={i}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.n}{p.ok && <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span>}</span>
-                                  ))}
+                                  {l.products.slice(0, 2).map((p, i) => {
+                                    const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
+                                    return <span key={i} title={p.n}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {short}{p.ok && <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span>}</span>;
+                                  })}
+                                  {l.products.length > 2 && (
+                                    <span style={{ fontWeight: 600 }}> · +{l.products.length - 2} more{l.products.slice(2).every(p => p.ok) && l.products.length > 2 ? <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span> : ""}</span>
+                                  )}
                                 </span>
                               </div>
                             ))}
@@ -4290,9 +4294,11 @@ function TechJobCard({ job, index, onUpdate }) {
                         <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
                       </span>
                       <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right" }}>
-                        {l.products.map((p, i) => (
-                          <span key={i}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.n}</span>
-                        ))}
+                        {l.products.slice(0, 2).map((p, i) => {
+                          const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
+                          return <span key={i} title={p.n}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {short}</span>;
+                        })}
+                        {l.products.length > 2 && <span style={{ fontWeight: 600 }}> · +{l.products.length - 2} more</span>}
                       </span>
                     </div>
                   ))}
