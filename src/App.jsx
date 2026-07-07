@@ -3339,8 +3339,9 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                 <div className="job-card-name" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span>{job.customer_name}</span>
                   {job.customer_mobile && <a href={`tel:${job.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)" }}>{job.customer_mobile}</a>}
+                  {job.assigned_truck && <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text, whiteSpace: "nowrap" }}>{job.assigned_truck}</span>}
                   {job.scheduled_at && (
-                    <span style={{ fontSize: 14.5, fontWeight: 800, color: "#15803D", background: "#DCFCE7", borderRadius: 7, padding: "2px 9px", whiteSpace: "nowrap" }}>
+                    <span className="tag tag-time" style={{ whiteSpace: "nowrap" }}>
                       {fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}
                     </span>
                   )}
@@ -3404,7 +3405,16 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
               </div>
             </div>
             <div className="job-card-meta">
-              <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text }}>{job.assigned_truck}</span>
+              {(() => {
+                const cks = deriveChecks(job);
+                const done = cks.filter(Boolean).length;
+                return (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title={`Verification ${done}/4`}>
+                    {cks.map((c, i) => <span key={i} style={{ width: 15, height: 6, borderRadius: 3, background: c ? "var(--success)" : "var(--border)" }} />)}
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: done === 4 ? "var(--success)" : "var(--muted)", marginLeft: 3 }}>{done}/4</span>
+                  </span>
+                );
+              })()}
               {job.is_overtime && <span className="tag" style={{ background: "#F59E0B", color: "#fff", fontWeight: 700 }}>⏱ OT</span>}
 
               {job.total ? <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span> : null}
