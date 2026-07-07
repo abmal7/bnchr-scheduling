@@ -38,19 +38,20 @@ async function sbAll(path) {
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-const PASSWORD = "bnchr901";
+const PASSWORD = "b7vk392";              // master — Ali only
+const DIST_PASSWORD = "dst5926";         // distributor
 // Per-truck technician logins — each truck has its own password.
 // Edit these codes as needed; only ACTIVE_TRUCKS are offered at login.
 const TRUCK_PASSWORDS = {
-  T1: "t1bnchr",
-  T2: "t2bnchr",
-  T4: "t4bnchr",
+  T1: "t1x482",
+  T2: "t2m945",
+  T4: "t4k736",
 };
 // Per-agent sales logins — the agent is locked to the session and auto-fills
 // on every new order. The shared PASSWORD still works for sales (no agent lock).
 const SALES_AGENT_PASSWORDS = {
-  Alaa: "alaa901",
-  Hussain: "hussain901",
+  Alaa: "alz7264",
+  Hussain: "hsn8317",
 };
 const TRUCKS = ["T1", "T2", "T4", "T5", "T6"];
 
@@ -5430,7 +5431,8 @@ export default function App() {
       // per-agent login: orders auto-fill this agent
       setSessionTruck(null); setSessionAgent(loginAgent); setAuthed(true); setPwErr(false); saveSession(null, loginAgent);
     } else {
-      if (pw === PASSWORD) { setSessionTruck(null); setSessionAgent(null); setAuthed(true); setPwErr(false); saveSession(null, null); }
+      const ok = role === "distributor" ? (pw === DIST_PASSWORD || pw === PASSWORD) : pw === PASSWORD;
+      if (ok) { setSessionTruck(null); setSessionAgent(null); setAuthed(true); setPwErr(false); saveSession(null, null); }
       else setPwErr(true);
     }
   };
