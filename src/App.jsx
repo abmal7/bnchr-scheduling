@@ -1196,7 +1196,7 @@ const css = `
   @media (min-width: 900px) {
     .schedule-board-panel { position: sticky; top: 12px; max-height: calc(100vh - 40px); overflow-y: auto; }
   }
-  .job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+  .job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .15s, box-shadow .15s; overflow: hidden; min-width: 0; }
   .job-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(212,132,10,.1); }
   .job-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
   .job-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
@@ -3580,11 +3580,11 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                           <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text)", marginBottom: 2 }}>🚗 {car}</div>
                           <div style={{ paddingLeft: 16, display: "flex", flexDirection: "column", gap: 2 }}>
                             {lines.map(l => (
-                              <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 16, fontSize: 12, lineHeight: 1.45 }}>
-                                <span style={{ whiteSpace: "nowrap", fontWeight: 600, color: "var(--text)" }}>
+                              <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, lineHeight: 1.45 }}>
+                                <span style={{ whiteSpace: "nowrap", fontWeight: 600, color: "var(--text)", flexShrink: 0 }}>
                                   <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
                                 </span>
-                                <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right" }}>
+                                <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right", flex: "1 1 auto", minWidth: 0, display: "block" }}>
                                   {l.products.slice(0, 2).map((p, i) => {
                                     const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
                                     return <span key={i} title={p.n}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {short}{p.ok && <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span>}</span>;
@@ -4290,10 +4290,10 @@ function TechJobCard({ job, index, onUpdate }) {
                 <div style={{ paddingLeft: 14, display: "flex", flexDirection: "column", gap: 2 }}>
                   {lines.map(l => (
                     <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 14, fontSize: 12, lineHeight: 1.45 }}>
-                      <span style={{ whiteSpace: "nowrap", fontWeight: 600 }}>
+                      <span style={{ whiteSpace: "nowrap", fontWeight: 600, flexShrink: 0 }}>
                         <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
                       </span>
-                      <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right" }}>
+                      <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right", flex: "1 1 auto", minWidth: 0, display: "block" }}>
                         {l.products.slice(0, 2).map((p, i) => {
                           const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
                           return <span key={i} title={p.n}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {short}</span>;
