@@ -134,17 +134,17 @@ const SERVICE_CATALOG = {
     variants: { tier: ["Normal", "Premium"] },
     labor: { Normal: 10, Premium: 15 },
   },
-  "Battery Charge": {
+  "Battery": {
     kind: "other",
     variants: { tier: ["Normal", "Complex"] },
     labor: { Normal: 10, Complex: 15 },
   },
-  "Brake Change": {
+  "Brake Pads": {
     kind: "other",
     variants: { tier: ["Normal", "Premium"], sides: ["One side", "Two sides"] },
     labor: { "Normal|One side": 15, "Normal|Two sides": 25, "Premium|One side": 20, "Premium|Two sides": 35 },
   },
-  "Disc Change": {
+  "Brake Disc": {
     kind: "other",
     variants: { tier: ["Normal", "Premium"], sides: ["One side", "Two sides"] },
     labor: { "Normal|One side": 15, "Normal|Two sides": 25, "Premium|One side": 20, "Premium|Two sides": 35 },
@@ -166,6 +166,9 @@ const SERVICE_CATALOG = {
   "Car Computer Check": {
     kind: "other",
     flatLabor: 20, // 20 KD
+  },
+  "Part Replacement": {
+    kind: "other", // labor entered manually per order
   },
 };
 const SERVICE_NAMES = Object.keys(SERVICE_CATALOG);
@@ -206,6 +209,7 @@ const SALES_AGENTS = ["Alaa", "Hussain"];
 const OTHER_SUPPLIERS = [
   "Alamdar", "Hitish", "Korean Store", "Ahlia", "Porsche Dealer", "Al Babtain Group",
   "Istiqlal", "Motul", "Mercedes Benz Dealer", "Super Shine", "BMW Dealer", "BNCHR+ Inventory",
+  "Grip Autos", "Safeena",
 ];
 const ROLES = [
   { key: "sales", label: "Sales" },
@@ -1072,6 +1076,10 @@ async function createCar(car) {
   try { const r = await sb("/customer_cars", { method: "POST", body: JSON.stringify(car) }); return r?.[0] || { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
   catch { return { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
 }
+async function fetchCatalogItems() {
+  try { const d = await sbAll("/catalog_items?select=*&active=eq.true&order=description.asc"); return d || []; }
+  catch { return []; }
+}
 async function fetchAddresses() {
   try { const d = await sbAll("/customer_addresses?select=*&order=id.asc"); return d || []; }
   catch { return MOCK_ADDRESSES; }
@@ -1600,6 +1608,56 @@ function DiscountField({ base, disc, onChange, label }) {
 
 // A single part row within an "other" service.
 const newPart = () => ({ id: uid(), name: "", supplier: "", qty: 1, price: 0, cost: 0 });
+
+// ─── Service item templates ───────────────────────────────────────────────────
+// Selecting these services pre-fills their parts. Every row stays editable,
+// deletable, and overridable; "+ Add part" still adds normal rows.
+// tpl keys: EO/BT = catalog pickers · others = option lists (brand-aware).
+const TPL_OPTIONS = {
+  oil_filter:  (b) => [...(b ? [`${b} Genuine Oil Filter`] : []), "Oil Filter", ...CAR_BRANDS.filter(x => x !== b).map(x => `${x} Genuine Oil Filter`)],
+  brake_pads:  (b) => [...(b ? [`${b} Genuine Front Brake Pads`, `${b} Genuine Rear Brake Pads`] : []), "Front Brake Pads", "Rear Brake Pads", ...CAR_BRANDS.filter(x => x !== b).flatMap(x => [`${x} Genuine Front Brake Pads`, `${x} Genuine Rear Brake Pads`])],
+  brake_disc:  (b) => [...(b ? [`${b} Genuine Front Brake Disc`, `${b} Genuine Rear Brake Disc`] : []), "Front Brake Disc", "Rear Brake Disc", ...CAR_BRANDS.filter(x => x !== b).flatMap(x => [`${x} Genuine Front Brake Disc`, `${x} Genuine Rear Brake Disc`])],
+  brake_sensor: () => ["Genuine Brake Sensor", "Brake Sensor"],
+  spark_plugs: (b) => [...(b ? [`${b} Genuine Spark Plugs`] : []), ...CAR_BRANDS.filter(x => x !== b).map(x => `${x} Genuine Spark Plugs`)],
+  air_filter:  () => ["Genuine Air Filter", "Air Filter"],
+  ac_filter:   () => ["Genuine AC Filter", "AC Filter"],
+};
+const SERVICE_TEMPLATES = {
+  "Oil & Filter": [
+    { tpl: "EO", qty: 4 },                       // engine oil from catalog, per litre
+    { tpl: "oil_filter", name: "Oil Filter" },
+  ],
+  "Brake Pads": [
+    { tpl: "brake_pads", name: "Front Brake Pads" },
+    { tpl: "brake_sensor", name: "Brake Sensor" },
+  ],
+  "Brake Disc": [
+    { tpl: "brake_disc", name: "Front Brake Disc" },
+  ],
+  "Battery": [
+    { tpl: "BT" },                                // battery from catalog
+  ],
+  "Major Service": [
+    { tpl: "EO", qty: 4 },
+    { tpl: "oil_filter", name: "Oil Filter" },
+    { tpl: "spark_plugs", name: "Spark Plugs" },
+    { name: "Spark Plug Wires" },
+    { tpl: "air_filter", name: "Air Filter" },
+    { tpl: "ac_filter", name: "AC Filter" },
+    { name: "Injector Cleaner" },
+    { name: "Carburetor Tune-Up Conditioner" },
+  ],
+};
+const buildTemplateParts = (serviceType, carBrand) => {
+  const t = SERVICE_TEMPLATES[serviceType];
+  if (!t) return [newPart()];
+  return t.map(row => ({
+    ...newPart(),
+    name: row.tpl && TPL_OPTIONS[row.tpl] && carBrand ? TPL_OPTIONS[row.tpl](carBrand)[0] : (row.name || ""),
+    qty: row.qty || 1,
+    tpl: row.tpl || null,
+  }));
+};
 const partsGross = (parts) => (parts || []).reduce((s, p) => s + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
 
 // Compute a single service block's totals.
@@ -1654,7 +1712,7 @@ const newService = (type = "Tire Change & Balancing") => {
 };
 
 // ─── Service Builder: array of service blocks, each its own formula ───────────
-function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
+function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalog }) {
   const upd = (id, patch) => setServices(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
   const remove = (id) => setServices(prev => prev.filter(s => s.id !== id));
   const addBlock = () => setServices(prev => prev.map(s => ({ ...s, _open: false })).concat(newService()));
@@ -1668,13 +1726,16 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
     const cat = SERVICE_CATALOG[type] || {};
     const variant = {};
     Object.entries(cat.variants || {}).forEach(([axis, opts]) => { variant[axis] = opts[0]; });
+    const svcNow = (services || []).find(s => s.id === id);
+    const carBrand = svcNow && (customerCars || []).find(c => c.id === svcNow.car_id)?.brand;
     upd(id, {
       service_type: type, kind: cat.kind || "other", variant,
       qty: cat.kind === "tire" ? 4 : 1,
       labor: catalogLabor(type, variant, cat.kind === "tire" ? 4 : 1),
-      // clear cross-formula fields
+      // clear cross-formula fields + apply the service's item template
       tire_id: null, brand: "", pattern: "", size: "", description: "",
       unit_price: 0,
+      parts: cat.kind === "tire" ? [] : buildTemplateParts(type, carBrand),
     });
   };
   const changeVariant = (id, axis, value, svc) => {
@@ -1872,8 +1933,38 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
                       <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--card)" }}>
                         <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
                           <span style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)" }}>{pi + 1}.</span>
-                          <input className="filter-input" style={{ flex: 1 }} value={p.name} placeholder="Part (e.g. Total 20W50 5L, oil filter, drain bolt)"
-                            onChange={e => updPart(svc.id, p.id, { name: e.target.value })} />
+                          {p.tpl && !p.custom ? (
+                            (p.tpl === "EO" || p.tpl === "BT") ? (
+                              <select className="filter-input" style={{ flex: 1 }} value={p.sku || ""}
+                                onChange={e => {
+                                  if (e.target.value === "__custom__") { updPart(svc.id, p.id, { custom: true }); return; }
+                                  const it = (catalog || []).find(x => x.sku === e.target.value);
+                                  if (it) updPart(svc.id, p.id, { name: it.description, sku: it.sku, cost: Number(it.cost) || 0, price: Number(it.price) || 0, supplier: it.supplier || p.supplier || "" });
+                                }}>
+                                <option value="">{p.tpl === "EO" ? "— select engine oil —" : "— select battery —"}</option>
+                                {(catalog || []).filter(x => x.category === p.tpl).map(x => (
+                                  <option key={x.sku} value={x.sku}>{x.description}{x.price ? ` — ${Number(x.price)} KD/u` : ""}</option>
+                                ))}
+                                <option value="__custom__">✏ Custom text…</option>
+                              </select>
+                            ) : (
+                              <select className="filter-input" style={{ flex: 1 }} value={p.name}
+                                onChange={e => {
+                                  if (e.target.value === "__custom__") { updPart(svc.id, p.id, { custom: true }); return; }
+                                  updPart(svc.id, p.id, { name: e.target.value });
+                                }}>
+                                {(() => {
+                                  const carBrand = (customerCars || []).find(c => c.id === svc.car_id)?.brand;
+                                  const opts = TPL_OPTIONS[p.tpl] ? TPL_OPTIONS[p.tpl](carBrand) : [];
+                                  return (opts.includes(p.name) ? opts : [p.name, ...opts]).map(o => <option key={o}>{o}</option>);
+                                })()}
+                                <option value="__custom__">✏ Custom text…</option>
+                              </select>
+                            )
+                          ) : (
+                            <input className="filter-input" style={{ flex: 1 }} value={p.name} placeholder="Part (e.g. Total 20W50 5L, oil filter, drain bolt)"
+                              onChange={e => updPart(svc.id, p.id, { name: e.target.value })} />
+                          )}
                           {(svc.parts.length > 1) && <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => removePart(svc.id, p.id)}>✕</button>}
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -1897,7 +1988,12 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar }) {
                       </div>
                     ))}
                   </div>
-                  <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 6 }} onClick={() => addPart(svc.id)}>+ Add part</button>
+                  <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => addPart(svc.id)}>+ Add part</button>
+                    {svc.service_type === "Oil & Filter" && !(svc.parts || []).some(p => /injector/i.test(p.name)) && (
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setServices(prev => prev.map(s => s.id === svc.id ? { ...s, parts: [...(s.parts || []), { ...newPart(), name: "Injector Cleaner" }] } : s))}>+ Injector Cleaner</button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -2118,7 +2214,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent }) {
+function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog }) {
   const isEdit = !!editJob;
   // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
   const hydrateServices = (job) => {
@@ -2448,7 +2544,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       }
       return parts.map(p => ({
         id: p.id, kind: "part", name: p.name || s.service_type,
-        supplier: p.supplier || "", qty: p.qty, unit_price: p.price, cost: p.cost,
+        supplier: p.supplier || "", sku: p.sku || "", qty: p.qty, unit_price: p.price, cost: p.cost,
         car_id: s.car_id, car_label,
         service_type: s.service_type, service_id: s.id, variant: s.variant,
       }));
@@ -2680,7 +2776,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
 
             {/* 2 — Services (each its own formula) */}
             <div className="form-section-title">2 · Services</div>
-            <ServiceBuilder services={f.services} setServices={setServices} customerCars={formCustomerCars} onSaveCar={selectedCustomer ? saveInlineCar : null} />
+            <ServiceBuilder services={f.services} setServices={setServices} customerCars={formCustomerCars} onSaveCar={selectedCustomer ? saveInlineCar : null} catalog={catalog} />
 
             {/* Sales match confirmation gate — only when the order has products to verify */}
             {hasProducts ? (
@@ -5191,6 +5287,7 @@ export default function App() {
   const [cars, setCars] = useState([]);
   const [addresses, setAddresses] = useState([]);
   const [quotes, setQuotes] = useState([]);
+  const [catalog, setCatalog] = useState([]); // parts catalog (engine oils, batteries)
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("schedule");
   const [selectedJob, setSelectedJob] = useState(null);
@@ -5241,9 +5338,10 @@ export default function App() {
   useEffect(() => {
     if (!authed) return;
     setLoading(true);
-    Promise.all([fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes()]).then(([j, c, cr, ad, qs]) => {
+    Promise.all([fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes(), fetchCatalogItems()]).then(([j, c, cr, ad, qs, cat]) => {
       setJobs(j);
       setQuotes(qs);
+      setCatalog(cat);
       setCustomers(c);
       setCars(cr);
       setAddresses(ad);
@@ -5634,6 +5732,7 @@ export default function App() {
       {editingJob && (
         <NewJobModal
           defaultAgent={sessionAgent}
+          catalog={catalog}
           onCustomerCreated={(c) => setCustomers(prev => [c, ...prev])}
           editJob={editingJob}
           customers={customers}
@@ -5651,6 +5750,7 @@ export default function App() {
       {showNew && (
         <NewJobModal
           defaultAgent={sessionAgent}
+          catalog={catalog}
           onCustomerCreated={(c) => setCustomers(prev => [c, ...prev])}
           prefillOrder={prefillOrder}
           customers={customers}
