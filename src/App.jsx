@@ -40,6 +40,7 @@ async function sbAll(path) {
 // ─── Constants ───────────────────────────────────────────────────────────────
 const PASSWORD = "b7vk392";              // master — Ali only
 const DIST_PASSWORD = "dst5926";         // distributor
+const PURCH_PASSWORD = "prc4183";        // purchaser
 // Per-truck technician logins — each truck has its own password.
 // Edit these codes as needed; only ACTIVE_TRUCKS are offered at login.
 const TRUCK_PASSWORDS = {
@@ -5431,7 +5432,9 @@ export default function App() {
       // per-agent login: orders auto-fill this agent
       setSessionTruck(null); setSessionAgent(loginAgent); setAuthed(true); setPwErr(false); saveSession(null, loginAgent);
     } else {
-      const ok = role === "distributor" ? (pw === DIST_PASSWORD || pw === PASSWORD) : pw === PASSWORD;
+      const ok = role === "distributor" ? (pw === DIST_PASSWORD || pw === PASSWORD)
+        : role === "purchaser" ? (pw === PURCH_PASSWORD || pw === PASSWORD)
+        : pw === PASSWORD;
       if (ok) { setSessionTruck(null); setSessionAgent(null); setAuthed(true); setPwErr(false); saveSession(null, null); }
       else setPwErr(true);
     }
