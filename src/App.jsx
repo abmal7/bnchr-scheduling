@@ -1342,6 +1342,13 @@ function StatusPill({ status }) {
   return <span className="status-pill" style={{ background: m.color + "18", color: m.color, border: `1px solid ${m.color}33` }}>{m.label}</span>;
 }
 
+// Distributor's item verification (checkpoint 2) → per-line "Collected" chip
+const itemOK = (job, itemId) => !!(job.item_checks || {})[itemId];
+function CollectedChip({ ok }) {
+  if (!ok) return null;
+  return <span style={{ fontSize: 9.5, fontWeight: 700, color: "#15803D", background: "#DCFCE7", border: "1px solid #BBF7D0", borderRadius: 5, padding: "1px 5px", whiteSpace: "nowrap", marginLeft: 5 }}>✓ Collected</span>;
+}
+
 // ─── ComboBox: autocomplete that suggests from a list but allows custom input ─
 function ComboBox({ value, onChange, options, placeholder, disabled }) {
   const [open, setOpen] = useState(false);
@@ -3066,13 +3073,13 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                             {isTire ? (<>
                               {s.tire_id && (
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span></span>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span><CollectedChip ok={itemOK(j, s.staggered ? s.id + "-F" : s.id)} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.qty) || 0) * (Number(s.unit_price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )}
                               {s.staggered && s.rear_tire_id && (
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span></span>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span><CollectedChip ok={itemOK(j, s.id + "-R")} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.rear_unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.rear_qty) || 0) * (Number(s.rear_unit_price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )}
@@ -3080,7 +3087,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                             </>) : (
                               (s.parts || []).filter(p => p.name || Number(p.price) > 0).length ? (s.parts || []).filter(p => p.name || Number(p.price) > 0).map(p => (
                                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}</span>
+                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}<CollectedChip ok={itemOK(j, p.id)} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(p.price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(p.qty) || 1) * (Number(p.price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )) : <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — parts with customer{s.description ? ` · ${s.description}` : ""}</div>
@@ -3103,7 +3110,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {j.items.map(it => (
                   <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
-                    <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span></span>
+                    <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span><CollectedChip ok={itemOK(j, it.id)} /></span>
                     <span style={{ whiteSpace: "nowrap" }}><span style={{ color: "var(--muted)", fontWeight: 500 }}>@ {Number(it.unit_price || 0).toFixed(3)} · </span><span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</span></span>
                   </div>
                 ))}
@@ -3231,34 +3238,46 @@ function OrderActions({ job, onAction, compact }) {
 
 function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
   const [filterTruck, setFilterTruck] = useState("all");
-  const [filterStatus, setFilterStatus] = useState("all");
+  const [stageF, setStageF] = useState("active");   // active | successful | all — default: the working queue
+  const [payF, setPayF] = useState(null);           // null | paid | unpaid (toggle)
   const [filterDate, setFilterDate] = useState(today());
   const [search, setSearch] = useState("");
   const [boardOpen, setBoardOpen] = useState(true); // Day Board shown by default, collapsible
 
-  const filtered = jobs.filter(j => {
+  // base = the day (date/truck/search scope) — the summary reads from THIS, never from the pills
+  const base = jobs.filter(j => {
     if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
-    if (filterStatus === "booked" && !jobBookedStage(j)) return false;
-    if (filterStatus === "started" && !jobStarted(j)) return false;
-    if (filterStatus === "successful" && !jobSuccessful(j)) return false;
-    if (filterStatus === "paid" && j.payment_status !== "paid") return false;
-    if (filterStatus === "unpaid" && (j.payment_status === "paid" || j.status === "cancelled")) return false;
-    if (filterStatus === "cancelled" && j.status !== "cancelled") return false;
     if (filterDate) { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; if (d !== filterDate) return false; }
     if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
     return true;
-  }).sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at)); // earliest on top
+  });
+  // Active = the working queue: booked + started
+  const isActive = (j) => j.status !== "cancelled" && j.status !== "incomplete" && !jobSuccessful(j);
+  const stageList = base.filter(j =>
+    stageF === "all" ? true : stageF === "successful" ? jobSuccessful(j) : isActive(j));
+  const counts = {
+    active: base.filter(isActive).length,
+    successful: base.filter(jobSuccessful).length,
+    all: base.length,
+    // payment counts within the chosen stage — Successful + Unpaid = collections list
+    paid: stageList.filter(j => j.payment_status === "paid").length,
+    unpaid: stageList.filter(j => j.payment_status !== "paid" && j.status !== "cancelled").length,
+  };
+  const filtered = stageList
+    .filter(j => !payF ? true : payF === "paid" ? j.payment_status === "paid" : (j.payment_status !== "paid" && j.status !== "cancelled"))
+    .sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at)); // earliest on top
 
-  const totalKD = filtered.reduce((s, j) => s + Number(j.total || 0), 0);
-  const done = filtered.filter(j => DONE_STATUSES.includes(j.status)).length;
+  // Day summary — whole day always (never affected by the pills)
+  const totalKD = base.reduce((s, j) => s + (j.status !== "cancelled" ? Number(j.total || 0) : 0), 0);
+  const done = base.filter(jobSuccessful).length;
 
   return (
     <>
       <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{filtered.length}</div><div className="stat-lbl">Jobs showing</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{base.length}</div><div className="stat-lbl">Jobs today</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{done}</div><div className="stat-lbl">Completed</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>KWD {totalKD.toFixed(3)}</div><div className="stat-lbl">Revenue (shown)</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{jobs.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{base.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid</div></div>
       </div>
 
       <div className="page-header">
@@ -3274,18 +3293,31 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
               <option value="all">All Trucks</option>
               {TRUCKS.map(t => <option key={t}>{t}</option>)}
             </select>
-            <select className="filter-select" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-              <option value="all">All Orders</option>
-              <option value="booked">Booked</option>
-              <option value="started">Started</option>
-              <option value="successful">Successful</option>
-              <option value="paid">Paid</option>
-              <option value="unpaid">Unpaid</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
             {filterDate && <button className="btn btn-ghost btn-sm" onClick={() => setFilterDate("")}>Clear Date</button>}
           </div>
           {role === "sales" && <button className="btn btn-primary" onClick={onNewJob}>+ New Job</button>}
+        </div>
+
+        {/* Stage pills + payment toggle — filter the LIST only; the summary above stays whole-day */}
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[
+              { k: "active", label: `Active (${counts.active})` },
+              { k: "successful", label: `✓ Successful (${counts.successful})` },
+              { k: "all", label: `All (${counts.all})` },
+            ].map(p => (
+              <button key={p.k} className={`btn btn-sm ${stageF === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setStageF(p.k)}>{p.label}</button>
+            ))}
+          </div>
+          <div style={{ width: 1, height: 22, background: "var(--border)" }} />
+          <div style={{ display: "flex", gap: 6 }}>
+            {[
+              { k: "paid", label: `Paid (${counts.paid})` },
+              { k: "unpaid", label: `Unpaid (${counts.unpaid})` },
+            ].map(p => (
+              <button key={p.k} className={`btn btn-sm ${payF === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setPayF(payF === p.k ? null : p.k)}>{p.label}</button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -3361,8 +3393,8 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                       job.items.forEach(it => {
                         const k = it.service_id || it.id;
                         if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, isTire: it.kind === "tire", qty: 0, products: [], car: it.car_label || `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "—" };
-                        if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim() }); }
-                        else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name });
+                        if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim(), ok: itemOK(job, it.id) }); }
+                        else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name, ok: itemOK(job, it.id) });
                       });
                       const carGroups = {};
                       Object.values(svcMap).forEach(l => { (carGroups[l.car] = carGroups[l.car] || []).push(l); });
@@ -3377,7 +3409,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                                 </span>
                                 <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "right" }}>
                                   {l.products.map((p, i) => (
-                                    <span key={i}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.n}</span>
+                                    <span key={i}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.n}{p.ok && <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span>}</span>
                                   ))}
                                 </span>
                               </div>
