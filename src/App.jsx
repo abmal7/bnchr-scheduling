@@ -466,10 +466,14 @@ function RescheduleModal({ job, jobs, onClose, onSaved }) {
 }
 
 async function fetchQuotes(mobile) {
-  const digits = (mobile || "").replace(/\D/g, "");
-  if (digits.length < 6) return [];
+  const raw = (mobile || "").trim();
+  if (raw.length < 4) return [];
+  const digits = raw.replace(/\D/g, "");
+  // Real mobiles match on their last 8 digits; alphanumeric entries
+  // (test data, odd formats) fall back to a raw case-insensitive contains.
+  const pattern = digits.length >= 6 ? `*${digits.slice(-8)}*` : `*${raw}*`;
   try {
-    const d = await sb(`/quotes?customer_mobile=like.*${digits.slice(-8)}&order=created_at.desc&limit=10&select=*`);
+    const d = await sb(`/quotes?customer_mobile=ilike.${encodeURIComponent(pattern)}&order=created_at.desc&limit=10&select=*`);
     return d || [];
   } catch { return []; }
 }
