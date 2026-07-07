@@ -4435,15 +4435,13 @@ function HistoryView({ jobs, onSelectJob }) {
 
   return (
     <>
-      <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{completedShown.length}</div><div className="stat-lbl">Successful jobs</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>KWD {totalRevenue.toFixed(3)}</div><div className="stat-lbl">Revenue (excl. cancelled)</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{completedShown.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid invoices</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--danger)" }}>{filtered.filter(j => j.status === "cancelled").length}</div><div className="stat-lbl">Cancelled</div></div>
-      </div>
-
       <div className="page-header">
-        <div className="page-title">Order History</div>
+        <div>
+          <div className="page-title">Order History</div>
+          <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 2 }}>
+            {filtered.length} order{filtered.length !== 1 ? "s" : ""} shown · KWD {totalRevenue.toFixed(3)} successful{quick === "all" ? "" : " (filtered)"} — full numbers live in Reports
+          </div>
+        </div>
         <div className="filters">
           <input className="filter-input" placeholder="Search customer, item…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 200 }} />
           <select className="filter-select" value={filterTruck} onChange={e => setFilterTruck(e.target.value)}>
