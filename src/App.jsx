@@ -3547,8 +3547,8 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
         {filtered.map(job => (
           <div key={job.id} className="job-card" onClick={() => onSelectJob(job)}>
             <div className="job-card-top">
-              <div>
-                <div className="job-card-name" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1, minWidth: 0 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="job-card-name" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span>{job.customer_name}</span>
                   {job.customer_mobile && <a href={`tel:${job.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)" }}>{job.customer_mobile}</a>}
                   {job.assigned_truck && <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text, whiteSpace: "nowrap" }}>{job.assigned_truck}</span>}
