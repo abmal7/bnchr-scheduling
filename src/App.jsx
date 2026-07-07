@@ -2055,16 +2055,16 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
                       onClick={() => { if (occ && onJobClick) onJobClick(occ); }}
                       style={{
                         borderRadius: 8, minHeight: 48, padding: "5px 7px",
-                        background: c.bg, borderLeft: `3px solid ${isDone ? "var(--success)" : isOT ? "#F59E0B" : c.solid}`,
-                        boxShadow: isDone ? "inset 0 0 0 1px #BBF7D0" : isOT ? "inset 0 0 0 1px #FDE68A" : "none",
-                        opacity: isDone ? .72 : 1,
-                        color: c.text, cursor: onJobClick ? "pointer" : "default",
+                        background: isDone ? "#16A34A" : c.bg,
+                        borderLeft: `3px solid ${isDone ? "#166534" : isOT ? "#F59E0B" : c.solid}`,
+                        boxShadow: !isDone && isOT ? "inset 0 0 0 1px #FDE68A" : "none",
+                        color: isDone ? "#fff" : c.text, cursor: onJobClick ? "pointer" : "default",
                         display: "flex", flexDirection: "column", justifyContent: "center",
                         overflow: "hidden",
                       }}>
                       {start && occ ? (
                         <>
-                          <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isDone ? <span style={{ color: "var(--success)" }}>✓ </span> : ""}{isOT ? "⏱ " : ""}{shortService(occ.service_type)}</div>
+                          <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isDone ? "✓ " : ""}{isOT ? "⏱ " : ""}{shortService(occ.service_type)}</div>
                           <div style={{ fontSize: 9, fontWeight: 600, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.customer_mobile || ""}</div>
                           <div style={{ fontSize: 9, opacity: .8, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.area || ""}</div>
                         </>
@@ -2098,7 +2098,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(ACTIVE_TRUCKS[0]).bg, borderLeft: `3px solid ${truckColor(ACTIVE_TRUCKS[0]).solid}` }} /> Booked</span>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, border: "1px dashed #E8D9B5", background: "#FAFAF8" }} /> Won't fit {duration}h</span>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "#FEF3C7", borderLeft: "3px solid #F59E0B" }} /> Overtime</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(ACTIVE_TRUCKS[0]).bg, borderLeft: "3px solid var(--success)", opacity: .72 }} /> ✓ Done</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "#16A34A", borderLeft: "3px solid #166534" }} /> ✓ Done</span>
         </div>
         {onJobClick && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>Tap a booked slot to open it, or any free slot to start a new order.</div>}
       </div>
