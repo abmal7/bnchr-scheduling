@@ -1666,13 +1666,6 @@ const SERVICE_TEMPLATES = {
     { tpl: "EO", qty: 4 },                       // engine oil from catalog, per litre
     { tpl: "oil_filter", name: "Oil Filter" },
   ],
-  "Brake Pads": [
-    { tpl: "brake_pads", name: "Front Brake Pads" },
-    { tpl: "brake_sensor", name: "Brake Sensor" },
-  ],
-  "Brake Disc": [
-    { tpl: "brake_disc", name: "Front Brake Disc" },
-  ],
   "Battery": [
     { tpl: "BT" },                                // battery from catalog
   ],
@@ -1701,15 +1694,29 @@ const rebrandPartName = (tpl, name, brand) => {
 const rebrandParts = (parts, brand) =>
   (parts || []).map(p => p.tpl && !p.custom ? { ...p, name: rebrandPartName(p.tpl, p.name, brand) } : p);
 
-const buildTemplateParts = (serviceType, carBrand) => {
-  const t = SERVICE_TEMPLATES[serviceType];
-  if (!t) return [newPart()];
-  return t.map(row => ({
+const buildTemplateParts = (serviceType, carBrand, sides = "both") => {
+  const mk = (row) => ({
     ...newPart(),
-    name: row.tpl && TPL_OPTIONS[row.tpl] && carBrand ? TPL_OPTIONS[row.tpl](carBrand)[0] : (row.name || ""),
+    name: row.tpl && carBrand ? rebrandPartName(row.tpl, row.name || "", carBrand) : (row.name || ""),
     qty: row.qty || 1,
     tpl: row.tpl || null,
-  }));
+  });
+  if (serviceType === "Brake Pads") {
+    const rows = [];
+    if (sides !== "rear")  rows.push({ tpl: "brake_pads", name: "Front Brake Pads" });
+    if (sides !== "front") rows.push({ tpl: "brake_pads", name: "Rear Brake Pads" });
+    rows.push({ tpl: "brake_sensor", name: "Brake Sensor" });
+    return rows.map(mk);
+  }
+  if (serviceType === "Brake Disc") {
+    const rows = [];
+    if (sides !== "rear")  rows.push({ tpl: "brake_disc", name: "Front Brake Disc" });
+    if (sides !== "front") rows.push({ tpl: "brake_disc", name: "Rear Brake Disc" });
+    return rows.map(mk);
+  }
+  const t = SERVICE_TEMPLATES[serviceType];
+  if (!t) return [newPart()];
+  return t.map(mk);
 };
 const partsGross = (parts) => (parts || []).reduce((s, p) => s + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
 
@@ -1781,14 +1788,17 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
     Object.entries(cat.variants || {}).forEach(([axis, opts]) => { variant[axis] = opts[0]; });
     const svcNow = (services || []).find(s => s.id === id);
     const carBrand = svcNow && (customerCars || []).find(c => c.id === svcNow.car_id)?.brand;
+    const isBrake = type === "Brake Pads" || type === "Brake Disc";
+    if (isBrake && variant.sides) variant.sides = "Two sides"; // Front & Rear default
     upd(id, {
       service_type: type, kind: cat.kind || "other", variant,
+      sides: isBrake ? "both" : undefined,
       qty: cat.kind === "tire" ? 4 : 1,
       labor: catalogLabor(type, variant, cat.kind === "tire" ? 4 : 1),
       // clear cross-formula fields + apply the service's item template
       tire_id: null, brand: "", pattern: "", size: "", description: "",
       unit_price: 0,
-      parts: cat.kind === "tire" ? [] : buildTemplateParts(type, carBrand),
+      parts: cat.kind === "tire" ? [] : buildTemplateParts(type, carBrand, "both"),
     });
   };
   const changeVariant = (id, axis, value, svc) => {
@@ -1877,7 +1887,7 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
               {/* Variants */}
               {Object.entries(cat.variants || {}).length > 0 && (
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                  {Object.entries(cat.variants).map(([axis, opts]) => (
+                  {Object.entries(cat.variants).filter(([axis]) => !(axis === "sides" && (svc.service_type === "Brake Pads" || svc.service_type === "Brake Disc"))).map(([axis, opts]) => (
                     <div key={axis} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                       <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>{axis === "mount" ? "Type" : axis === "tier" ? "Car tier" : axis}</label>
                       <select className="filter-input" value={svc.variant[axis] || ""} onChange={e => changeVariant(svc.id, axis, e.target.value, svc)}>
@@ -1980,6 +1990,25 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
               ) : (
                 // Formula 2: other — itemized parts (name + supplier + qty + price + optional cost)
                 <div style={{ marginBottom: 10 }}>
+                  {(svc.service_type === "Brake Pads" || svc.service_type === "Brake Disc") && (
+                    <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Sides</label>
+                      {[{ k: "both", label: "Front & Rear" }, { k: "front", label: "Front" }, { k: "rear", label: "Rear" }].map(o => (
+                        <button key={o.k} type="button" className={`btn btn-sm ${(svc.sides || "both") === o.k ? "btn-primary" : "btn-ghost"}`}
+                          onClick={() => {
+                            const brand = (customerCars || []).find(c => c.id === svc.car_id)?.brand;
+                            const tplKey = svc.service_type === "Brake Pads" ? "brake_pads" : "brake_disc";
+                            setServices(prev => prev.map(s => {
+                              if (s.id !== svc.id) return s;
+                              const kept = (s.parts || []).filter(p => p.tpl !== tplKey);
+                              const fresh = buildTemplateParts(s.service_type, brand, o.k).filter(p => p.tpl === tplKey);
+                              const variant = { ...s.variant, sides: o.k === "both" ? "Two sides" : "One side" };
+                              return { ...s, sides: o.k, variant, parts: [...fresh, ...kept], labor: catalogLabor(s.service_type, variant, s.qty) };
+                            }));
+                          }}>{o.label}</button>
+                      ))}
+                    </div>
+                  )}
                   <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 6 }}>Parts / items — each from its supplier</label>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {(svc.parts || []).map((p, pi) => (
