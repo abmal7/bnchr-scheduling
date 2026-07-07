@@ -4934,7 +4934,9 @@ const MONTHLY_TARGET = 45000; // KWD — edit here when the target changes
 
 function ReportsView({ jobs, quotes, customers }) {
   const todayD = new Date(); todayD.setHours(0, 0, 0, 0);
-  const iso = (d) => d.toISOString().split("T")[0];
+  // LOCAL date string — never toISOString here: UTC conversion shifts
+  // Kuwait's midnight back to the previous day and skews every preset.
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const [from, setFrom] = useState(iso(todayD));
   const [to, setTo] = useState(iso(todayD));
 
@@ -4950,7 +4952,7 @@ function ReportsView({ jobs, quotes, customers }) {
   };
 
   const fmtKD = (n) => Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
-  const jobDate = (j) => (j.scheduled_at || j.created_at || "").split("T")[0];
+  const jobDate = (j) => { const s = j.scheduled_at || j.created_at; return s ? iso(new Date(s)) : ""; };
   const inRange = jobs.filter(j => j.status !== "cancelled" && jobDate(j) >= from && jobDate(j) <= to);
 
   // ── headline KPIs ──
@@ -4971,7 +4973,7 @@ function ReportsView({ jobs, quotes, customers }) {
   });
 
   // quotes in range + conversion
-  const qInRange = quotes.filter(q => { const d = (q.created_at || "").split("T")[0]; return d >= from && d <= to; });
+  const qInRange = quotes.filter(q => { const d = q.created_at ? iso(new Date(q.created_at)) : ""; return d >= from && d <= to; });
   const qSuccess = qInRange.filter(q => quoteStatus(q, jobs).status === "success").length;
   const qConv = qInRange.length ? Math.round((qSuccess / qInRange.length) * 100) : 0;
 
