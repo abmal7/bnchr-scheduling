@@ -3298,27 +3298,6 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
           {role === "sales" && <button className="btn btn-primary" onClick={onNewJob}>+ New Job</button>}
         </div>
 
-        {/* Stage pills + payment toggle — filter the LIST only; the summary above stays whole-day */}
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            {[
-              { k: "active", label: `Active (${counts.active})` },
-              { k: "successful", label: `✓ Successful (${counts.successful})` },
-              { k: "all", label: `All (${counts.all})` },
-            ].map(p => (
-              <button key={p.k} className={`btn btn-sm ${stageF === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setStageF(p.k)}>{p.label}</button>
-            ))}
-          </div>
-          <div style={{ width: 1, height: 22, background: "var(--border)" }} />
-          <div style={{ display: "flex", gap: 6 }}>
-            {[
-              { k: "paid", label: `Paid (${counts.paid})` },
-              { k: "unpaid", label: `Unpaid (${counts.unpaid})` },
-            ].map(p => (
-              <button key={p.k} className={`btn btn-sm ${payF === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setPayF(payF === p.k ? null : p.k)}>{p.label}</button>
-            ))}
-          </div>
-        </div>
       </div>
 
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -3366,6 +3345,27 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
       )}
 
       <div className="job-cards" style={{ flex: "2 1 420px", minWidth: 300 }}>
+          {/* Stage pills + payment toggle — filter the LIST only; the summary above stays whole-day */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", marginBottom: 4 }}>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[
+                { k: "active", label: `Active (${counts.active})` },
+                { k: "successful", label: `✓ Successful (${counts.successful})` },
+                { k: "all", label: `All (${counts.all})` },
+              ].map(p => (
+                <button key={p.k} className={`btn btn-sm ${stageF === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setStageF(p.k)}>{p.label}</button>
+              ))}
+            </div>
+            <div style={{ width: 1, height: 22, background: "var(--border)" }} />
+            <div style={{ display: "flex", gap: 6 }}>
+              {[
+                { k: "paid", label: `Paid (${counts.paid})` },
+                { k: "unpaid", label: `Unpaid (${counts.unpaid})` },
+              ].map(p => (
+                <button key={p.k} className={`btn btn-sm ${payF === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setPayF(payF === p.k ? null : p.k)}>{p.label}</button>
+              ))}
+            </div>
+          </div>
         {filtered.length === 0 && <div className="empty"><h3>No jobs</h3><p>Adjust filters or create a new job.</p></div>}
         {filtered.map(job => (
           <div key={job.id} className="job-card" onClick={() => onSelectJob(job)}>
