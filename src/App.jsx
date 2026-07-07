@@ -1407,6 +1407,45 @@ function ComboBox({ value, onChange, options, placeholder, disabled }) {
   );
 }
 
+// ─── Catalog Picker: searchable oils/batteries with custom-text fallback ──────
+function CatalogPicker({ items, value, placeholder, onPick, onCustom }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef(null);
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+  const typed = open ? q : (value || "");
+  const filtered = (items || []).filter(x =>
+    `${x.description} ${x.sku}`.toLowerCase().includes((q || "").toLowerCase())).slice(0, 40);
+  return (
+    <div ref={ref} className="search-wrap" style={{ flex: 1 }}>
+      <input className="filter-input" style={{ width: "100%" }} placeholder={placeholder}
+        value={typed}
+        onChange={(e) => { setQ(e.target.value); if (!open) setOpen(true); }}
+        onFocus={() => { setQ(""); setOpen(true); }} />
+      {open && (
+        <div className="search-dropdown" style={{ maxHeight: 240 }}>
+          {filtered.map(x => (
+            <div key={x.sku} className="search-item" onClick={() => { onPick(x); setQ(""); setOpen(false); }}>
+              <div className="search-item-name" style={{ fontSize: 13.5 }}>{x.description}</div>
+              <div className="search-item-sub">{x.sku}{x.price ? ` · KD ${Number(x.price)} /u` : ""}{x.supplier ? ` · ${x.supplier}` : ""}</div>
+            </div>
+          ))}
+          {filtered.length === 0 && <div className="search-item"><div className="search-item-sub">No matches in the catalog.</div></div>}
+          {q && (
+            <div className="search-new" onClick={() => { onCustom(q); setQ(""); setOpen(false); }}>
+              ✏ Use "{q}" as custom text
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Customer Search Box ──────────────────────────────────────────────────────
 function CustomerSearchBox({ customers, onSelect, onCreateNew }) {
   const [q, setQ] = useState("");
@@ -1648,6 +1687,20 @@ const SERVICE_TEMPLATES = {
     { name: "Carburetor Tune-Up Conditioner" },
   ],
 };
+// When a car gets linked, template rows still holding option values switch to
+// that brand's genuine part automatically (Front/Rear preserved; custom text untouched).
+const rebrandPartName = (tpl, name, brand) => {
+  if (!brand) return name;
+  const isRear = /rear/i.test(name || "");
+  if (tpl === "oil_filter")  return `${brand} Genuine Oil Filter`;
+  if (tpl === "spark_plugs") return `${brand} Genuine Spark Plugs`;
+  if (tpl === "brake_pads")  return `${brand} Genuine ${isRear ? "Rear" : "Front"} Brake Pads`;
+  if (tpl === "brake_disc")  return `${brand} Genuine ${isRear ? "Rear" : "Front"} Brake Disc`;
+  return name;
+};
+const rebrandParts = (parts, brand) =>
+  (parts || []).map(p => p.tpl && !p.custom ? { ...p, name: rebrandPartName(p.tpl, p.name, brand) } : p);
+
 const buildTemplateParts = (serviceType, carBrand) => {
   const t = SERVICE_TEMPLATES[serviceType];
   if (!t) return [newPart()];
@@ -1935,18 +1988,13 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                           <span style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)" }}>{pi + 1}.</span>
                           {p.tpl && !p.custom ? (
                             (p.tpl === "EO" || p.tpl === "BT") ? (
-                              <select className="filter-input" style={{ flex: 1 }} value={p.sku || ""}
-                                onChange={e => {
-                                  if (e.target.value === "__custom__") { updPart(svc.id, p.id, { custom: true }); return; }
-                                  const it = (catalog || []).find(x => x.sku === e.target.value);
-                                  if (it) updPart(svc.id, p.id, { name: it.description, sku: it.sku, cost: Number(it.cost) || 0, price: Number(it.price) || 0, supplier: it.supplier || p.supplier || "" });
-                                }}>
-                                <option value="">{p.tpl === "EO" ? "— select engine oil —" : "— select battery —"}</option>
-                                {(catalog || []).filter(x => x.category === p.tpl).map(x => (
-                                  <option key={x.sku} value={x.sku}>{x.description}{x.price ? ` — ${Number(x.price)} KD/u` : ""}</option>
-                                ))}
-                                <option value="__custom__">✏ Custom text…</option>
-                              </select>
+                              <CatalogPicker
+                                items={(catalog || []).filter(x => x.category === p.tpl)}
+                                value={p.name}
+                                placeholder={p.tpl === "EO" ? "🔍 Search engine oil (brand, grade, 5W30…)" : "🔍 Search battery (brand, warranty…)"}
+                                onPick={(it) => updPart(svc.id, p.id, { name: it.description, sku: it.sku, cost: Number(it.cost) || 0, price: Number(it.price) || 0, supplier: it.supplier || p.supplier || "" })}
+                                onCustom={(text) => updPart(svc.id, p.id, { name: text, sku: "", custom: true })}
+                              />
                             ) : (
                               <select className="filter-input" style={{ flex: 1 }} value={p.name}
                                 onChange={e => {
@@ -2037,7 +2085,11 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                 <select className="filter-input" value={svc.new_car ? "__new__" : (svc.car_id || "")}
                   onChange={e => {
                     if (e.target.value === "__new__") upd(svc.id, { car_id: null, new_car: { brand: "", model: "", year: "", plate: "" } });
-                    else upd(svc.id, { car_id: e.target.value || null, new_car: null });
+                    else {
+                      const cid = e.target.value || null;
+                      const brand = (customerCars || []).find(c => c.id === cid)?.brand;
+                      upd(svc.id, { car_id: cid, new_car: null, parts: rebrandParts(svc.parts, brand) });
+                    }
                   }}>
                   <option value="">— select car —</option>
                   {(customerCars || []).map(c => <option key={c.id} value={c.id}>{c.brand} {c.model} {c.year} {c.plate ? `· ${c.plate}` : ""}</option>)}
@@ -2325,7 +2377,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     if (!selectedCustomer || !s?.new_car?.brand || !s?.new_car?.model) return;
     const car = { ...s.new_car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, customer_id: selectedCustomer.id, created_at: new Date().toISOString() };
     if (onCarCreated) onCarCreated(car);                    // appears in profile + dropdowns immediately
-    setServices(prev => prev.map(x => x.id === sid ? { ...x, car_id: car.id, new_car: null } : x));
+    setServices(prev => prev.map(x => x.id === sid ? { ...x, car_id: car.id, new_car: null, parts: rebrandParts(x.parts, car.brand) } : x));
     createCar(car);                                          // persist in background (non-blocking)
   };
   const saveInlineAddress = () => {
