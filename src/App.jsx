@@ -3226,7 +3226,7 @@ function OrderActions({ job, onAction, compact }) {
   }
 }
 
-function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
+function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
   const [filterTruck, setFilterTruck] = useState("all");
   const [filterStatus, setFilterStatus] = useState("all");
   const [filterDate, setFilterDate] = useState(today());
@@ -3336,10 +3336,19 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
           <div key={job.id} className="job-card" onClick={() => onSelectJob(job)}>
             <div className="job-card-top">
               <div>
-                <div className="job-card-name">
-                  {job.customer_name}
-                  {job.customer_mobile && <a href={`tel:${job.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ marginLeft: 8, fontSize: 13, fontWeight: 500, color: "var(--accent)" }}>{job.customer_mobile}</a>}
+                <div className="job-card-name" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span>{job.customer_name}</span>
+                  {job.customer_mobile && <a href={`tel:${job.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)" }}>{job.customer_mobile}</a>}
+                  {job.scheduled_at && (
+                    <span style={{ fontSize: 14.5, fontWeight: 800, color: "#15803D", background: "#DCFCE7", borderRadius: 7, padding: "2px 9px", whiteSpace: "nowrap" }}>
+                      {fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}
+                    </span>
+                  )}
                 </div>
+                {(() => {
+                  const cn = (customers || []).find(c => c.id === job.customer_id || (last8(c.mobile) && last8(c.mobile) === last8(job.customer_mobile)));
+                  return cn?.notes ? <div style={{ fontSize: 12, color: "#B45309", fontWeight: 600, marginTop: 3 }}>⚠ {cn.notes}</div> : null;
+                })()}
                 {(job.items && job.items.length) ? (
                   <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 7 }}>
                     {(() => {
@@ -3397,7 +3406,7 @@ function ScheduleView({ jobs, onSelectJob, onNewJob, onNewJobAt, onReschedule, o
             <div className="job-card-meta">
               <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text }}>{job.assigned_truck}</span>
               {job.is_overtime && <span className="tag" style={{ background: "#F59E0B", color: "#fff", fontWeight: 700 }}>⏱ OT</span>}
-              <span className="tag tag-time">{fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}</span>
+
               {job.total ? <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span> : null}
               <span style={{ fontSize: 12, color: "var(--muted)" }}>{job.area}</span>
               {job.payment_status === "paid"
@@ -5530,7 +5539,7 @@ export default function App() {
           )}
 
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
-            <ScheduleView jobs={jobs} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
+            <ScheduleView jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
