@@ -2960,7 +2960,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
             {/* 4 — Admin */}
             <div className="form-section-title">4 · Admin</div>
             <div className="form-field"><label>Lead From</label><select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select></div>
-            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Warranty","Cash","KNET"].map(s => <option key={s}>{s}</option>)}</select></div>
+            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Taly","Sparts","Warranty","Cash","KNET"].map(s => <option key={s}>{s}</option>)}</select></div>
             <div className="form-field"><label>Sales Agent</label>
               <select value={f.sales_agent} onChange={set("sales_agent")}>
                 <option value="">Select agent…</option>
