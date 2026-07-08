@@ -1142,7 +1142,7 @@ async function readRegistration(file) {
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: media, data: b64 } },
-          { type: "text", text: "This is a Kuwait vehicle registration (may mix Arabic and English). Extract the car's make/brand, model, model year, and chassis/VIN number. Respond with ONLY a JSON object, no prose, no markdown: {\"brand\":\"\",\"model\":\"\",\"year\":\"\",\"vin\":\"\"}. Use the English/Latin name for brand and model. Year is 4 digits. VIN is the chassis number (letters+digits). Leave a field \"\" if not clearly readable." },
+          { type: "text", text: "This is a Kuwait vehicle registration from the MOI/Sahel app (بيانات المركبة). Read the value shown AFTER each Arabic label (Arabic reads right-to-left, so the value is to the LEFT of the label):\n• الصنع = brand/make\n• الصنف = model\n• سنة الصنع = manufacture year (4 digits)\n• رقم القاعدة = chassis/VIN (Latin letters + digits, e.g. 1HGCV1613MA605099)\nBrand and model are usually written in ARABIC — transliterate them to their standard ENGLISH names. Common brands: هوندا=Honda, تويوتا=Toyota, نيسان=Nissan, لكزس=Lexus, مرسيدس=Mercedes-Benz, بي ام دبليو=BMW, فورد=Ford, شيفروليه=Chevrolet, جي ام سي=GMC, دودج=Dodge, كيا=Kia, هيونداي=Hyundai, ميتسوبيشي=Mitsubishi, بورش=Porsche, رنج روفر=Range Rover, لاند روفر=Land Rover, جيب=Jeep, انفينيتي=Infiniti, مازda=Mazda. Common models: اكورد=Accord, كامري=Camry, كورولا=Corolla, باترول=Patrol, لاند كروزر=Land Cruiser, تاهو=Tahoe, يوكن=Yukon. The VIN (رقم القاعدة) is always in Latin characters — copy it EXACTLY. Respond with ONLY this JSON, no prose or code fences: {\"brand\":\"\",\"model\":\"\",\"year\":\"\",\"vin\":\"\"}. Leave a field \"\" only if truly unreadable." },
         ],
       }],
     }),
@@ -4718,7 +4718,8 @@ function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
       const got = ["brand", "model", "year", "vin"].filter(k => r[k]);
       setScanMsg(got.length ? `Read ${got.join(", ")} — please check before saving.` : "Couldn't read the details — enter them manually.");
     } catch (err) {
-      setScanMsg("Scan failed — enter the details manually.");
+      console.error("Registration scan error:", err);
+      setScanMsg("Scan failed (" + String(err.message || err).slice(0, 80) + ") — enter the details manually.");
     }
     setScanning(false);
   };
