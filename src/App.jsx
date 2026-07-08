@@ -5024,7 +5024,8 @@ function ReportsView({ jobs, quotes, customers, owner }) {
     const aqs = aq.filter(q => quoteStatus(q, jobs).status === "success").length;
     const ac = customerConv(aq, q => quoteStatus(q, jobs).status === "success");
     return { agent: a, orders: aj.length, sales: aj.reduce((s, j) => s + (Number(j.total) || 0), 0),
-             quotes: aq.length, conv: aq.length ? Math.round((aqs / aq.length) * 100) : null,
+             quotes: aq.length, quotedCust: ac.customers,
+             conv: aq.length ? Math.round((aqs / aq.length) * 100) : null,
              convC: aq.length ? ac.pct : null };
   }).filter(p => p.orders || p.quotes).sort((x, y) => y.sales - x.sales);
 
@@ -5072,7 +5073,7 @@ function ReportsView({ jobs, quotes, customers, owner }) {
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>KWD {fmtKD(totalSales)}</div><div className="stat-lbl">Total sales</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{orders}</div><div className="stat-lbl">Orders</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {fmtKD(ticket)}</div><div className="stat-lbl">Avg ticket</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{cConv.pct}%</div><div className="stat-lbl">Conversion — customers ({cConv.won}/{cConv.customers}) · per quote {qConv}% ({qSuccess}/{qInRange.length})</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{cConv.pct}%</div><div className="stat-lbl">Conversion — {cConv.won}/{cConv.customers} customers · per quote {qConv}% ({qSuccess}/{qInRange.length} sent)</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{loyalC} / {newC}</div><div className="stat-lbl">Loyal / new customers</div></div>
         {owner && (() => {
           const totalCost = svcRows.reduce((s, r) => s + r.cost, 0);
@@ -5128,14 +5129,14 @@ function ReportsView({ jobs, quotes, customers, owner }) {
       <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
         <div className="card-header"><h3>Per agent</h3></div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Agent</th><th style={th}>Orders</th><th style={th}>Sales (KD)</th><th style={th}>Quotes</th><th style={th}>Conv (customers)</th><th style={th}>Conv (quotes)</th></tr></thead>
+          <thead><tr><th style={th}>Agent</th><th style={th}>Orders</th><th style={th}>Sales (KD)</th><th style={th}>Quoted — cust (quotes)</th><th style={th}>Conv (customers)</th><th style={th}>Conv (quotes)</th></tr></thead>
           <tbody>
             {perAgent.map(p => (
               <tr key={p.agent}>
                 <td style={{ ...td, fontWeight: 600 }}>{p.agent}</td>
                 <td style={td}>{p.orders}</td>
                 <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(p.sales)}</td>
-                <td style={td}>{p.quotes}</td>
+                <td style={td}>{p.quotedCust}{p.quotes ? ` (${p.quotes})` : ""}</td>
                 <td style={{ ...td, fontWeight: 700 }}>{p.convC == null ? "—" : p.convC + "%"}</td>
                 <td style={td}>{p.conv == null ? "—" : p.conv + "%"}</td>
               </tr>
@@ -5227,7 +5228,27 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
   const [lostReason, setLostReason] = useState(LOST_REASONS[0]);
   const [snoozeDate, setSnoozeDate] = useState("");
 
-  const enriched = quotes.map(q => {
+  // Date range (matches Reports presets). Default = ALL TIME so open
+  // follow-ups from previous days never vanish from the working list.
+  const [qFrom, setQFrom] = useState("");
+  const [qTo, setQTo] = useState("");
+  const qIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const qPreset = (key) => {
+    const d = new Date(); d.setHours(0, 0, 0, 0);
+    if (key === "all") { setQFrom(""); setQTo(""); return; }
+    if (key === "today") { setQFrom(qIso(d)); setQTo(qIso(d)); }
+    if (key === "week") { const s0 = new Date(d); s0.setDate(d.getDate() - d.getDay()); setQFrom(qIso(s0)); setQTo(qIso(d)); }
+    if (key === "month") { setQFrom(qIso(new Date(d.getFullYear(), d.getMonth(), 1))); setQTo(qIso(d)); }
+    if (key === "lastmonth") { setQFrom(qIso(new Date(d.getFullYear(), d.getMonth() - 1, 1))); setQTo(qIso(new Date(d.getFullYear(), d.getMonth(), 0))); }
+  };
+
+  const enriched = quotes.filter(q => {
+    if (!qFrom && !qTo) return true;
+    const d = q.created_at ? qIso(new Date(q.created_at)) : "";
+    if (qFrom && d < qFrom) return false;
+    if (qTo && d > qTo) return false;
+    return true;
+  }).map(q => {
     const st = quoteStatus(q, jobs);
     const fu = followupState(q, st.status);
     const cust = customers.find(c => last8(c.mobile) && last8(c.mobile) === last8(q.customer_mobile));
@@ -5299,7 +5320,7 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
   return (
     <>
       <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{total}</div><div className="stat-lbl">Quotes sent</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{convCust.customers}</div><div className="stat-lbl">Customers quoted · {total} quote{total !== 1 ? "s" : ""} sent</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{successCount}</div><div className="stat-lbl">Success</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{convCust.pct}%</div><div className="stat-lbl">Conversion — customers ({convCust.won}/{convCust.customers}) · per quote {conv}%</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {pipeline.toFixed(0)}</div><div className="stat-lbl">Open pipeline (est.)</div></div>
@@ -5307,6 +5328,13 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
 
       <div className="page-header">
         <div className="page-title">Quotes</div>
+        <div className="filters">
+          {[["all", "All"], ["today", "Today"], ["week", "This Week"], ["month", "This Month"], ["lastmonth", "Last Month"]].map(([k, l]) => (
+            <button key={k} className={`btn btn-sm ${(k === "all" && !qFrom && !qTo) ? "btn-primary" : "btn-ghost"}`} onClick={() => qPreset(k)}>{l}</button>
+          ))}
+          <input type="date" className="filter-input" value={qFrom} onChange={e => setQFrom(e.target.value)} />
+          <input type="date" className="filter-input" value={qTo} onChange={e => setQTo(e.target.value)} />
+        </div>
         <div className="filters">
           <input className="filter-input" placeholder="Search mobile, name, tire…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 200 }} />
         </div>
