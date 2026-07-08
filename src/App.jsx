@@ -521,8 +521,10 @@ const quoteAge = (d) => {
 // Estimated tires-only value of a quote (cheapest option × qty; staggered = F+R pairs)
 function quoteValue(q) {
   if (q.staggered) {
-    const f = (q.lines || []).find(l => l.position === "front");
-    const r = (q.lines || []).find(l => l.position === "rear");
+    const opts = staggeredOptions(q);
+    const cheapest = opts.reduce((a, b) => (b.price < a.price ? b : a), opts[0] || { price: 0 });
+    const f = cheapest.front;
+    const r = cheapest.rear;
     return (Number(f?.price) || 0) * 2 + (Number(r?.price) || 0) * 2;
   }
   const prices = (q.lines || []).map(l => Number(l.price) || 0).filter(p => p > 0);
@@ -543,13 +545,27 @@ function quoteBookingMatch(quote, jobs) {
   const strong = candidates.find(j => (j.items || []).some(it => it.tire_id && qTireIds.has(String(it.tire_id))));
   return strong || candidates[0] || null;
 }
+// Pair a staggered quote's lines into options: fronts[i] + rears[i].
+// (Tire System stores fronts then rears in option order; no explicit pairing field.)
+function staggeredOptions(q) {
+  const fronts = (q.lines || []).filter(l => l.position === "front");
+  const rears = (q.lines || []).filter(l => l.position === "rear");
+  const n = Math.max(fronts.length, rears.length, 1);
+  const opts = [];
+  for (let i = 0; i < n; i++) {
+    const f = fronts[i] || fronts[0], r = rears[i] || rears[0];
+    opts.push({ front: f, rear: r, price: (Number(f?.price) || 0) + (Number(r?.price) || 0) });
+  }
+  return opts;
+}
 // Build an order service block from a quote line (line optional; staggered uses F+R)
 function quoteToService(q, line) {
   const svc = newService("Tire Change & Balancing");
   const fillFront = (ln) => ln && Object.assign(svc, { tire_id: ln.tire_id, brand: ln.brand, pattern: ln.pattern, size: ln.size, year: ln.year || "", unit_price: Number(ln.price) || 0 });
   if (q.staggered) {
-    const front = (q.lines || []).find(l => l.position === "front") || line || (q.lines || [])[0];
-    const rear = (q.lines || []).find(l => l.position === "rear");
+    // line may be a chosen {front, rear} option; else default to the first pair
+    const opt = (line && line.front) ? line : staggeredOptions(q)[0];
+    const front = opt.front, rear = opt.rear;
     svc.staggered = true; fillFront(front);
     svc.qty = 2; svc.rear_qty = 2;
     if (rear) Object.assign(svc, { rear_tire_id: rear.tire_id, rear_brand: rear.brand, rear_pattern: rear.pattern, rear_size: rear.size, rear_year: rear.year || "", rear_unit_price: Number(rear.price) || 0 });
@@ -2772,19 +2788,28 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
                           {isLost && <span style={{ fontSize: 10, fontWeight: 700, color: "#991B1B", background: "#FEE2E2", borderRadius: 5, padding: "1px 7px" }}>✕ Lost{q.lost_reason ? ` · ${q.lost_reason}` : ""}</span>}
                         </div>
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {(q.staggered
-                            ? [(q.lines || []).find(l => l.position === "front")].filter(Boolean)
-                            : (q.lines || [])
-                          ).map((line, li) => (
-                            <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-                              <span>
-                                <strong>{line.brand} {line.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {line.size}{line.year ? ` · ${line.year}` : ""}</span>
-                                {q.staggered && (() => { const r = (q.lines || []).find(l => l.position === "rear"); return r ? <div style={{ fontSize: 11.5, color: "var(--muted)" }}>+ rear: <strong style={{ color: "var(--text)" }}>{r.brand} {r.pattern}</strong> · {r.size}</div> : null; })()}
-                                <span style={{ color: "var(--accent)", fontWeight: 700 }}> @ {Number(line.price).toFixed(0)} KD</span>
-                              </span>
-                              <button type="button" className={`btn btn-sm ${isSuccess ? "btn-ghost" : "btn-primary"}`} style={{ flexShrink: 0 }} onClick={() => applyQuoteLine(q, line)}>{isSuccess ? "Use again" : "Use"}</button>
-                            </div>
-                          ))}
+                          {q.staggered ? (
+                            staggeredOptions(q).map((opt, oi) => (
+                              <div key={oi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12.5, borderTop: oi ? "1px dashed var(--border)" : "none", paddingTop: oi ? 6 : 0 }}>
+                                <span>
+                                  <div><span style={{ color: "var(--muted)", fontWeight: 700 }}>Front</span> <strong>{opt.front?.brand} {opt.front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {opt.front?.size}{opt.front?.year ? ` · ${opt.front.year}` : ""}</span></div>
+                                  <div><span style={{ color: "var(--muted)", fontWeight: 700 }}>Rear</span> <strong>{opt.rear?.brand} {opt.rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {opt.rear?.size}{opt.rear?.year ? ` · ${opt.rear.year}` : ""}</span></div>
+                                  <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(opt.price).toFixed(0)} KD</span>
+                                </span>
+                                <button type="button" className={`btn btn-sm ${isSuccess ? "btn-ghost" : "btn-primary"}`} style={{ flexShrink: 0 }} onClick={() => applyQuoteLine(q, opt)}>{isSuccess ? "Use again" : "Use"}</button>
+                              </div>
+                            ))
+                          ) : (
+                            (q.lines || []).map((line, li) => (
+                              <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+                                <span>
+                                  <strong>{line.brand} {line.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {line.size}{line.year ? ` · ${line.year}` : ""}</span>
+                                  <span style={{ color: "var(--accent)", fontWeight: 700 }}> @ {Number(line.price).toFixed(0)} KD</span>
+                                </span>
+                                <button type="button" className={`btn btn-sm ${isSuccess ? "btn-ghost" : "btn-primary"}`} style={{ flexShrink: 0 }} onClick={() => applyQuoteLine(q, line)}>{isSuccess ? "Use again" : "Use"}</button>
+                              </div>
+                            ))
+                          )}
                         </div>
                       </div>
                       );
@@ -5437,12 +5462,16 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
             )}
 
             {isStag ? (
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
-                <div>
-                  <div><span style={{ color: "var(--muted)", fontWeight: 700 }}>Front</span> <strong>{front?.brand} {front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {front?.size}{front?.year ? ` · ${front.year}` : ""}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(front?.price || 0).toFixed(0)} KD</span></div>
-                  <div style={{ marginTop: 2 }}><span style={{ color: "var(--muted)", fontWeight: 700 }}>Rear</span> <strong>{rear?.brand} {rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {rear?.size}{rear?.year ? ` · ${rear.year}` : ""}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(rear?.price || 0).toFixed(0)} KD</span></div>
-                </div>
-                {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, null)}>Book</button>}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {staggeredOptions(q).map((opt, oi) => (
+                  <div key={oi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
+                    <div>
+                      <div><span style={{ color: "var(--muted)", fontWeight: 700 }}>Front</span> <strong>{opt.front?.brand} {opt.front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {opt.front?.size}{opt.front?.year ? ` · ${opt.front.year}` : ""}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(opt.front?.price || 0).toFixed(0)} KD</span></div>
+                      <div style={{ marginTop: 2 }}><span style={{ color: "var(--muted)", fontWeight: 700 }}>Rear</span> <strong>{opt.rear?.brand} {opt.rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {opt.rear?.size}{opt.rear?.year ? ` · ${opt.rear.year}` : ""}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(opt.rear?.price || 0).toFixed(0)} KD</span></div>
+                    </div>
+                    {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, opt)}>Book</button>}
+                  </div>
+                ))}
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
