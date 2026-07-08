@@ -1122,17 +1122,36 @@ async function updateCar(id, patch) {
 async function deleteCar(id) {
   try { await sb(`/customer_cars?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
 }
-// Upload a car-registration image to Supabase Storage; returns its public URL.
-async function uploadCarPhoto(file, customerId) {
-  const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-  const path = `${customerId || "cust"}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
-  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/car-photos/${path}`, {
-    method: "POST",
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": file.type || "image/jpeg" },
-    body: file,
+// Read a car registration photo with AI and return {brand,model,year,vin}.
+// The image is sent for one-time extraction and is NEVER stored anywhere.
+async function readRegistration(file) {
+  const b64 = await new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(",")[1]);
+    r.onerror = () => rej(new Error("read failed"));
+    r.readAsDataURL(file);
   });
-  if (!res.ok) throw new Error(await res.text());
-  return `${SUPABASE_URL}/storage/v1/object/public/car-photos/${path}`;
+  const media = file.type && file.type.startsWith("image/") ? file.type : "image/jpeg";
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: media, data: b64 } },
+          { type: "text", text: "This is a Kuwait vehicle registration (may mix Arabic and English). Extract the car's make/brand, model, model year, and chassis/VIN number. Respond with ONLY a JSON object, no prose, no markdown: {\"brand\":\"\",\"model\":\"\",\"year\":\"\",\"vin\":\"\"}. Use the English/Latin name for brand and model. Year is 4 digits. VIN is the chassis number (letters+digits). Leave a field \"\" if not clearly readable." },
+        ],
+      }],
+    }),
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  const data = await resp.json();
+  const text = (data.content || []).map(c => c.text || "").join("").replace(/```json|```/g, "").trim();
+  const m = text.match(/\{[\s\S]*\}/);
+  return JSON.parse(m ? m[0] : text);
 }
 async function updateAddress(id, patch) {
   try { await sb(`/customer_addresses?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
@@ -4674,25 +4693,34 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
 // ─── Add Car Modal ────────────────────────────────────────────────────────────
 function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
   const [f, setF] = useState(editCar
-    ? { brand: editCar.brand || "", model: editCar.model || "", year: editCar.year || "", plate: editCar.plate || "", reg_photo: editCar.reg_photo || "" }
-    : { brand: "", model: "", year: "", plate: "", reg_photo: "" });
+    ? { brand: editCar.brand || "", model: editCar.model || "", year: editCar.year || "", plate: editCar.plate || "" }
+    : { brand: "", model: "", year: "", plate: "" });
   const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [upErr, setUpErr] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState("");
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
 
-  const pickPhoto = async (e) => {
+  // Scan a registration photo → fill fields → discard the image (never stored)
+  const scanReg = async (e) => {
     const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
     if (!file) return;
-    if (file.size > 8 * 1024 * 1024) { setUpErr("Image too large (max 8 MB)."); return; }
-    setUpErr(""); setUploading(true);
+    setScanMsg(""); setScanning(true);
     try {
-      const url = await uploadCarPhoto(file, customer.id);
-      setF(p => ({ ...p, reg_photo: url }));
+      const r = await readRegistration(file);
+      setF(p => ({
+        ...p,
+        brand: r.brand || p.brand,
+        model: r.model || p.model,
+        year: (r.year || "").toString().replace(/\D/g, "").slice(0, 4) || p.year,
+        plate: r.vin || p.plate,
+      }));
+      const got = ["brand", "model", "year", "vin"].filter(k => r[k]);
+      setScanMsg(got.length ? `Read ${got.join(", ")} — please check before saving.` : "Couldn't read the details — enter them manually.");
     } catch (err) {
-      setUpErr("Upload failed — is the car-photos bucket set up?");
+      setScanMsg("Scan failed — enter the details manually.");
     }
-    setUploading(false);
+    setScanning(false);
   };
 
   const save = async () => {
@@ -4717,28 +4745,19 @@ function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
+          <div style={{ marginBottom: 12 }}>
+            <label className="btn btn-ghost btn-sm" style={{ cursor: scanning ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {scanning ? "Reading…" : "📷 Scan registration"}
+              <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={scanReg} disabled={scanning} />
+            </label>
+            <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>fills the fields — the photo isn't saved</span>
+            {scanMsg && <div style={{ fontSize: 11.5, color: scanMsg.startsWith("Read") ? "#15803D" : "#B45309", marginTop: 5 }}>{scanMsg}</div>}
+          </div>
           <div className="form-grid">
             <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
             <div className="form-field"><label>Year</label><ComboBox value={f.year} onChange={(v) => setF(p => ({ ...p, year: v }))} options={carYears} placeholder="2023" /></div>
             <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v }))} options={modelsFor(f.brand)} placeholder="Land Cruiser" /></div>
             <div className="form-field"><label>VIN</label><input value={f.plate} onChange={set("plate")} placeholder="VIN" /></div>
-            <div className="form-field form-full">
-              <label>Car registration photo</label>
-              {f.reg_photo ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <a href={f.reg_photo} target="_blank" rel="noreferrer">
-                    <img src={f.reg_photo} alt="registration" style={{ height: 54, borderRadius: 6, border: "1px solid var(--border)", objectFit: "cover" }} />
-                  </a>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setF(p => ({ ...p, reg_photo: "" }))}>Remove</button>
-                </div>
-              ) : (
-                <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer", display: "inline-block" }}>
-                  {uploading ? "Uploading…" : "📷 Upload photo"}
-                  <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={pickPhoto} disabled={uploading} />
-                </label>
-              )}
-              {upErr && <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 4 }}>{upErr}</div>}
-            </div>
           </div>
         </div>
         <div className="modal-footer">
