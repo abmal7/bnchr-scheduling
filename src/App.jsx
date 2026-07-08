@@ -487,6 +487,19 @@ async function fetchQuotes(mobile) {
 }
 // ─── Quotes dashboard helpers (shared quotes table from the Tire System) ──────
 const last8 = (m) => (m || "").replace(/\D/g, "").slice(-8);
+// Per-customer conversion: several quotes to one customer count once.
+// A customer converts if ANY of their quotes succeeded.
+const customerConv = (list, isSuccess) => {
+  const by = {};
+  list.forEach(q => {
+    const k = last8(q.customer_mobile) || q.id;
+    by[k] = by[k] || false;
+    if (isSuccess(q)) by[k] = true;
+  });
+  const keys = Object.keys(by);
+  const won = keys.filter(k => by[k]).length;
+  return { customers: keys.length, won, pct: keys.length ? Math.round((won / keys.length) * 100) : 0 };
+};
 const quoteAge = (d) => {
   const h = (Date.now() - new Date(d).getTime()) / 36e5;
   if (h < 1) return "just now";
@@ -4994,7 +5007,8 @@ function ReportsView({ jobs, quotes, customers, owner }) {
   // quotes in range + conversion
   const qInRange = quotes.filter(q => { const d = q.created_at ? iso(new Date(q.created_at)) : ""; return d >= from && d <= to; });
   const qSuccess = qInRange.filter(q => quoteStatus(q, jobs).status === "success").length;
-  const qConv = qInRange.length ? Math.round((qSuccess / qInRange.length) * 100) : 0;
+  const qConv = qInRange.length ? Math.round((qSuccess / qInRange.length) * 100) : 0;           // per quote
+  const cConv = customerConv(qInRange, q => quoteStatus(q, jobs).status === "success");         // per customer (default)
 
   // ── month target (always current month, independent of selected range) ──
   const mStart = iso(new Date(todayD.getFullYear(), todayD.getMonth(), 1));
@@ -5008,8 +5022,10 @@ function ReportsView({ jobs, quotes, customers, owner }) {
     const aj = inRange.filter(j => j.sales_agent === a);
     const aq = qInRange.filter(q => q.agent === a);
     const aqs = aq.filter(q => quoteStatus(q, jobs).status === "success").length;
+    const ac = customerConv(aq, q => quoteStatus(q, jobs).status === "success");
     return { agent: a, orders: aj.length, sales: aj.reduce((s, j) => s + (Number(j.total) || 0), 0),
-             quotes: aq.length, conv: aq.length ? Math.round((aqs / aq.length) * 100) : null };
+             quotes: aq.length, conv: aq.length ? Math.round((aqs / aq.length) * 100) : null,
+             convC: aq.length ? ac.pct : null };
   }).filter(p => p.orders || p.quotes).sort((x, y) => y.sales - x.sales);
 
   // ── services breakdown (count · % of orders · KD · % of sales) ──
@@ -5056,7 +5072,7 @@ function ReportsView({ jobs, quotes, customers, owner }) {
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>KWD {fmtKD(totalSales)}</div><div className="stat-lbl">Total sales</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{orders}</div><div className="stat-lbl">Orders</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {fmtKD(ticket)}</div><div className="stat-lbl">Avg ticket</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{qConv}%</div><div className="stat-lbl">Quote conversion ({qSuccess}/{qInRange.length})</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{cConv.pct}%</div><div className="stat-lbl">Conversion — customers ({cConv.won}/{cConv.customers}) · per quote {qConv}% ({qSuccess}/{qInRange.length})</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{loyalC} / {newC}</div><div className="stat-lbl">Loyal / new customers</div></div>
         {owner && (() => {
           const totalCost = svcRows.reduce((s, r) => s + r.cost, 0);
@@ -5112,7 +5128,7 @@ function ReportsView({ jobs, quotes, customers, owner }) {
       <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
         <div className="card-header"><h3>Per agent</h3></div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Agent</th><th style={th}>Orders</th><th style={th}>Sales (KD)</th><th style={th}>Quotes</th><th style={th}>Conversion</th></tr></thead>
+          <thead><tr><th style={th}>Agent</th><th style={th}>Orders</th><th style={th}>Sales (KD)</th><th style={th}>Quotes</th><th style={th}>Conv (customers)</th><th style={th}>Conv (quotes)</th></tr></thead>
           <tbody>
             {perAgent.map(p => (
               <tr key={p.agent}>
@@ -5120,6 +5136,7 @@ function ReportsView({ jobs, quotes, customers, owner }) {
                 <td style={td}>{p.orders}</td>
                 <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(p.sales)}</td>
                 <td style={td}>{p.quotes}</td>
+                <td style={{ ...td, fontWeight: 700 }}>{p.convC == null ? "—" : p.convC + "%"}</td>
                 <td style={td}>{p.conv == null ? "—" : p.conv + "%"}</td>
               </tr>
             ))}
@@ -5222,7 +5239,8 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
   const successCount = enriched.filter(q => q._st === "success").length;
   const lostCount = enriched.filter(q => q._st === "lost").length;
   const openList = enriched.filter(q => q._st === "open");
-  const conv = total ? Math.round((successCount / total) * 100) : 0;
+  const conv = total ? Math.round((successCount / total) * 100) : 0;                 // per quote
+  const convCust = customerConv(enriched, q => q._st === "success");                 // per customer (default)
   const pipeline = openList.reduce((s, q) => s + q._value, 0);
   const followupCount = openList.filter(q => q._fu.due).length;
 
@@ -5283,7 +5301,7 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
       <div className="stats-grid">
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{total}</div><div className="stat-lbl">Quotes sent</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{successCount}</div><div className="stat-lbl">Success</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{conv}%</div><div className="stat-lbl">Conversion</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{convCust.pct}%</div><div className="stat-lbl">Conversion — customers ({convCust.won}/{convCust.customers}) · per quote {conv}%</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {pipeline.toFixed(0)}</div><div className="stat-lbl">Open pipeline (est.)</div></div>
       </div>
 
