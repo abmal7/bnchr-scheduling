@@ -78,6 +78,18 @@ const jobSuccessful = (j) => DONE_STATUSES.includes(j.status) || j.truck_status 
 const jobBookedStage = (j) => j.status !== "cancelled" && j.status !== "incomplete" && !jobStarted(j) && !jobSuccessful(j);
 // "Most recent action" timestamp for history sorting: last save wins,
 // falling back to schedule/creation time for rows that predate updated_at.
+// Elapsed on-site time: Start Job → Complete Job
+const jobDurationMin = (j) => {
+  if (!j.started_at || !j.completed_at) return null;
+  const mins = Math.round((new Date(j.completed_at) - new Date(j.started_at)) / 60000);
+  return mins >= 0 ? mins : null;
+};
+const fmtDuration = (mins) => {
+  if (mins == null) return "";
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+};
 const lastAction = (j) => new Date(j.updated_at || j.items_edited_at || j.cancelled_at || j.incomplete_at || j.scheduled_at || j.created_at || 0).getTime();
 // Verification timestamps: keep/assign a time when a check completes, clear when it un-completes
 const verStamp = (job, key, done) => {
@@ -1080,7 +1092,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at"]);
 async function updateJob(id, patch) {
   const clean = { updated_at: new Date().toISOString() }; // every save stamps "last action"
   Object.keys(patch || {}).forEach(k => { if (JOB_COLUMNS.has(k)) clean[k] = patch[k]; });
@@ -3207,6 +3219,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
             <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--muted)" }}>
               Payment: <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span>
               {" · "}Parts: {j.parts_status || "pending"} · Truck: {j.truck_status || "scheduled"}
+              {jobDurationMin(j) != null && <>{" · "}⏱ Job time: <strong>{fmtDuration(jobDurationMin(j))}</strong></>}
             </div>
           </div>
         </div>
@@ -4095,7 +4108,7 @@ function TechJobCard({ job, index, onUpdate }) {
   const started = j.truck_status === "processing" || completed;
   const partsReceived = !!j.parts_received || j.truck_status === "arrived" || started;
 
-  const startJob = () => patch({ truck_status: "processing", status: "on_site" }); // pill shows "Started"
+  const startJob = () => patch({ truck_status: "processing", status: "on_site", started_at: j.started_at || new Date().toISOString() }); // pill shows "Started"
   const toggleOrd = (id) => {
     const tech_checks_order = { ...ordChecks, [id]: !ordChecks[id] };
     const done = productItems.length > 0 && productItems.every(it => tech_checks_order[it.id]);
@@ -4148,7 +4161,7 @@ function TechJobCard({ job, index, onUpdate }) {
   const canComplete = !hasProducts || (s2done && s3done);
   const complete = () => {
     if (!canComplete || completed) return;
-    const p = { truck_status: "completed", status: "done" };
+    const p = { truck_status: "completed", status: "done", completed_at: new Date().toISOString() };
     if (hasDontFit) {
       p.partial_completion = true;
       p.unfitted_items = dontFitItems.map(it => `${it.qty}× ${it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name} — ${mism[it.id].reason}`).join(" · ");
@@ -4373,7 +4386,7 @@ function TechJobCard({ job, index, onUpdate }) {
         )}
 
         {/* Stage 4 · Complete */}
-        <Stage num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? "done" : null}>
+        <Stage num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? (jobDurationMin(j) != null ? fmtDuration(jobDurationMin(j)) : "done") : null}>
           {!completed && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div>
@@ -4382,6 +4395,7 @@ function TechJobCard({ job, index, onUpdate }) {
                   {hasDontFit ? "Complete Job (partial — skip don't-fit items)" : "Complete Job"}
                 </button>
                 {!canComplete && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>Finish both verifications to unlock.</span>}
+                {j.started_at && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>⏱ Started {fmtDuration(Math.max(0, Math.round((Date.now() - new Date(j.started_at)) / 60000)))} ago</div>}
               </div>
               {hasDontFit && !confirmStop && (
                 <button type="button" className="btn btn-sm" style={{ alignSelf: "flex-start", background: "#FEE2E2", border: "1px solid #DC2626", color: "#991B1B", fontWeight: 700 }} onClick={() => setConfirmStop(true)}>⛔ Stop job — mark incomplete</button>
