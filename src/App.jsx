@@ -1122,6 +1122,18 @@ async function updateCar(id, patch) {
 async function deleteCar(id) {
   try { await sb(`/customer_cars?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
 }
+// Upload a car-registration image to Supabase Storage; returns its public URL.
+async function uploadCarPhoto(file, customerId) {
+  const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+  const path = `${customerId || "cust"}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/car-photos/${path}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": file.type || "image/jpeg" },
+    body: file,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return `${SUPABASE_URL}/storage/v1/object/public/car-photos/${path}`;
+}
 async function updateAddress(id, patch) {
   try { await sb(`/customer_addresses?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
 }
@@ -2274,6 +2286,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
                       {start && occ ? (
                         <>
                           <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isDone ? "✓ " : ""}{isOT ? "⏱ " : ""}{shortService(occ.service_type)}</div>
+                          <div style={{ fontSize: 9.5, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={occ.customer_name || ""}>{occ.customer_name || ""}</div>
                           <div style={{ fontSize: 9, fontWeight: 600, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.customer_mobile || ""}</div>
                           <div style={{ fontSize: 9, opacity: .8, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.area || ""}</div>
                         </>
@@ -4661,10 +4674,26 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
 // ─── Add Car Modal ────────────────────────────────────────────────────────────
 function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
   const [f, setF] = useState(editCar
-    ? { brand: editCar.brand || "", model: editCar.model || "", year: editCar.year || "", plate: editCar.plate || "" }
-    : { brand: "", model: "", year: "", plate: "" });
+    ? { brand: editCar.brand || "", model: editCar.model || "", year: editCar.year || "", plate: editCar.plate || "", reg_photo: editCar.reg_photo || "" }
+    : { brand: "", model: "", year: "", plate: "", reg_photo: "" });
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [upErr, setUpErr] = useState("");
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
+
+  const pickPhoto = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 8 * 1024 * 1024) { setUpErr("Image too large (max 8 MB)."); return; }
+    setUpErr(""); setUploading(true);
+    try {
+      const url = await uploadCarPhoto(file, customer.id);
+      setF(p => ({ ...p, reg_photo: url }));
+    } catch (err) {
+      setUpErr("Upload failed — is the car-photos bucket set up?");
+    }
+    setUploading(false);
+  };
 
   const save = async () => {
     if (!f.brand || (!editCar && !f.model)) return; // imported cars may lack model — editable without one
@@ -4693,6 +4722,23 @@ function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
             <div className="form-field"><label>Year</label><ComboBox value={f.year} onChange={(v) => setF(p => ({ ...p, year: v }))} options={carYears} placeholder="2023" /></div>
             <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v }))} options={modelsFor(f.brand)} placeholder="Land Cruiser" /></div>
             <div className="form-field"><label>VIN</label><input value={f.plate} onChange={set("plate")} placeholder="VIN" /></div>
+            <div className="form-field form-full">
+              <label>Car registration photo</label>
+              {f.reg_photo ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <a href={f.reg_photo} target="_blank" rel="noreferrer">
+                    <img src={f.reg_photo} alt="registration" style={{ height: 54, borderRadius: 6, border: "1px solid var(--border)", objectFit: "cover" }} />
+                  </a>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setF(p => ({ ...p, reg_photo: "" }))}>Remove</button>
+                </div>
+              ) : (
+                <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer", display: "inline-block" }}>
+                  {uploading ? "Uploading…" : "📷 Upload photo"}
+                  <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={pickPhoto} disabled={uploading} />
+                </label>
+              )}
+              {upErr && <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 4 }}>{upErr}</div>}
+            </div>
           </div>
         </div>
         <div className="modal-footer">
