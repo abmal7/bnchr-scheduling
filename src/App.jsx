@@ -42,7 +42,7 @@ const PASSWORD = "b7vk392";              // master — Ali only
 const DIST_PASSWORD = "dst5926";         // distributor
 const PURCH_PASSWORD = "prc4183";        // purchaser
 // Per-truck technician logins — each truck has its own password.
-// Edit these codes as needed; only activeTrucks() are offered at login.
+// Edit these codes as needed; only ACTIVE_TRUCKS are offered at login.
 const TRUCK_PASSWORDS = {
   T1: "t1x482",
   T2: "t2m945",
@@ -382,7 +382,7 @@ function TruckPills({ value, onChange }) {
   };
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      {activeTrucks().map(t => {
+      {ACTIVE_TRUCKS.map(t => {
         const c = truckColor(t);
         const active = value === t;
         return (
@@ -407,7 +407,7 @@ function TruckPills({ value, onChange }) {
 
 // ─── Reschedule Modal ─────────────────────────────────────────────────────────
 function RescheduleModal({ job, jobs, onClose, onSaved }) {
-  const [truck, setTruck] = useState(job.assigned_truck || activeTrucks()[0]);
+  const [truck, setTruck] = useState(job.assigned_truck || ACTIVE_TRUCKS[0]);
   const [dateStr, setDateStr] = useState(job.scheduled_date || (job.scheduled_at ? new Date(job.scheduled_at).toISOString().split("T")[0] : today()));
   const [duration, setDuration] = useState(Number(job.duration) || 1);
   const [startHour, setStartHour] = useState(null);
@@ -670,42 +670,12 @@ async function searchTires(q) {
 }
 
 // ─── Truck config (active trucks + working hours, 24h) ────────────────────────
-// Live truck config — seeded with the current setup, replaced at startup by the
-// truck_config table so it's editable in Settings without a code deploy.
-let TRUCK_CONFIG = {
-  T1: { start: 11, end: 19 },
-  T2: { start: 12, end: 20 },
-  T4: { start: 13, end: 21 },
+const TRUCK_CONFIG = {
+  T1: { start: 11, end: 19 }, // 11am–7pm
+  T2: { start: 12, end: 20 }, // 12pm–8pm
+  T4: { start: 13, end: 21 }, // 1pm–9pm
 };
-let TRUCK_ORDER = ["T1", "T2", "T4"];
-// active trucks in display order (function, not a frozen constant)
-const activeTrucks = () => TRUCK_ORDER.filter(t => TRUCK_CONFIG[t]);
-async function fetchTruckConfig() {
-  try {
-    const rows = await sbAll("/truck_config?select=*&order=sort_order.asc");
-    if (rows && rows.length) {
-      const cfg = {}, order = [];
-      rows.forEach(r => {
-        order.push(r.truck);
-        if (r.active) cfg[r.truck] = { start: Number(r.start_hour), end: Number(r.end_hour) };
-      });
-      TRUCK_CONFIG = cfg;
-      TRUCK_ORDER = order;
-    }
-    return rows || [];
-  } catch { return []; }
-}
-async function saveTruckConfig(truck, patch) {
-  try {
-    await sb(`/truck_config?truck=eq.${truck}`, { method: "PATCH", prefer: "return=minimal",
-      body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }) });
-    return true;
-  } catch (e) { alert("Could not save truck settings: " + (e.message || e)); return false; }
-}
-async function addTruckConfig(row) {
-  try { await sb("/truck_config", { method: "POST", prefer: "return=minimal", body: JSON.stringify(row) }); return true; }
-  catch (e) { alert("Could not add truck: " + (e.message || e)); return false; }
-}
+const ACTIVE_TRUCKS = Object.keys(TRUCK_CONFIG);
 
 // Truck colors (all 6 defined; only active trucks render). { solid, bg, text }
 const TRUCK_COLORS = {
@@ -2229,7 +2199,7 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
 // start; the job spans `duration` consecutive hours. Shows booked slots.
 function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, onPick, onJobClick, excludeId }) {
   const allHours = [];
-  activeTrucks().forEach(t => truckHours(t).forEach(h => { if (!allHours.includes(h)) allHours.push(h); }));
+  ACTIVE_TRUCKS.forEach(t => truckHours(t).forEach(h => { if (!allHours.includes(h)) allHours.push(h); }));
   // include overtime rows for hours actually booked outside regular time on this date
   const regularSet = new Set(allHours);
   const otRowHours = new Set();
@@ -2262,7 +2232,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
   // a booked cell shows the start label only on the job's first hour, spanning visually
   const isJobStart = (job, hour) => jobHours(job)[0] === hour;
 
-  const gridCols = `48px repeat(${activeTrucks().length}, 1fr)`;
+  const gridCols = `48px repeat(${ACTIVE_TRUCKS.length}, 1fr)`;
 
   return (
     <div style={{ overflowX: "auto" }}>
@@ -2270,7 +2240,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
         {/* Header row */}
         <div style={{ display: "grid", gridTemplateColumns: gridCols, gap: 6, marginBottom: 6 }}>
           <div />
-          {activeTrucks().map(t => {
+          {ACTIVE_TRUCKS.map(t => {
             const c = truckColor(t);
             return (
               <div key={t} style={{ borderRadius: 10, background: c.solid, color: "#fff", padding: "7px 4px", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,.08)" }}>
@@ -2287,7 +2257,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
               <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 4, fontSize: 11, color: otRowHours.has(hour) ? "#B45309" : "var(--muted)", fontWeight: otRowHours.has(hour) ? 700 : 600 }}>
                 {otRowHours.has(hour) ? "⏱" : ""}{hourLabel(hour).replace(":00", "")}
               </div>
-              {activeTrucks().map(truck => {
+              {ACTIVE_TRUCKS.map(truck => {
                 const c = truckColor(truck);
                 const works = truckHours(truck).includes(hour);
                 const otOcc = !works ? jobAt(truck, hour) : null; // overtime booking outside regular hours
@@ -2347,7 +2317,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10, fontSize: 11, color: "var(--muted)" }}>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, border: "1px solid var(--border)", background: "#fff" }} /> Free</span>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "var(--accent)" }} /> Selected</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(activeTrucks()[0]).bg, borderLeft: `3px solid ${truckColor(activeTrucks()[0]).solid}` }} /> Booked</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(ACTIVE_TRUCKS[0]).bg, borderLeft: `3px solid ${truckColor(ACTIVE_TRUCKS[0]).solid}` }} /> Booked</span>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, border: "1px dashed #E8D9B5", background: "#FAFAF8" }} /> Won't fit {duration}h</span>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "#FEF3C7", borderLeft: "3px solid #F59E0B" }} /> Overtime</span>
           <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "#86EFAC", borderLeft: "3px solid #16A34A" }} /> ✓ Done</span>
@@ -3557,7 +3527,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
             {(() => {
               const d = filterDate || today();
               const otByTruck = {};
-              activeTrucks().forEach(t => { otByTruck[t] = 0; });
+              ACTIVE_TRUCKS.forEach(t => { otByTruck[t] = 0; });
               jobs.forEach(j => {
                 if (!j.is_overtime) return;
                 const jd = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
@@ -3568,7 +3538,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
               return (
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12, padding: "8px 12px", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8 }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: "#B45309" }}>⏱ Overtime today:</span>
-                  {activeTrucks().filter(t => otByTruck[t] > 0).map(t => (
+                  {ACTIVE_TRUCKS.filter(t => otByTruck[t] > 0).map(t => (
                     <span key={t} style={{ fontSize: 12, fontWeight: 600, color: truckColor(t).text, background: truckColor(t).bg, border: `1px solid ${truckColor(t).solid}`, borderRadius: 6, padding: "2px 8px" }}>
                       {t}: {otByTruck[t]} order{otByTruck[t] > 1 ? "s" : ""}
                     </span>
@@ -4015,7 +3985,7 @@ function DistributorCard({ job, onUpdate }) {
 
 // ─── Technician Dashboard (per truck) ─────────────────────────────────────────
 function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck }) {
-  const [pickTruck, setPickTruck] = useState(activeTrucks()[0]);
+  const [pickTruck, setPickTruck] = useState(ACTIVE_TRUCKS[0]);
   const myTruck = lockedTruck || pickTruck;
   const todayJobs = jobs
     .filter(j => j.assigned_truck === myTruck && j.techs_released && j.status !== "cancelled")
@@ -4066,7 +4036,7 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck }) {
 
 // ─── Technician History: completed jobs (own page to keep My Jobs clean) ──────
 function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
-  const [pickTruck, setPickTruck] = useState(activeTrucks()[0]);
+  const [pickTruck, setPickTruck] = useState(ACTIVE_TRUCKS[0]);
   const myTruck = lockedTruck || pickTruck;
   const [dateStr, setDateStr] = useState(today());
   const isDone = (j) => j.truck_status === "completed" || j.status === "done" || j.status === "incomplete";
@@ -4986,119 +4956,6 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
 
 
 
-// ─── Truck Settings (owner / sales / purchaser) ───────────────────────────────
-function TruckSettingsView({ rows, onReload }) {
-  const [saving, setSaving] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [newTruck, setNewTruck] = useState({ truck: "", start_hour: 11, end_hour: 19 });
-
-  const hourOpts = [];
-  for (let h = 6; h <= 23; h++) hourOpts.push(h);
-
-  const setHours = async (truck, field, val) => {
-    setSaving(truck);
-    await saveTruckConfig(truck, { [field]: Number(val) });
-    await onReload();
-    setSaving("");
-  };
-  const toggleActive = async (truck, active) => {
-    setSaving(truck);
-    await saveTruckConfig(truck, { active });
-    await onReload();
-    setSaving("");
-  };
-  const addTruck = async () => {
-    const code = (newTruck.truck || "").trim().toUpperCase();
-    if (!code) { alert("Enter a truck code, e.g. T7"); return; }
-    if (rows.some(r => r.truck === code)) { alert(code + " already exists."); return; }
-    if (Number(newTruck.end_hour) <= Number(newTruck.start_hour)) { alert("End time must be after start time."); return; }
-    setAdding(true);
-    const ok = await addTruckConfig({
-      truck: code, active: true,
-      start_hour: Number(newTruck.start_hour), end_hour: Number(newTruck.end_hour),
-      sort_order: (Math.max(0, ...rows.map(r => r.sort_order || 0)) + 1),
-    });
-    if (ok) { setNewTruck({ truck: "", start_hour: 11, end_hour: 19 }); await onReload(); }
-    setAdding(false);
-  };
-
-  const sorted = [...rows].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", padding: "8px 10px", borderBottom: "1px solid var(--border)" };
-  const td = { padding: "8px 10px", fontSize: 13, borderBottom: "1px solid var(--border)" };
-
-  return (
-    <>
-      <div className="page-header"><div className="page-title">Truck Settings</div></div>
-
-      <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-        <div className="card-header"><h3>Trucks & working hours</h3></div>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Truck</th><th style={th}>Active</th><th style={th}>Start</th><th style={th}>End</th><th style={th}>Shift</th></tr></thead>
-          <tbody>
-            {sorted.map(r => {
-              const c = truckColor(r.truck);
-              return (
-                <tr key={r.truck} style={{ opacity: r.active ? 1 : 0.55 }}>
-                  <td style={{ ...td, fontWeight: 700 }}>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
-                      <span style={{ width: 12, height: 12, borderRadius: 3, background: c.solid }} />{r.truck}
-                    </span>
-                  </td>
-                  <td style={td}>
-                    <button className={`btn btn-sm ${r.active ? "btn-primary" : "btn-ghost"}`} disabled={saving === r.truck}
-                      onClick={() => toggleActive(r.truck, !r.active)}>{r.active ? "Active" : "Off"}</button>
-                  </td>
-                  <td style={td}>
-                    <select className="filter-input" value={r.start_hour} disabled={saving === r.truck}
-                      onChange={e => setHours(r.truck, "start_hour", e.target.value)}>
-                      {hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}
-                    </select>
-                  </td>
-                  <td style={td}>
-                    <select className="filter-input" value={r.end_hour} disabled={saving === r.truck}
-                      onChange={e => setHours(r.truck, "end_hour", e.target.value)}>
-                      {hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}
-                    </select>
-                  </td>
-                  <td style={{ ...td, color: "var(--muted)" }}>{hourLabel(r.start_hour)} – {hourLabel(r.end_hour)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-header"><h3>Add a truck</h3></div>
-        <div className="card-body" style={{ padding: "14px 16px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div className="form-field" style={{ maxWidth: 110 }}>
-            <label>Code</label>
-            <input className="filter-input" placeholder="T7" value={newTruck.truck}
-              onChange={e => setNewTruck(p => ({ ...p, truck: e.target.value }))} />
-          </div>
-          <div className="form-field" style={{ maxWidth: 130 }}>
-            <label>Start</label>
-            <select className="filter-input" value={newTruck.start_hour} onChange={e => setNewTruck(p => ({ ...p, start_hour: e.target.value }))}>
-              {hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}
-            </select>
-          </div>
-          <div className="form-field" style={{ maxWidth: 130 }}>
-            <label>End</label>
-            <select className="filter-input" value={newTruck.end_hour} onChange={e => setNewTruck(p => ({ ...p, end_hour: e.target.value }))}>
-              {hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}
-            </select>
-          </div>
-          <button className="btn btn-primary" onClick={addTruck} disabled={adding}>{adding ? "Adding…" : "+ Add truck"}</button>
-        </div>
-      </div>
-
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 20 }}>
-        Changes apply to the Day Board immediately for everyone. Turning a truck off hides it from new bookings and the board; existing orders on it are never affected. Colors are preset (T1–T6).
-      </div>
-    </>
-  );
-}
-
 // ─── Reports (sales) ──────────────────────────────────────────────────────────
 // Auto-generated replacement for the manual daily/monthly Excel reports.
 // Everything computes live from jobs + quotes + customers. Trengo call counts
@@ -5535,8 +5392,15 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
         const isLost = q._st === "lost";
         const due = q._st === "open" && q._fu.due;
         const custName = q._cust?.name || q.customer_name || "";
-        const front = q.staggered ? (q.lines || []).find(l => l.position === "front") : null;
-        const rear = q.staggered ? (q.lines || []).find(l => l.position === "rear") : null;
+        // Staggered when flagged, OR positions are tagged, OR two lines differ (front≠rear).
+        const _ls = q.lines || [];
+        const _byPos = { front: _ls.find(l => l.position === "front"), rear: _ls.find(l => l.position === "rear") };
+        const _twoDiffer = _ls.length === 2 && (
+          `${_ls[0].brand}${_ls[0].pattern}${_ls[0].size}` !== `${_ls[1].brand}${_ls[1].pattern}${_ls[1].size}`
+        );
+        const isStag = q.staggered || (_byPos.front && _byPos.rear) || _twoDiffer;
+        const front = isStag ? (_byPos.front || _ls[0]) : null;
+        const rear = isStag ? (_byPos.rear || _ls[1]) : null;
         const borderCol = isSuccess ? "var(--success)" : isLost ? "#DC2626" : due ? "#F59E0B" : "var(--border)";
         return (
           <div key={q.id} className="dist-card" style={{ borderLeft: `3px solid ${borderCol}`, opacity: isLost ? .8 : 1 }}>
@@ -5572,11 +5436,11 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
               </div>
             )}
 
-            {q.staggered ? (
+            {isStag ? (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
                 <div>
-                  <div>F: <strong>{front?.brand} {front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {front?.size}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(front?.price || 0).toFixed(0)} KD</span></div>
-                  <div>R: <strong>{rear?.brand} {rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {rear?.size}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(rear?.price || 0).toFixed(0)} KD</span></div>
+                  <div><span style={{ color: "var(--muted)", fontWeight: 700 }}>Front</span> <strong>{front?.brand} {front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {front?.size}{front?.year ? ` · ${front.year}` : ""}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(front?.price || 0).toFixed(0)} KD</span></div>
+                  <div style={{ marginTop: 2 }}><span style={{ color: "var(--muted)", fontWeight: 700 }}>Rear</span> <strong>{rear?.brand} {rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {rear?.size}{rear?.year ? ` · ${rear.year}` : ""}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(rear?.price || 0).toFixed(0)} KD</span></div>
                 </div>
                 {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, null)}>Book</button>}
               </div>
@@ -5655,7 +5519,7 @@ const loadSession = () => {
 export default function App() {
   const [authed, setAuthed] = useState(() => !!loadSession());
   const [role, setRole] = useState(() => loadSession()?.role || "sales");
-  const [loginTruck, setLoginTruck] = useState(activeTrucks()[0]); // chosen truck at login
+  const [loginTruck, setLoginTruck] = useState(ACTIVE_TRUCKS[0]); // chosen truck at login
   const [sessionTruck, setSessionTruck] = useState(() => loadSession()?.truck || null); // locked truck (technician)
   const [loginAgent, setLoginAgent] = useState(SALES_AGENTS[0]);  // chosen agent at login
   const [sessionAgent, setSessionAgent] = useState(() => loadSession()?.agent || null); // locked agent (sales)
@@ -5669,8 +5533,6 @@ export default function App() {
   const [addresses, setAddresses] = useState([]);
   const [quotes, setQuotes] = useState([]);
   const [catalog, setCatalog] = useState([]); // parts catalog (engine oils, batteries)
-  const [truckCfg, setTruckCfg] = useState([]); // truck_config rows (Settings tab)
-  const [cfgTick, setCfgTick] = useState(0); // bump to re-render Day Board after a config change
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("schedule");
   const [selectedJob, setSelectedJob] = useState(null);
@@ -5733,8 +5595,7 @@ export default function App() {
   useEffect(() => {
     if (!authed) return;
     setLoading(true);
-    Promise.all([fetchTruckConfig(), fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes(), fetchCatalogItems()]).then(([tc, j, c, cr, ad, qs, cat]) => {
-      setTruckCfg(tc);
+    Promise.all([fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes(), fetchCatalogItems()]).then(([j, c, cr, ad, qs, cat]) => {
       setJobs(j);
       setQuotes(qs);
       setCatalog(cat);
@@ -5954,7 +5815,6 @@ export default function App() {
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
     { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
-    { key: "settings",   label: "Settings",        icon: "⚙️", roles: ["sales", "purchaser"] },
     { key: "history",    label: "History",         icon: "🕘", roles: ["sales", "purchaser"] },
     { key: "customers",  label: "Customers",       icon: "👥", roles: ["sales", "purchaser"] },
     { key: "myjobs",     label: "My Jobs",         icon: "🔧", roles: ["technician"] },
@@ -5984,7 +5844,7 @@ export default function App() {
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, marginBottom: 6 }}>Select your truck</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {activeTrucks().map(t => {
+                  {ACTIVE_TRUCKS.map(t => {
                     const c = truckColor(t);
                     const active = loginTruck === t;
                     return (
@@ -6079,16 +5939,13 @@ export default function App() {
           )}
 
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
-            <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
+            <ScheduleView jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
             <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "settings" && (
-            <TruckSettingsView rows={truckCfg} onReload={async () => { const tc = await fetchTruckConfig(); setTruckCfg(tc); setCfgTick(x => x + 1); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
