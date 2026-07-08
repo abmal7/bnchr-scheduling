@@ -53,7 +53,9 @@ const TRUCK_PASSWORDS = {
 const SALES_AGENT_PASSWORDS = {
   Alaa: "alz7264",
   Hussain: "hsn8317",
+  Ali: "ali2947",     // owner — unlocks profitability views
 };
+const OWNER_AGENTS = ["Ali"]; // never shown on the team's login pills
 const TRUCKS = ["T1", "T2", "T4", "T5", "T6"];
 
 const STATUS_FLOW = [
@@ -210,7 +212,7 @@ function catalogLabor(serviceName, variant, qty) {
 
 const LEAD_SOURCES = ["WhatsApp", "Signal", "Shopify", "Instagram", "Other"];
 // Active sales agents (edit here to add/remove)
-const SALES_AGENTS = ["Alaa", "Hussain"];
+const SALES_AGENTS = ["Alaa", "Hussain", "Ali"];
 // Suppliers for "other services" parts (editable; agent can also type a custom one)
 const OTHER_SUPPLIERS = [
   "Alamdar", "Hitish", "Korean Store", "Ahlia", "Porsche Dealer", "Al Babtain Group",
