@@ -4932,7 +4932,7 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
 // are not in the system yet, so inquiry-based metrics stay in Trengo for now.
 const MONTHLY_TARGET = 45000; // KWD — edit here when the target changes
 
-function ReportsView({ jobs, quotes, customers }) {
+function ReportsView({ jobs, quotes, customers, owner }) {
   const todayD = new Date(); todayD.setHours(0, 0, 0, 0);
   // LOCAL date string — never toISOString here: UTC conversion shifts
   // Kuwait's midnight back to the previous day and skews every preset.
@@ -5056,7 +5056,7 @@ function ReportsView({ jobs, quotes, customers }) {
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {fmtKD(ticket)}</div><div className="stat-lbl">Avg ticket</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{qConv}%</div><div className="stat-lbl">Quote conversion ({qSuccess}/{qInRange.length})</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{loyalC} / {newC}</div><div className="stat-lbl">Loyal / new customers</div></div>
-        {(() => {
+        {owner && (() => {
           const totalCost = svcRows.reduce((s, r) => s + r.cost, 0);
           const profit = totalSales - totalCost;
           const marginPct = totalSales ? Math.round((profit / totalSales) * 100) : 0;
@@ -5133,7 +5133,7 @@ function ReportsView({ jobs, quotes, customers }) {
           <span style={{ fontSize: 12, color: "var(--muted)" }}>Tires {totalSales ? Math.round((tireKD / totalSales) * 100) : 0}% · Other {totalSales ? Math.round(((totalSales - tireKD) / totalSales) * 100) : 0}%</span>
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Service</th><th style={th}>Number</th><th style={th}>KD</th><th style={th}>% of sales</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
+          <thead><tr><th style={th}>Service</th><th style={th}>Number</th><th style={th}>KD</th><th style={th}>% of sales</th>{owner && <><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></>}</tr></thead>
           <tbody>
             {svcRows.map(r => (
               <tr key={r.type}>
@@ -5141,9 +5141,11 @@ function ReportsView({ jobs, quotes, customers }) {
                 <td style={td}>{r.n}</td>
                 <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(r.kd)}</td>
                 <td style={td}>{totalSales ? Math.round((r.kd / totalSales) * 100) : 0}%</td>
-                <td style={td}>{fmtKD(r.cost)}</td>
-                <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{fmtKD(r.kd - r.cost)}</td>
-                <td style={td}>{r.kd ? Math.round(((r.kd - r.cost) / r.kd) * 100) : 0}%</td>
+                {owner && <>
+                  <td style={td}>{fmtKD(r.cost)}</td>
+                  <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{fmtKD(r.kd - r.cost)}</td>
+                  <td style={td}>{r.kd ? Math.round(((r.kd - r.cost) / r.kd) * 100) : 0}%</td>
+                </>}
               </tr>
             ))}
             {svcRows.length === 0 && <tr><td style={td} colSpan={5}>No orders in this range.</td></tr>}
@@ -5182,8 +5184,13 @@ function ReportsView({ jobs, quotes, customers }) {
         );
       })()}
 
+      {!owner && zeroCostItems > 0 && (
+        <div style={{ fontSize: 12, color: "#B45309", marginBottom: 8 }}>
+          ⚠ {zeroCostItems} item{zeroCostItems > 1 ? "s" : ""} in this range missing a cost — please fill the cost when adding parts.
+        </div>
+      )}
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 20 }}>
-        Profit = revenue minus product cost (labor counts as contribution). Call counts and total inquiries live in Trengo and are not included here. Conversion above is quote-based.
+        {owner ? "Profit = revenue minus product cost (labor counts as contribution). " : ""}Call counts and total inquiries live in Trengo and are not included here. Conversion above is quote-based.
       </div>
     </>
   );
@@ -5446,6 +5453,7 @@ export default function App() {
   const [sessionTruck, setSessionTruck] = useState(() => loadSession()?.truck || null); // locked truck (technician)
   const [loginAgent, setLoginAgent] = useState(SALES_AGENTS[0]);  // chosen agent at login
   const [sessionAgent, setSessionAgent] = useState(() => loadSession()?.agent || null); // locked agent (sales)
+  const [isOwner, setIsOwner] = useState(() => !!loadSession()?.owner); // profitability views
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState(false);
   const [jobs, setJobs] = useState([]);
@@ -5484,22 +5492,23 @@ export default function App() {
   const [showEditCustomer, setShowEditCustomer] = useState(false);
   const [usingMock, setUsingMock] = useState(false);
 
-  const saveSession = (truck, agent) => {
-    try { localStorage.setItem("bnchr_session", JSON.stringify({ role, truck, agent: agent || null })); } catch {}
+  const saveSession = (truck, agent, owner = false) => {
+    try { localStorage.setItem("bnchr_session", JSON.stringify({ role, truck, agent: agent || null, owner })); } catch {}
   };
   const login = () => {
     if (role === "technician") {
       // each truck has its own password; log in locked to that truck
-      if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setSessionAgent(null); setAuthed(true); setPwErr(false); saveSession(loginTruck, null); }
+      if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setSessionAgent(null); setIsOwner(false); setAuthed(true); setPwErr(false); saveSession(loginTruck, null); }
       else setPwErr(true);
     } else if (role === "sales" && pw === SALES_AGENT_PASSWORDS[loginAgent]) {
-      // per-agent login: orders auto-fill this agent
-      setSessionTruck(null); setSessionAgent(loginAgent); setAuthed(true); setPwErr(false); saveSession(null, loginAgent);
+      // per-agent login: orders auto-fill this agent; Ali's login unlocks profitability
+      const owner = OWNER_AGENTS.includes(loginAgent);
+      setSessionTruck(null); setSessionAgent(loginAgent); setIsOwner(owner); setAuthed(true); setPwErr(false); saveSession(null, loginAgent, owner);
     } else {
       const ok = role === "distributor" ? (pw === DIST_PASSWORD || pw === PASSWORD)
         : role === "purchaser" ? (pw === PURCH_PASSWORD || pw === PASSWORD)
         : pw === PASSWORD;
-      if (ok) { setSessionTruck(null); setSessionAgent(null); setAuthed(true); setPwErr(false); saveSession(null, null); }
+      if (ok) { const owner = pw === PASSWORD; setSessionTruck(null); setSessionAgent(null); setIsOwner(owner); setAuthed(true); setPwErr(false); saveSession(null, null, owner); }
       else setPwErr(true);
     }
   };
@@ -5854,7 +5863,7 @@ export default function App() {
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
-            <ReportsView jobs={jobs} quotes={quotes} customers={customers} />
+            <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
