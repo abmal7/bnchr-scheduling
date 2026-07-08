@@ -5454,6 +5454,7 @@ export default function App() {
   const [loginAgent, setLoginAgent] = useState(SALES_AGENTS[0]);  // chosen agent at login
   const [sessionAgent, setSessionAgent] = useState(() => loadSession()?.agent || null); // locked agent (sales)
   const [isOwner, setIsOwner] = useState(() => !!loadSession()?.owner); // profitability views
+  const [ownerMode, setOwnerMode] = useState(false); // discreet owner login (◆ on the login card)
   const [pw, setPw] = useState("");
   const [pwErr, setPwErr] = useState(false);
   const [jobs, setJobs] = useState([]);
@@ -5496,6 +5497,14 @@ export default function App() {
     try { localStorage.setItem("bnchr_session", JSON.stringify({ role, truck, agent: agent || null, owner })); } catch {}
   };
   const login = () => {
+    if (ownerMode) {
+      // owner door: Ali's password or master → sales dashboard as Ali, profitability unlocked
+      if (pw === SALES_AGENT_PASSWORDS.Ali || pw === PASSWORD) {
+        setRole("sales"); setSessionTruck(null); setSessionAgent("Ali"); setIsOwner(true);
+        setAuthed(true); setPwErr(false); saveSession(null, "Ali", true);
+      } else setPwErr(true);
+      return;
+    }
     if (role === "technician") {
       // each truck has its own password; log in locked to that truck
       if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setSessionAgent(null); setIsOwner(false); setAuthed(true); setPwErr(false); saveSession(loginTruck, null); }
@@ -5750,15 +5759,18 @@ export default function App() {
       <>
         <StyleTag />
         <div className="login-wrap">
-          <div className="login-box">
+          <div className="login-box" style={{ position: "relative" }}>
+            <button type="button" onClick={() => { setOwnerMode(o => !o); setPwErr(false); }}
+              style={{ position: "absolute", top: 10, right: 12, background: "none", border: "none", cursor: "pointer",
+                fontSize: 13, color: "var(--border)", padding: 4 }} aria-label="owner">◆</button>
             <h1>BNCHR<span>+</span></h1>
-            <p>Scheduling System · Internal</p>
-            <div className="role-grid">
+            <p>{ownerMode ? "Owner access" : "Scheduling System · Internal"}</p>
+            {!ownerMode && <div className="role-grid">
               {ROLES.map(r => (
                 <button key={r.key} className={`role-btn ${role === r.key ? "active" : ""}`} onClick={() => { setRole(r.key); setPwErr(false); }}>{r.label}</button>
               ))}
-            </div>
-            {role === "technician" && (
+            </div>}
+            {!ownerMode && role === "technician" && (
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, marginBottom: 6 }}>Select your truck</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -5777,11 +5789,11 @@ export default function App() {
                 </div>
               </div>
             )}
-            {role === "sales" && (
+            {!ownerMode && role === "sales" && (
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, marginBottom: 6 }}>Who's working?</div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {SALES_AGENTS.map(a => {
+                  {SALES_AGENTS.filter(a => !OWNER_AGENTS.includes(a)).map(a => {
                     const active = loginAgent === a;
                     return (
                       <button key={a} type="button" onClick={() => { setLoginAgent(a); setPwErr(false); }}
