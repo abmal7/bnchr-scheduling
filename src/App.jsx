@@ -1122,37 +1122,6 @@ async function updateCar(id, patch) {
 async function deleteCar(id) {
   try { await sb(`/customer_cars?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
 }
-// Read a car registration photo with AI and return {brand,model,year,vin}.
-// The image is sent for one-time extraction and is NEVER stored anywhere.
-async function readRegistration(file) {
-  const b64 = await new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result).split(",")[1]);
-    r.onerror = () => rej(new Error("read failed"));
-    r.readAsDataURL(file);
-  });
-  const media = file.type && file.type.startsWith("image/") ? file.type : "image/jpeg";
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: media, data: b64 } },
-          { type: "text", text: "This is a Kuwait vehicle registration from the MOI/Sahel app (بيانات المركبة). Read the value shown AFTER each Arabic label (Arabic reads right-to-left, so the value is to the LEFT of the label):\n• الصنع = brand/make\n• الصنف = model\n• سنة الصنع = manufacture year (4 digits)\n• رقم القاعدة = chassis/VIN (Latin letters + digits, e.g. 1HGCV1613MA605099)\nBrand and model are usually written in ARABIC — transliterate them to their standard ENGLISH names. Common brands: هوندا=Honda, تويوتا=Toyota, نيسان=Nissan, لكزس=Lexus, مرسيدس=Mercedes-Benz, بي ام دبليو=BMW, فورد=Ford, شيفروليه=Chevrolet, جي ام سي=GMC, دودج=Dodge, كيا=Kia, هيونداي=Hyundai, ميتسوبيشي=Mitsubishi, بورش=Porsche, رنج روفر=Range Rover, لاند روفر=Land Rover, جيب=Jeep, انفينيتي=Infiniti, مازda=Mazda. Common models: اكورد=Accord, كامري=Camry, كورولا=Corolla, باترول=Patrol, لاند كروزر=Land Cruiser, تاهو=Tahoe, يوكن=Yukon. The VIN (رقم القاعدة) is always in Latin characters — copy it EXACTLY. Respond with ONLY this JSON, no prose or code fences: {\"brand\":\"\",\"model\":\"\",\"year\":\"\",\"vin\":\"\"}. Leave a field \"\" only if truly unreadable." },
-        ],
-      }],
-    }),
-  });
-  if (!resp.ok) throw new Error(await resp.text());
-  const data = await resp.json();
-  const text = (data.content || []).map(c => c.text || "").join("").replace(/```json|```/g, "").trim();
-  const m = text.match(/\{[\s\S]*\}/);
-  return JSON.parse(m ? m[0] : text);
-}
 async function updateAddress(id, patch) {
   try { await sb(`/customer_addresses?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
 }
@@ -4696,33 +4665,7 @@ function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
     ? { brand: editCar.brand || "", model: editCar.model || "", year: editCar.year || "", plate: editCar.plate || "" }
     : { brand: "", model: "", year: "", plate: "" });
   const [saving, setSaving] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [scanMsg, setScanMsg] = useState("");
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
-
-  // Scan a registration photo → fill fields → discard the image (never stored)
-  const scanReg = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-picking the same file
-    if (!file) return;
-    setScanMsg(""); setScanning(true);
-    try {
-      const r = await readRegistration(file);
-      setF(p => ({
-        ...p,
-        brand: r.brand || p.brand,
-        model: r.model || p.model,
-        year: (r.year || "").toString().replace(/\D/g, "").slice(0, 4) || p.year,
-        plate: r.vin || p.plate,
-      }));
-      const got = ["brand", "model", "year", "vin"].filter(k => r[k]);
-      setScanMsg(got.length ? `Read ${got.join(", ")} — please check before saving.` : "Couldn't read the details — enter them manually.");
-    } catch (err) {
-      console.error("Registration scan error:", err);
-      setScanMsg("Scan failed (" + String(err.message || err).slice(0, 80) + ") — enter the details manually.");
-    }
-    setScanning(false);
-  };
 
   const save = async () => {
     if (!f.brand || (!editCar && !f.model)) return; // imported cars may lack model — editable without one
@@ -4746,14 +4689,6 @@ function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
-          <div style={{ marginBottom: 12 }}>
-            <label className="btn btn-ghost btn-sm" style={{ cursor: scanning ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
-              {scanning ? "Reading…" : "📷 Scan registration"}
-              <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={scanReg} disabled={scanning} />
-            </label>
-            <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>fills the fields — the photo isn't saved</span>
-            {scanMsg && <div style={{ fontSize: 11.5, color: scanMsg.startsWith("Read") ? "#15803D" : "#B45309", marginTop: 5 }}>{scanMsg}</div>}
-          </div>
           <div className="form-grid">
             <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
             <div className="form-field"><label>Year</label><ComboBox value={f.year} onChange={(v) => setF(p => ({ ...p, year: v }))} options={carYears} placeholder="2023" /></div>
