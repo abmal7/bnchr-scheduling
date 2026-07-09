@@ -5235,6 +5235,99 @@ function TruckSettingsView({ rows, onReload, owner }) {
   );
 }
 
+// ─── Costs to fill (purchaser / owner) ────────────────────────────────────────
+// Focused worklist of orders whose collectable items are missing a cost.
+// Purchaser fills cost per item; saves straight onto the order for accurate margins.
+function CostsView({ jobs, onUpdate }) {
+  const [savingId, setSavingId] = useState("");
+  const [drafts, setDrafts] = useState({}); // {jobId: {itemId: cost}}
+  const [showAll, setShowAll] = useState(false);
+
+  const needsCost = (it) => ((it.kind === "tire" && it.tire_id) || it.kind === "part") && !(Number(it.cost) > 0);
+  const rows = jobs
+    .filter(j => j.status !== "cancelled")
+    .filter(j => (j.items || []).some(needsCost) || (showAll && (j.items || []).some(it => (it.kind === "tire" && it.tire_id) || it.kind === "part")))
+    .sort((a, b) => new Date(b.scheduled_at || b.created_at) - new Date(a.scheduled_at || a.created_at));
+
+  const openCount = jobs.filter(j => j.status !== "cancelled" && (j.items || []).some(needsCost)).length;
+
+  const setDraft = (jobId, itemId, val) => setDrafts(d => ({ ...d, [jobId]: { ...(d[jobId] || {}), [itemId]: val } }));
+
+  const saveJob = async (job) => {
+    const d = drafts[job.id] || {};
+    const items = (job.items || []).map(it => {
+      const v = d[it.id];
+      return (v !== undefined && v !== "") ? { ...it, cost: Number(v) || 0 } : it;
+    });
+    setSavingId(job.id);
+    await onUpdate(job.id, { items });
+    setDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
+    setSavingId("");
+  };
+
+  const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", padding: "6px 8px", borderBottom: "1px solid var(--border)" };
+  const td = { padding: "6px 8px", fontSize: 13, borderBottom: "1px solid var(--border)" };
+
+  return (
+    <>
+      <div className="page-header">
+        <div>
+          <div className="page-title">Costs to fill</div>
+          <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 2 }}>
+            {openCount === 0 ? "✓ All items have costs — margins are complete." : `${openCount} order${openCount !== 1 ? "s" : ""} with items missing a cost.`}
+          </div>
+        </div>
+        <button className={`btn btn-sm ${showAll ? "btn-primary" : "btn-ghost"}`} onClick={() => setShowAll(s => !s)}>{showAll ? "Showing all orders" : "Show only missing"}</button>
+      </div>
+
+      {rows.length === 0 && <div className="empty"><h3>Nothing to fill</h3><p>Every item across your orders has a cost entered. Margins in Reports are accurate.</p></div>}
+
+      {rows.map(job => {
+        const items = (job.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
+        const missing = items.filter(needsCost).length;
+        const dirty = drafts[job.id] && Object.values(drafts[job.id]).some(v => v !== "" && v !== undefined);
+        return (
+          <div key={job.id} className="card" style={{ marginBottom: 14, borderLeft: missing ? "3px solid #B45309" : "3px solid var(--success)" }}>
+            <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+              <h3 style={{ margin: 0 }}>{job.customer_name} <span style={{ fontSize: 12, fontWeight: 500, color: "var(--muted)" }}>· {job.customer_mobile} · {fmtDate(job.scheduled_at)} · {job.assigned_truck || "—"}{job.invoice_no ? ` · ${job.invoice_no}` : ""}</span></h3>
+              {missing > 0 ? <span style={{ fontSize: 11, fontWeight: 700, color: "#B45309" }}>{missing} missing</span> : <span style={{ fontSize: 11, fontWeight: 700, color: "var(--success)" }}>✓ complete</span>}
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={th}>Item</th><th style={th}>Supplier</th><th style={th}>Qty</th><th style={th}>Price</th><th style={th}>Cost (each)</th></tr></thead>
+                <tbody>
+                  {items.map(it => {
+                    const name = it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : it.name;
+                    const draftVal = (drafts[job.id] || {})[it.id];
+                    const has = Number(it.cost) > 0;
+                    return (
+                      <tr key={it.id} style={{ background: !has && draftVal === undefined ? "#FFFBEB" : "transparent" }}>
+                        <td style={{ ...td, fontWeight: 600 }}>{name}{it.sku ? <span style={{ fontSize: 10.5, color: "var(--muted)" }}> · {it.sku}</span> : ""}</td>
+                        <td style={{ ...td, color: "var(--muted)" }}>{it.supplier || "—"}</td>
+                        <td style={td}>{it.qty}</td>
+                        <td style={{ ...td, color: "var(--muted)" }}>{Number(it.unit_price) ? `${Number(it.unit_price).toFixed(3)}` : "—"}</td>
+                        <td style={td}>
+                          <input className="filter-input" style={{ width: 90 }} type="number" step="0.001" min="0"
+                            placeholder={has ? Number(it.cost).toFixed(3) : "0.000"}
+                            value={draftVal !== undefined ? draftVal : (has ? Number(it.cost) : "")}
+                            onChange={e => setDraft(job.id, it.id, e.target.value)} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding: "10px 12px", display: "flex", justifyContent: "flex-end" }}>
+              <button className="btn btn-primary btn-sm" disabled={!dirty || savingId === job.id} onClick={() => saveJob(job)}>{savingId === job.id ? "Saving…" : "Save costs"}</button>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 // ─── Reports (sales) ──────────────────────────────────────────────────────────
 // Auto-generated replacement for the manual daily/monthly Excel reports.
 // Everything computes live from jobs + quotes + customers. Trengo call counts
@@ -6101,6 +6194,7 @@ export default function App() {
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
     { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
+    { key: "costs",      label: "Costs",           icon: "💰", roles: ["purchaser"] },
     { key: "settings",   label: "Settings",        icon: "⚙️", roles: ["sales", "purchaser"] },
     { key: "history",    label: "History",         icon: "🕘", roles: ["sales", "purchaser"] },
     { key: "customers",  label: "Customers",       icon: "👥", roles: ["sales", "purchaser"] },
@@ -6233,6 +6327,9 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
             <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "costs" && (
+            <CostsView jobs={jobs} onUpdate={async (id, patch) => { const job = jobs.find(j => j.id === id); if (job) handleJobUpdate({ ...job, ...patch }); await updateJob(id, patch); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "settings" && (
             <TruckSettingsView owner={isOwner} rows={truckCfg} onReload={async () => { const tc = await fetchTruckConfig(); setTruckCfg(tc); setCfgTick(x => x + 1); }} />
