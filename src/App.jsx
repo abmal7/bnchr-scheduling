@@ -824,6 +824,50 @@ function isManualPin(link) {
   return /maps\.app\.goo\.gl|goo\.gl\/maps|\/maps\/place\/|[?&]q=-?\d|@-?\d/.test(link);
 }
 
+// PACI (Kuwait Finder) coordinates → exact Google Maps pin.
+// PACI shows X,Y = longitude,latitude; users may paste in either order, so we
+// detect: Kuwait latitude ≈ 28–31, longitude ≈ 46–49. Returns a pin URL or null.
+function paciToMapsLink(raw) {
+  const nums = String(raw || "").match(/-?\d+\.?\d*/g);
+  if (!nums || nums.length < 2) return null;
+  let a = parseFloat(nums[0]), b = parseFloat(nums[1]);
+  let lat, lng;
+  // latitude is the one in the ~29 range; longitude the ~48 range
+  if (a >= 28 && a <= 31) { lat = a; lng = b; }
+  else if (b >= 28 && b <= 31) { lat = b; lng = a; }
+  else return null; // neither looks like a Kuwait latitude
+  if (!(lng >= 46 && lng <= 49)) return null; // sanity: longitude must be Kuwait too
+  return `https://www.google.com/maps?q=${lat},${lng}`;
+}
+
+// Trigger widget: agent pastes PACI coordinates → generates exact pin on demand.
+// Never auto-fills; the link exists only because the agent tapped Use.
+function PaciPinBuilder({ onUse }) {
+  const [open, setOpen] = useState(false);
+  const [val, setVal] = useState("");
+  const link = paciToMapsLink(val);
+  return (
+    <div style={{ marginTop: 6 }}>
+      {!open ? (
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(true)}>📍 Build exact pin from Kuwait Finder</button>
+      ) : (
+        <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)" }}>
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 5 }}>
+            Look up the address on <a href="https://gis.paci.gov.kw/Search/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Kuwait Finder</a>, then paste its coordinates here (either order).
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <input className="filter-input" style={{ flex: 1, minWidth: 160 }} placeholder="e.g. 29.352738, 47.994202" value={val} onChange={e => setVal(e.target.value)} />
+            <button type="button" className="btn btn-primary btn-sm" disabled={!link} onClick={() => { onUse(link); setOpen(false); setVal(""); }}>Use this pin</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setOpen(false); setVal(""); }}>Cancel</button>
+          </div>
+          {val && !link && <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 4 }}>Those don't look like Kuwait coordinates — check you copied both numbers.</div>}
+          {link && <div style={{ fontSize: 11, color: "#15803D", marginTop: 4 }}>✓ Valid — <a href={link} target="_blank" rel="noreferrer" style={{ color: "#15803D", textDecoration: "underline" }}>preview pin</a> before using.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Kuwait areas → governorate (6 governorates) ──────────────────────────────
 // Used for clean, consistent area data + auto-derived governorate for reporting.
 const KW_AREAS = {
@@ -2908,6 +2952,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
                   </div>
                   {!isManualPin(f.map_link) && f.map_link && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>Rough block-level link. For pinpoint accuracy, paste the customer's shared location pin.</div>}
                   {isManualPin(f.map_link) && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>Using exact pin. <button type="button" onClick={() => setF(p => ({ ...p, map_link: buildMapsLink(p) }))} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", padding: 0, fontSize: 11, textDecoration: "underline" }}>Reset to auto from address</button></div>}
+                  <PaciPinBuilder onUse={(link) => setF(p => ({ ...p, map_link: link }))} />
                 </div>
                 {selectedCustomer && (
                   <div className="form-full" style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -4782,7 +4827,14 @@ function AddAddressModal({ customer, editAddr, onClose, onCreated, onUpdated }) 
             <div className="form-field"><label>Street</label><ComboBox value={f.street} onChange={(v) => setF(p => ({ ...p, street: v }))} options={streetsForArea(f.area)} placeholder="33 or name" /></div>
             <div className="form-field"><label>Lane (Jadda)</label><input value={f.lane} onChange={set("lane")} placeholder="optional" /></div>
             <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
-            <div className="form-field form-full"><label>Google Map Link</label><input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" /></div>
+            <div className="form-field form-full">
+              <label>Google Map Link</label>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" style={{ flex: 1 }} />
+                {f.map_link && <a href={f.map_link} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm" style={{ whiteSpace: "nowrap" }}>📍 Open</a>}
+              </div>
+              <PaciPinBuilder onUse={(link) => setF(p => ({ ...p, map_link: link }))} />
+            </div>
           </div>
         </div>
         <div className="modal-footer">
