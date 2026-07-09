@@ -1522,6 +1522,32 @@ function StatusPill({ status }) {
 
 // Distributor's item verification (checkpoint 2) → per-line "Collected" chip
 const itemOK = (job, itemId) => !!(job.item_checks || {})[itemId];
+
+// TEST ONLY — push an order through every stage in one shot, so a solo sales
+// tester can fill realistic history without switching into truck/distributor.
+// Builds the same check maps the real flow produces, so verification reads 4/4.
+function forceCompletePatch(job) {
+  const items = job.items || [];
+  const collectable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
+  const verifiable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
+  const now = new Date().toISOString();
+  const allTrue = (list) => { const m = {}; list.forEach(it => { m[it.id] = true; }); return m; };
+  return {
+    parts_released: true, techs_released: true, parts_received: true,
+    parts_status: "delivered", tech_arrival_match: true,
+    sales_match_confirmed: true,
+    item_checks: allTrue(collectable),
+    tech_checks_order: allTrue(verifiable),
+    tech_checks_car: allTrue(verifiable),
+    status: "done", truck_status: "completed",
+    started_at: job.started_at || now, completed_at: now,
+    payment_status: job.payment_status || "paid",
+    updated_at: now,
+  };
+}
+// hidden test-mode flag (owner flips it; persists on this device)
+const getTestMode = () => { try { return localStorage.getItem("bnchr_testmode") === "1"; } catch { return false; } };
+const setTestMode = (on) => { try { localStorage.setItem("bnchr_testmode", on ? "1" : "0"); } catch {} };
 function CollectedChip({ ok }) {
   if (!ok) return null;
   return <span style={{ fontSize: 9.5, fontWeight: 700, color: "#15803D", background: "#DCFCE7", border: "1px solid #BBF7D0", borderRadius: 5, padding: "1px 5px", whiteSpace: "nowrap", marginLeft: 5 }}>✓ Collected</span>;
@@ -3600,6 +3626,12 @@ function OrderActions({ job, onAction, compact }) {
         <span style={chip(isPaid)} onClick={stop(() => onAction({ payment_status: isPaid ? "pending" : "paid", status: isPaid ? job.status : (job.status === "draft" ? "booked" : job.status) }))}>{isPaid ? "✓" : "○"} Paid</span>
         <span style={chip(job.parts_released)} onClick={stop(() => onAction({ parts_released: !job.parts_released }))}>{job.parts_released ? "✓" : "○"} Parts Ready</span>
         <span style={chip(job.techs_released)} onClick={stop(() => onAction({ techs_released: !job.techs_released }))}>{job.techs_released ? "✓" : "○"} Show Technicians</span>
+        {getTestMode() && job.status !== "done" && job.status !== "cancelled" && (
+          <span style={{ borderRadius: 20, padding: "5px 12px", cursor: "pointer", background: "#7C3AED", color: "#fff", fontSize: 12, fontWeight: 700, userSelect: "none" }}
+            onClick={stop(() => { if (window.confirm("TEST: force this order through collection, verification, and completion?")) onAction(forceCompletePatch(job)); })}>
+            ⏩ Force complete (test)
+          </span>
+        )}
       </div>
     );
   }
@@ -5127,7 +5159,8 @@ function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer 
 
 
 // ─── Truck Settings (owner / sales / purchaser) ───────────────────────────────
-function TruckSettingsView({ rows, onReload }) {
+function TruckSettingsView({ rows, onReload, owner }) {
+  const [testOn, setTestOn] = useState(getTestMode());
   const [saving, setSaving] = useState("");
   const [adding, setAdding] = useState(false);
   const [newTruck, setNewTruck] = useState({ truck: "", start_hour: 11, end_hour: 19 });
@@ -5180,6 +5213,24 @@ function TruckSettingsView({ rows, onReload }) {
         </div>
       </div>
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 20 }}>Changes apply to the Day Board immediately for everyone. Turning a truck off hides it from new bookings and the board; existing orders are never affected. Colors are preset (T1–T6).</div>
+
+      {owner && (
+        <div className="card" style={{ marginBottom: 16, borderColor: testOn ? "#7C3AED" : "var(--border)" }}>
+          <div className="card-header"><h3>🧪 Testing mode {testOn ? "· ON" : ""}</h3></div>
+          <div style={{ padding: "14px 16px" }}>
+            <div style={{ fontSize: 13, marginBottom: 10 }}>
+              While ON, every order shows a purple <strong>⏩ Force complete (test)</strong> button that pushes it through collection, verification, and completion in one tap — so you can fill a realistic test schedule without signing into the truck and distributor.
+            </div>
+            <button className={`btn btn-sm ${testOn ? "btn-primary" : "btn-ghost"}`}
+              onClick={() => { const v = !testOn; setTestMode(v); setTestOn(v); }}>
+              {testOn ? "Turn testing mode OFF" : "Turn testing mode ON"}
+            </button>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+              This setting lives only on this device. <strong>Turn it OFF before going live</strong> so the team never sees the shortcut.
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -6184,7 +6235,7 @@ export default function App() {
             <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "settings" && (
-            <TruckSettingsView rows={truckCfg} onReload={async () => { const tc = await fetchTruckConfig(); setTruckCfg(tc); setCfgTick(x => x + 1); }} />
+            <TruckSettingsView owner={isOwner} rows={truckCfg} onReload={async () => { const tc = await fetchTruckConfig(); setTruckCfg(tc); setCfgTick(x => x + 1); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
