@@ -887,10 +887,14 @@ function parsePaciAddress(raw, knownAreas) {
   firstSeg = firstSeg.replace(/^(?:House\s+\S+|Parcel\s+\S+)(?:\s*-\s*|\s+)/i, "");
   if (/^[\d.,\s-]+$/.test(firstSeg)) firstSeg = ""; // guard: coordinates aren't an area
   if (firstSeg) {
-    const hit = (knownAreas || []).find(a => a.toLowerCase() === firstSeg.toLowerCase())
-      || (knownAreas || []).find(a => firstSeg.toLowerCase().includes(a.toLowerCase()) || a.toLowerCase().includes(firstSeg.toLowerCase()));
+    // normalize spacing/hyphens so "Jaber Al-Ahmad" matches app spelling "Jaber Al - Ahmad"
+    const norm = (s) => s.toLowerCase().replace(/\s*-\s*/g, "").replace(/\s+/g, " ").trim();
+    const fn = norm(firstSeg);
+    const hit = (knownAreas || []).find(a => norm(a) === fn)
+      || (knownAreas || []).find(a => norm(a).includes(fn) || fn.includes(norm(a)));
     out.area = hit || firstSeg;
   }
+  out.governorate = out.area ? (govFor(out.area) || "") : "";
   const got = ["area", "block", "street", "house"].filter(k => out[k]);
   return got.length ? out : null;
 }
@@ -3025,6 +3029,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
                     onUse={(link) => setF(p => ({ ...p, map_link: link }))}
                     onFill={(a) => setF(p => ({ ...p,
                       area: a.area || p.area,
+                      governorate: a.governorate || p.governorate,
                       block: a.block || p.block,
                       street: a.street || p.street,
                       lane: a.lane || p.lane,
@@ -4915,6 +4920,7 @@ function AddAddressModal({ customer, editAddr, onClose, onCreated, onUpdated }) 
                     onUse={(link) => setF(p => ({ ...p, map_link: link }))}
                     onFill={(a) => setF(p => ({ ...p,
                       area: a.area || p.area,
+                      governorate: a.governorate || p.governorate,
                       block: a.block || p.block,
                       street: a.street || p.street,
                       lane: a.lane || p.lane,
