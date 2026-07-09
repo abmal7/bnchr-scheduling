@@ -879,11 +879,13 @@ function parsePaciAddress(raw, knownAreas) {
   out.street = grab(/\bSt(?:reet)?\.?\s+([A-Za-z0-9]+)/i);
   out.lane = grab(/\b(?:Lane|Jadda|Jaddah)\s+([A-Za-z0-9]+)/i);
   out.house = grab(/\bHouse\s+([A-Za-z0-9]+)/i);
-  // area = everything before " - Block" (so hyphens inside the name survive, e.g. "Jaber Al-Ahmad")
+  // area = text before " - Block", with any leading House/Parcel prefixes stripped.
+  // (PACI often writes "House 7 - Parcel 147 Jaber Al-Ahmad - Block 5 - ...")
   const bm = text.match(/^(.*?)\s*-\s*Block\b/i);
   let firstSeg = bm ? bm[1].trim() : "";
-  // guard: if the "area" is actually just coordinates, ignore it
-  if (/^[\d.,\s-]+$/.test(firstSeg)) firstSeg = "";
+  firstSeg = firstSeg.replace(/^(?:House\s+\S+|Parcel\s+\S+)(?:\s*-\s*|\s+)/i, "");
+  firstSeg = firstSeg.replace(/^(?:House\s+\S+|Parcel\s+\S+)(?:\s*-\s*|\s+)/i, "");
+  if (/^[\d.,\s-]+$/.test(firstSeg)) firstSeg = ""; // guard: coordinates aren't an area
   if (firstSeg) {
     const hit = (knownAreas || []).find(a => a.toLowerCase() === firstSeg.toLowerCase())
       || (knownAreas || []).find(a => firstSeg.toLowerCase().includes(a.toLowerCase()) || a.toLowerCase().includes(firstSeg.toLowerCase()));
