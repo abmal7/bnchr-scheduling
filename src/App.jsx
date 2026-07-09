@@ -5560,6 +5560,114 @@ function ReportsView({ jobs, quotes, customers, owner }) {
         </table>
       </div>
 
+      {/* ═══ OWNER MARGIN REPORTS ═══ */}
+      {owner && (() => {
+        const itemCostOf = (it) => (Number(it.cost) || 0) * (Number(it.qty) || 1);
+        const itemRevOf = (it) => (Number(it.unit_price) || 0) * (Number(it.qty) || 1);
+
+        // 1 · PER SERVICE TYPE — margin (already have svcRows with kd+cost)
+        const svcMargin = svcRows.map(r => ({ ...r, profit: r.kd - r.cost, margin: r.kd ? Math.round(((r.kd - r.cost) / r.kd) * 100) : 0 }))
+          .sort((a, b) => b.profit - a.profit);
+
+        // 2 · PER ORDER — full margin per job
+        const orderRows = inRange.map(j => {
+          const items = j.items || [];
+          const cost = items.reduce((s, it) => s + itemCostOf(it), 0);
+          const rev = Number(j.total) || 0;
+          return { id: j.id, name: j.customer_name, date: j.scheduled_at, svc: j.service_type, rev, cost, profit: rev - cost, margin: rev ? Math.round(((rev - cost) / rev) * 100) : 0, hasCost: items.some(it => Number(it.cost) > 0) };
+        }).sort((a, b) => b.profit - a.profit);
+
+        // 3 · PER SKU / ITEM — which products earn best
+        const skuMap = {};
+        inRange.forEach(j => (j.items || []).forEach(it => {
+          if (!((it.kind === "tire" && it.tire_id) || it.kind === "part")) return;
+          const key = it.sku || (it.kind === "tire" ? `${it.brand} ${it.pattern || ""} ${it.size || ""}`.trim() : it.name) || "—";
+          skuMap[key] = skuMap[key] || { key, name: it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name, units: 0, rev: 0, cost: 0 };
+          skuMap[key].units += Number(it.qty) || 0;
+          skuMap[key].rev += itemRevOf(it);
+          skuMap[key].cost += itemCostOf(it);
+        }));
+        const skuRows = Object.values(skuMap).map(r => ({ ...r, profit: r.rev - r.cost, margin: r.rev ? Math.round(((r.rev - r.cost) / r.rev) * 100) : 0 })).sort((a, b) => b.profit - a.profit);
+
+        const bar = (pct) => (
+          <div style={{ display: "inline-block", width: 42, height: 6, borderRadius: 3, background: "var(--border)", verticalAlign: "middle", marginRight: 6 }}>
+            <div style={{ width: `${Math.max(0, Math.min(100, pct))}%`, height: "100%", borderRadius: 3, background: pct >= 40 ? "#15803D" : pct >= 20 ? "#D97706" : "#DC2626" }} />
+          </div>
+        );
+
+        return (
+          <>
+            {/* 1 · Profit by service type */}
+            <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
+              <div className="card-header"><h3>💰 Profit by service type</h3></div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={th}>Service</th><th style={th}>Orders</th><th style={th}>Revenue</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
+                <tbody>
+                  {svcMargin.map(r => (
+                    <tr key={r.type}>
+                      <td style={{ ...td, fontWeight: 600 }}>{r.type}</td>
+                      <td style={td}>{r.n}</td>
+                      <td style={td}>{fmtKD(r.kd)}</td>
+                      <td style={td}>{fmtKD(r.cost)}</td>
+                      <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{fmtKD(r.profit)}</td>
+                      <td style={td}>{bar(r.margin)}{r.margin}%</td>
+                    </tr>
+                  ))}
+                  {svcMargin.length === 0 && <tr><td style={td} colSpan={6}>No orders in this range.</td></tr>}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 11, color: "var(--muted)", padding: "8px 12px" }}>Profit = revenue − product cost. Labor-only services show near-100% margin (no product cost).</div>
+            </div>
+
+            {/* 2 · Margin per order */}
+            <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
+              <div className="card-header"><h3>📋 Margin per order — top & bottom</h3></div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={th}>Customer</th><th style={th}>Service</th><th style={th}>Revenue</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
+                <tbody>
+                  {[...orderRows.slice(0, 8), ...(orderRows.length > 16 ? [{ divider: true }] : []), ...orderRows.slice(-8).filter((_, i, a) => orderRows.length > 8)].map((r, i) => r.divider
+                    ? <tr key="d"><td style={{ ...td, textAlign: "center", color: "var(--muted)", fontSize: 11 }} colSpan={6}>⋯ middle orders hidden ⋯</td></tr>
+                    : (
+                      <tr key={r.id}>
+                        <td style={{ ...td, fontWeight: 600 }}>{r.name}{!r.hasCost && <span title="no costs entered" style={{ color: "#B45309" }}> ⚠</span>}</td>
+                        <td style={{ ...td, color: "var(--muted)", fontSize: 12 }}>{shortService ? shortService(r.svc) : r.svc}</td>
+                        <td style={td}>{fmtKD(r.rev)}</td>
+                        <td style={td}>{fmtKD(r.cost)}</td>
+                        <td style={{ ...td, fontWeight: 700, color: r.profit >= 0 ? "#15803D" : "#DC2626" }}>{fmtKD(r.profit)}</td>
+                        <td style={td}>{bar(r.margin)}{r.margin}%</td>
+                      </tr>
+                    ))}
+                  {orderRows.length === 0 && <tr><td style={td} colSpan={6}>No orders in this range.</td></tr>}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 11, color: "var(--muted)", padding: "8px 12px" }}>⚠ = order still missing item costs (fill in the Purchaser's Costs tab for accurate margin).</div>
+            </div>
+
+            {/* 3 · Profit by SKU / item */}
+            <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
+              <div className="card-header"><h3>🏷️ Profit by product (SKU)</h3></div>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={th}>Product</th><th style={th}>Units</th><th style={th}>Revenue</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
+                <tbody>
+                  {skuRows.slice(0, 30).map(r => (
+                    <tr key={r.key}>
+                      <td style={{ ...td, fontWeight: 600 }}>{r.name}{r.key !== r.name && <span style={{ fontSize: 10.5, color: "var(--muted)" }}> · {r.key}</span>}</td>
+                      <td style={td}>{r.units}</td>
+                      <td style={td}>{fmtKD(r.rev)}</td>
+                      <td style={td}>{fmtKD(r.cost)}</td>
+                      <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{fmtKD(r.profit)}</td>
+                      <td style={td}>{bar(r.margin)}{r.margin}%</td>
+                    </tr>
+                  ))}
+                  {skuRows.length === 0 && <tr><td style={td} colSpan={6}>No product items in this range.</td></tr>}
+                </tbody>
+              </table>
+              {skuRows.length > 30 && <div style={{ fontSize: 11, color: "var(--muted)", padding: "8px 12px" }}>Showing top 30 products by profit.</div>}
+            </div>
+          </>
+        );
+      })()}
+
       {/* Lead sources — marketing ROI */}
       {(() => {
         const leads = {};
