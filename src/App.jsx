@@ -4290,7 +4290,7 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
 
 function TechJobCard({ job, index, onUpdate }) {
   const [j, setJ] = useState(job);
-  useEffect(() => { setJ(job); }, [job]); // follow live updates
+  useEffect(() => { setJ(job); }, [job.id, job.updated_at, job.status, job.truck_status, job.parts_released, job.techs_released]); // resync only on real changes, not every keystroke re-render
   const [open, setOpen] = useState(false);
   const [reopened, setReopened] = useState({}); // manually reopened done-stages
   const [mileage, setMileage] = useState(job.service_mileage || "");
