@@ -5241,27 +5241,38 @@ function TruckSettingsView({ rows, onReload, owner }) {
 function CostsView({ jobs, onUpdate }) {
   const [savingId, setSavingId] = useState("");
   const [drafts, setDrafts] = useState({}); // {jobId: {itemId: cost}}
+  const [supDrafts, setSupDrafts] = useState({}); // {jobId: {itemId: supplier}}
   const [showAll, setShowAll] = useState(false);
+  const [q, setQ] = useState("");
 
   const needsCost = (it) => ((it.kind === "tire" && it.tire_id) || it.kind === "part") && !(Number(it.cost) > 0);
+  const ql = q.trim().toLowerCase();
   const rows = jobs
     .filter(j => j.status !== "cancelled")
     .filter(j => (j.items || []).some(needsCost) || (showAll && (j.items || []).some(it => (it.kind === "tire" && it.tire_id) || it.kind === "part")))
+    .filter(j => !ql || `${j.customer_name || ""} ${j.customer_mobile || ""} ${j.invoice_no || ""}`.toLowerCase().includes(ql))
     .sort((a, b) => new Date(b.scheduled_at || b.created_at) - new Date(a.scheduled_at || a.created_at));
 
   const openCount = jobs.filter(j => j.status !== "cancelled" && (j.items || []).some(needsCost)).length;
 
   const setDraft = (jobId, itemId, val) => setDrafts(d => ({ ...d, [jobId]: { ...(d[jobId] || {}), [itemId]: val } }));
 
+  const setSupDraft = (jobId, itemId, val) => setSupDrafts(d => ({ ...d, [jobId]: { ...(d[jobId] || {}), [itemId]: val } }));
   const saveJob = async (job) => {
     const d = drafts[job.id] || {};
+    const sd = supDrafts[job.id] || {};
     const items = (job.items || []).map(it => {
+      let out = it;
       const v = d[it.id];
-      return (v !== undefined && v !== "") ? { ...it, cost: Number(v) || 0 } : it;
+      if (v !== undefined && v !== "") out = { ...out, cost: Number(v) || 0 };
+      const s = sd[it.id];
+      if (s !== undefined) out = { ...out, supplier: s };
+      return out;
     });
     setSavingId(job.id);
     await onUpdate(job.id, { items });
     setDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
+    setSupDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
     setSavingId("");
   };
 
@@ -5277,15 +5288,23 @@ function CostsView({ jobs, onUpdate }) {
             {openCount === 0 ? "✓ All items have costs — margins are complete." : `${openCount} order${openCount !== 1 ? "s" : ""} with items missing a cost.`}
           </div>
         </div>
-        <button className={`btn btn-sm ${showAll ? "btn-primary" : "btn-ghost"}`} onClick={() => setShowAll(s => !s)}>{showAll ? "Showing all orders" : "Show only missing"}</button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input className="filter-input" style={{ width: 200 }} placeholder="🔍 Search name, mobile, invoice" value={q} onChange={e => setQ(e.target.value)} />
+          <button className={`btn btn-sm ${showAll ? "btn-primary" : "btn-ghost"}`} onClick={() => setShowAll(s => !s)}>{showAll ? "Showing all orders" : "Show only missing"}</button>
+        </div>
       </div>
+
+      <datalist id="cost-suppliers">
+        {OTHER_SUPPLIERS.map(s => <option key={s} value={s} />)}
+      </datalist>
 
       {rows.length === 0 && <div className="empty"><h3>Nothing to fill</h3><p>Every item across your orders has a cost entered. Margins in Reports are accurate.</p></div>}
 
       {rows.map(job => {
         const items = (job.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
         const missing = items.filter(needsCost).length;
-        const dirty = drafts[job.id] && Object.values(drafts[job.id]).some(v => v !== "" && v !== undefined);
+        const dirty = (drafts[job.id] && Object.values(drafts[job.id]).some(v => v !== "" && v !== undefined))
+          || (supDrafts[job.id] && Object.keys(supDrafts[job.id]).length > 0);
         return (
           <div key={job.id} className="card" style={{ marginBottom: 14, borderLeft: missing ? "3px solid #B45309" : "3px solid var(--success)" }}>
             <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -5303,7 +5322,12 @@ function CostsView({ jobs, onUpdate }) {
                     return (
                       <tr key={it.id} style={{ background: !has && draftVal === undefined ? "#FFFBEB" : "transparent" }}>
                         <td style={{ ...td, fontWeight: 600 }}>{name}{it.sku ? <span style={{ fontSize: 10.5, color: "var(--muted)" }}> · {it.sku}</span> : ""}</td>
-                        <td style={{ ...td, color: "var(--muted)" }}>{it.supplier || "—"}</td>
+                        <td style={td}>
+                          <input className="filter-input" style={{ width: 130 }} placeholder="supplier"
+                            value={(supDrafts[job.id] || {})[it.id] !== undefined ? (supDrafts[job.id])[it.id] : (it.supplier || "")}
+                            onChange={e => setSupDraft(job.id, it.id, e.target.value)}
+                            list="cost-suppliers" />
+                        </td>
                         <td style={td}>{it.qty}</td>
                         <td style={{ ...td, color: "var(--muted)" }}>{Number(it.unit_price) ? `${Number(it.unit_price).toFixed(3)}` : "—"}</td>
                         <td style={td}>
