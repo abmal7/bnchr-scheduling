@@ -3410,6 +3410,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
               Payment: <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span>
               {" · "}Parts: {j.parts_status || "pending"} · Truck: {j.truck_status || "scheduled"}
               {jobDurationMin(j) != null && <>{" · "}⏱ Job time: <strong>{fmtDuration(jobDurationMin(j))}</strong></>}
+              {Number(j.service_mileage) > 0 && <>{" · "}🧭 Mileage: <strong>{Number(j.service_mileage).toLocaleString()} {j.service_mileage_unit || "KM"}</strong></>}
             </div>
           </div>
         </div>
