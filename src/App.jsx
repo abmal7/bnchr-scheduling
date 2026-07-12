@@ -1225,7 +1225,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit"]);
 async function updateJob(id, patch) {
   const clean = { updated_at: new Date().toISOString() }; // every save stamps "last action"
   Object.keys(patch || {}).forEach(k => { if (JOB_COLUMNS.has(k)) clean[k] = patch[k]; });
@@ -1266,6 +1266,17 @@ async function updateCar(id, patch) {
 }
 async function deleteCar(id) {
   try { await sb(`/customer_cars?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
+}
+// Append a mileage reading to a car's log + update its latest reading.
+async function appendCarMileage(carId, entry) {
+  try {
+    const rows = await sb(`/customer_cars?id=eq.${carId}&select=mileage_log`);
+    const log = (rows && rows[0] && Array.isArray(rows[0].mileage_log)) ? rows[0].mileage_log : [];
+    // de-dupe by job so re-completing doesn't double-log
+    const next = [...log.filter(e => e.job_id !== entry.job_id), entry].sort((a, b) => new Date(b.date) - new Date(a.date));
+    await sb(`/customer_cars?id=eq.${carId}`, { method: "PATCH", prefer: "return=minimal",
+      body: JSON.stringify({ mileage_log: next, last_mileage: entry.km, last_mileage_unit: entry.unit }) });
+  } catch (e) { /* non-blocking */ }
 }
 async function updateAddress(id, patch) {
   try { await sb(`/customer_addresses?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
@@ -4282,6 +4293,8 @@ function TechJobCard({ job, index, onUpdate }) {
   useEffect(() => { setJ(job); }, [job]); // follow live updates
   const [open, setOpen] = useState(false);
   const [reopened, setReopened] = useState({}); // manually reopened done-stages
+  const [mileage, setMileage] = useState(job.service_mileage || "");
+  const [milesUnit, setMilesUnit] = useState(job.service_mileage_unit || "KM");
   const items = j.items || [];
   const productItems = items.filter(it => it.tire_id || (Number(it.unit_price) || 0) > 0);
   const hasProducts = productItems.length > 0;
@@ -4346,12 +4359,22 @@ function TechJobCard({ job, index, onUpdate }) {
   const canComplete = !hasProducts || (s2done && s3done);
   const complete = () => {
     if (!canComplete || completed) return;
-    const p = { truck_status: "completed", status: "done", completed_at: new Date().toISOString() };
+    if (!(Number(mileage) > 0)) { alert("Please enter the car's current mileage before completing."); return; }
+    const now = new Date().toISOString();
+    const p = { truck_status: "completed", status: "done", completed_at: now,
+      service_mileage: Number(mileage), service_mileage_unit: milesUnit };
     if (hasDontFit) {
       p.partial_completion = true;
       p.unfitted_items = dontFitItems.map(it => `${it.qty}× ${it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name} — ${mism[it.id].reason}`).join(" · ");
     }
     patch(p);
+    // append to the car's mileage log (fire-and-forget; never blocks completion)
+    if (j.car_id) {
+      appendCarMileage(j.car_id, {
+        date: now, km: Number(mileage), unit: milesUnit,
+        service: j.service_type || "", job_id: j.id, mobile: j.customer_mobile || "",
+      });
+    }
   };
 
   const ts = completed ? "completed" : started ? "processing" : partsReceived ? "arrived" : "scheduled";
@@ -4574,9 +4597,21 @@ function TechJobCard({ job, index, onUpdate }) {
         <Stage num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? (jobDurationMin(j) != null ? fmtDuration(jobDurationMin(j)) : "done") : null}>
           {!completed && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
+                <label style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px" }}>Current mileage (required)</label>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 5 }}>
+                  <input className="filter-input" style={{ width: 130 }} type="number" min="0" inputMode="numeric"
+                    placeholder="e.g. 82500" value={mileage} onChange={e => setMileage(e.target.value)} />
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {["KM", "Mile"].map(u => (
+                      <button key={u} type="button" className={`btn btn-sm ${milesUnit === u ? "btn-primary" : "btn-ghost"}`} onClick={() => setMilesUnit(u)}>{u}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
               <div>
-                <button className="btn btn-success btn-sm" disabled={!canComplete} onClick={complete}
-                  title={!canComplete ? "Finish stages 1 and 2 first" : ""}>
+                <button className="btn btn-success btn-sm" disabled={!canComplete || !(Number(mileage) > 0)} onClick={complete}
+                  title={!canComplete ? "Finish stages 1 and 2 first" : !(Number(mileage) > 0) ? "Enter the mileage first" : ""}>
                   {hasDontFit ? "Complete Job (partial — skip don't-fit items)" : "Complete Job"}
                 </button>
                 {!canComplete && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>Finish both verifications to unlock.</span>}
@@ -4762,11 +4797,17 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
         </div>
         <div className="card-body">
           {customerCars.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>No vehicles on file.</div>}
-          {customerCars.map(car => (
-            <div key={car.id} className="car-card">
+          {customerCars.map(car => {
+            const log = Array.isArray(car.mileage_log) ? [...car.mileage_log].sort((a, b) => new Date(b.date) - new Date(a.date)) : [];
+            const latest = car.last_mileage || (log[0] && log[0].km);
+            const unit = car.last_mileage_unit || (log[0] && log[0].unit) || "KM";
+            return (
+            <div key={car.id} className="car-card" style={{ flexDirection: "column", alignItems: "stretch" }}>
+             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
               <div>
                 <div className="car-card-info">{car.brand} {car.model} {car.year}</div>
                 <div className="car-card-plate">{car.plate}</div>
+                {latest ? <div style={{ fontSize: 12, fontWeight: 700, color: "#15803D", marginTop: 3 }}>🧭 {Number(latest).toLocaleString()} {unit} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· last recorded</span></div> : null}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                 <span style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.filter(j => j.car_id === car.id).length} jobs</span>
@@ -4780,8 +4821,27 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
                   <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => setConfirmDel({ kind: "car", id: car.id })}>🗑</button>
                 ))}
               </div>
+             </div>
+             {log.length > 0 && (
+               <details style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+                 <summary style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", cursor: "pointer" }}>Mileage history ({log.length})</summary>
+                 <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                   {log.map((e, i) => {
+                     const prev = log[i + 1];
+                     const diff = prev && e.km > prev.km ? e.km - prev.km : null;
+                     return (
+                       <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0" }}>
+                         <span style={{ fontWeight: 600 }}>{Number(e.km).toLocaleString()} {e.unit || "KM"}</span>
+                         <span style={{ color: "var(--muted)" }}>{e.service || "Service"} · {fmtDate(e.date)}{diff ? ` · +${diff.toLocaleString()}` : ""}</span>
+                       </div>
+                     );
+                   })}
+                 </div>
+               </details>
+             )}
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
