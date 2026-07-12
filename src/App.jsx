@@ -190,6 +190,17 @@ const SERVICE_CATALOG = {
   "Part Replacement": {
     kind: "other", // labor entered manually per order
   },
+  "Tire Check": {
+    kind: "other",
+    flatLabor: 0, // inspection — no default labor charge
+  },
+  "Wheel Repair": {
+    kind: "other", // rim taken, repaired, returned fitted + balanced; labor entered per order
+  },
+  "Mechanical Check": {
+    kind: "other",
+    flatLabor: 0, // inspection — no default labor charge
+  },
 };
 const SERVICE_NAMES = Object.keys(SERVICE_CATALOG);
 
@@ -1225,7 +1236,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared"]);
 async function updateJob(id, patch) {
   const clean = { updated_at: new Date().toISOString() }; // every save stamps "last action"
   Object.keys(patch || {}).forEach(k => { if (JOB_COLUMNS.has(k)) clean[k] = patch[k]; });
@@ -3638,6 +3649,7 @@ function OrderActions({ job, onAction, compact }) {
         <span style={chip(isPaid)} onClick={stop(() => onAction({ payment_status: isPaid ? "pending" : "paid", status: isPaid ? job.status : (job.status === "draft" ? "booked" : job.status) }))}>{isPaid ? "✓" : "○"} Paid</span>
         <span style={chip(job.parts_released)} onClick={stop(() => onAction({ parts_released: !job.parts_released }))}>{job.parts_released ? "✓" : "○"} Parts Ready</span>
         <span style={chip(job.techs_released)} onClick={stop(() => onAction({ techs_released: !job.techs_released }))}>{job.techs_released ? "✓" : "○"} Show Technicians</span>
+        <span style={chip(job.invoice_shared)} onClick={stop(() => onAction({ invoice_shared: !job.invoice_shared }))}>{job.invoice_shared ? "✓" : "○"} Invoice Sent</span>
         {getTestMode() && job.status !== "done" && job.status !== "cancelled" && (
           <span style={{ borderRadius: 20, padding: "5px 12px", cursor: "pointer", background: "#7C3AED", color: "#fff", fontSize: 12, fontWeight: 700, userSelect: "none" }}
             onClick={stop(() => { if (window.confirm("TEST: force this order through collection, verification, and completion?")) onAction(forceCompletePatch(job)); })}>
