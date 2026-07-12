@@ -4750,7 +4750,93 @@ function HistoryView({ jobs, onSelectJob }) {
 }
 
 // ─── Customer Profile Detail ──────────────────────────────────────────────────
+// Build a branded per-car service-history PDF (client-side, via print window).
+// mode: "simple" = date/service/mileage; "detailed" = adds items done.
+function openServiceHistoryPDF(car, customer, jobs, mode) {
+  const carJobs = (jobs || [])
+    .filter(j => j.car_id === car.id && (j.status === "done" || j.truck_status === "completed"))
+    .sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at));
+  const log = Array.isArray(car.mileage_log) ? car.mileage_log : [];
+  const mileageFor = (j) => {
+    if (Number(j.service_mileage) > 0) return `${Number(j.service_mileage).toLocaleString()} ${j.service_mileage_unit || "KM"}`;
+    const e = log.find(x => x.job_id === j.id);
+    return e ? `${Number(e.km).toLocaleString()} ${e.unit || "KM"}` : "—";
+  };
+  const itemsFor = (j) => {
+    const its = (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
+    if (!its.length) return "";
+    return its.map(it => it.kind === "tire" ? `${it.brand} ${it.pattern || ""} ${it.size || ""}`.replace(/\s+/g, " ").trim() : it.name).filter(Boolean).join(", ");
+  };
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const detailed = mode === "detailed";
+  const rows = carJobs.map(j => `
+    <tr>
+      <td>${esc(fmtDate(j.scheduled_at || j.created_at))}</td>
+      <td>${esc(j.service_type || "Service")}</td>
+      <td class="mi">${esc(mileageFor(j))}</td>
+      ${detailed ? `<td class="dt">${esc(itemsFor(j)) || "—"}</td>` : ""}
+    </tr>`).join("");
+
+  const latest = car.last_mileage ? `${Number(car.last_mileage).toLocaleString()} ${car.last_mileage_unit || "KM"}` : (carJobs.length ? mileageFor(carJobs[carJobs.length - 1]) : "—");
+  const range = carJobs.length ? `${fmtDate(carJobs[0].scheduled_at || carJobs[0].created_at)} — ${fmtDate(carJobs[carJobs.length - 1].scheduled_at || carJobs[carJobs.length - 1].created_at)}` : "—";
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Service History — ${esc(car.brand)} ${esc(car.model)}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #1a1a1a; margin: 0; padding: 36px 40px; }
+    .brand { font-size: 26px; font-weight: 800; letter-spacing: -.5px; }
+    .brand span { color: #C8102E; }
+    .sub { color: #666; font-size: 12px; margin-top: 2px; letter-spacing: .5px; text-transform: uppercase; }
+    .head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #111; padding-bottom: 16px; margin-bottom: 20px; }
+    .doc-title { text-align: right; }
+    .doc-title h1 { font-size: 18px; margin: 0; }
+    .meta { display: flex; gap: 40px; margin-bottom: 22px; flex-wrap: wrap; }
+    .meta div { font-size: 13px; }
+    .meta .lbl { color: #888; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
+    .meta .val { font-weight: 700; font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: #666; border-bottom: 2px solid #ddd; padding: 8px 10px; }
+    td { font-size: 13px; padding: 9px 10px; border-bottom: 1px solid #eee; }
+    td.mi { font-weight: 700; color: #15803D; white-space: nowrap; }
+    td.dt { color: #555; font-size: 12px; }
+    .summary { margin-top: 20px; background: #F8F8F8; border-radius: 8px; padding: 14px 16px; font-size: 13px; display: flex; gap: 32px; flex-wrap: wrap; }
+    .summary b { display: block; font-size: 18px; }
+    .foot { margin-top: 30px; border-top: 1px solid #ddd; padding-top: 12px; font-size: 11px; color: #999; text-align: center; }
+    @media print { body { padding: 20px; } .noprint { display: none; } }
+  </style></head><body>
+    <div class="head">
+      <div>
+        <div class="brand">BNCHR<span>+</span></div>
+        <div class="sub">Premium Mobile Tire &amp; Auto Service · Kuwait</div>
+      </div>
+      <div class="doc-title"><h1>Vehicle Service History</h1><div class="sub">${esc(new Date().toLocaleDateString())}</div></div>
+    </div>
+    <div class="meta">
+      <div><div class="lbl">Customer</div><div class="val">${esc(customer.name || "")}</div></div>
+      <div><div class="lbl">Vehicle</div><div class="val">${esc(car.brand)} ${esc(car.model)} ${esc(car.year || "")}</div></div>
+      ${car.plate ? `<div><div class="lbl">Plate / VIN</div><div class="val">${esc(car.plate)}</div></div>` : ""}
+    </div>
+    <table>
+      <thead><tr><th>Date</th><th>Service</th><th>Mileage</th>${detailed ? "<th>Details</th>" : ""}</tr></thead>
+      <tbody>${rows || `<tr><td colspan="${detailed ? 4 : 3}" style="color:#999;padding:16px 10px">No completed services on record yet.</td></tr>`}</tbody>
+    </table>
+    <div class="summary">
+      <div><span class="lbl">Total visits</span><b>${carJobs.length}</b></div>
+      <div><span class="lbl">Latest mileage</span><b>${esc(latest)}</b></div>
+      <div><span class="lbl">Service period</span><b style="font-size:13px">${esc(range)}</b></div>
+    </div>
+    <div class="foot">Verified service history issued by BNCHR+ · This record reflects services performed by BNCHR+ mobile units.</div>
+    <div class="noprint" style="text-align:center;margin-top:24px"><button onclick="window.print()" style="padding:10px 20px;font-size:14px;font-weight:700;background:#111;color:#fff;border:none;border-radius:8px;cursor:pointer">Save as PDF / Print</button></div>
+  </body></html>`;
+
+  const w = window.open("", "_blank");
+  if (!w) { alert("Please allow pop-ups to generate the PDF."); return; }
+  w.document.write(html); w.document.close();
+  setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 400);
+}
+
 function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSelectJob, onAddCar, onAddAddress, onNewOrder, onReorder, onEditCustomer, onEditCar, onDeleteCar, onEditAddress, onDeleteAddress }) {
+  const [pdfFor, setPdfFor] = useState(null); // car.id whose PDF options are open
   const customerCars = cars.filter(c => c.customer_id === customer.id);
   const customerAddrs = (addresses || []).filter(a => a.customer_id === customer.id);
   const customerJobs = jobs.filter(j => j.customer_id === customer.id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
@@ -4813,6 +4899,7 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                 <span style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.filter(j => j.car_id === car.id).length} jobs</span>
+                <button className="btn btn-ghost btn-sm" title="Service history PDF" onClick={() => setPdfFor(pdfFor === car.id ? null : car.id)}>📄</button>
                 {onEditCar && <button className="btn btn-ghost btn-sm" onClick={() => onEditCar(car)}>✎</button>}
                 {onDeleteCar && (confirmDel?.kind === "car" && confirmDel?.id === car.id ? (
                   <span style={{ display: "inline-flex", gap: 4 }}>
@@ -4824,6 +4911,13 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
                 ))}
               </div>
              </div>
+             {pdfFor === car.id && (
+               <div style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                 <span style={{ fontSize: 12, color: "var(--muted)" }}>Service history PDF:</span>
+                 <button className="btn btn-primary btn-sm" onClick={() => { openServiceHistoryPDF(car, customer, jobs, "simple"); setPdfFor(null); }}>Simple</button>
+                 <button className="btn btn-ghost btn-sm" onClick={() => { openServiceHistoryPDF(car, customer, jobs, "detailed"); setPdfFor(null); }}>With details</button>
+               </div>
+             )}
              {log.length > 0 && (
                <details style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
                  <summary style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", cursor: "pointer" }}>Mileage history ({log.length})</summary>
