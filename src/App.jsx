@@ -4288,6 +4288,22 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
   );
 }
 
+function TechStage({ num, title, done, meta, children, muted, reopened, setReopened }) {
+  const showBody = !done || reopened[num];
+  return (
+    <div style={{ border: `1px solid ${done ? "#BBF7D0" : "var(--border)"}`, borderRadius: 10, marginBottom: 8, background: done ? "#F0FDF4" : "var(--card)", opacity: muted ? .55 : 1 }}>
+      <div onClick={() => done && setReopened(r => ({ ...r, [num]: !r[num] }))}
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", cursor: done ? "pointer" : "default" }}>
+        <span style={{ width: 20, height: 20, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0,
+          background: done ? "var(--success)" : "var(--bg)", color: done ? "#fff" : "var(--muted)", border: done ? "none" : "1px solid var(--border)" }}>{done ? "✓" : num}</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: done ? "#15803D" : "var(--text)" }}>{title}</span>
+        {meta && <span style={{ fontSize: 11, color: done ? "#15803D" : "var(--muted)", marginLeft: "auto", fontWeight: 600 }}>{meta}</span>}
+      </div>
+      {showBody && children && <div style={{ padding: "0 12px 12px" }}>{children}</div>}
+    </div>
+  );
+}
+
 function TechJobCard({ job, index, onUpdate }) {
   const [j, setJ] = useState(job);
   useEffect(() => { setJ(job); }, [job.id, job.updated_at, job.status, job.truck_status, job.parts_released, job.techs_released]); // resync only on real changes, not every keystroke re-render
@@ -4397,21 +4413,6 @@ function TechJobCard({ job, index, onUpdate }) {
   })();
 
   // A stage section: done → slim green ✓ header (tap to reopen); active → full body
-  const Stage = ({ num, title, done, meta, children, muted }) => {
-    const showBody = !done || reopened[num];
-    return (
-      <div style={{ border: `1px solid ${done ? "#BBF7D0" : muted ? "var(--border)" : "var(--border)"}`, borderRadius: 10, marginBottom: 8, background: done ? "#F0FDF4" : "var(--card)", opacity: muted ? .55 : 1 }}>
-        <div onClick={() => done && setReopened(r => ({ ...r, [num]: !r[num] }))}
-          style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", cursor: done ? "pointer" : "default" }}>
-          <span style={{ width: 20, height: 20, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0,
-            background: done ? "var(--success)" : "var(--bg)", color: done ? "#fff" : "var(--muted)", border: done ? "none" : "1px solid var(--border)" }}>{done ? "✓" : num}</span>
-          <span style={{ fontSize: 12.5, fontWeight: 700, color: done ? "#15803D" : "var(--text)" }}>{title}</span>
-          {meta && <span style={{ fontSize: 11, color: done ? "#15803D" : "var(--muted)", marginLeft: "auto", fontWeight: 600 }}>{meta}</span>}
-        </div>
-        {showBody && children && <div style={{ padding: "0 12px 12px" }}>{children}</div>}
-      </div>
-    );
-  };
 
   // Verification checklist structured like Service Details: car → service → products (no prices)
   const verGroups = (() => {
@@ -4576,15 +4577,15 @@ function TechJobCard({ job, index, onUpdate }) {
         {hasProducts ? (
           <>
             {/* Stage 2 · parts vs ORDER */}
-            <Stage num={1} title="Verify parts match the order" done={s2done} meta={`${s2count}/${productItems.length}`}>
+            <TechStage reopened={reopened} setReopened={setReopened} num={1} title="Verify parts match the order" done={s2done} meta={`${s2count}/${productItems.length}`}>
               {verChecklist(ordChecks, toggleOrd)}
-            </Stage>
+            </TechStage>
 
             {/* Stage 3 · parts vs CAR */}
-            <Stage num={2} title="Verify parts match the customer's car" done={s3done} meta={`${s3count}/${productItems.length}`}>
+            <TechStage reopened={reopened} setReopened={setReopened} num={2} title="Verify parts match the customer's car" done={s3done} meta={`${s3count}/${productItems.length}`}>
               <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Check against the actual car — even if the order was confirmed by the customer.</div>
               {verChecklist(carChecks, toggleCar, true)}
-            </Stage>
+            </TechStage>
           </>
         ) : (
           <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 10, padding: "9px 12px", marginBottom: 8 }}>
@@ -4594,7 +4595,7 @@ function TechJobCard({ job, index, onUpdate }) {
         )}
 
         {/* Stage 4 · Complete */}
-        <Stage num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? (jobDurationMin(j) != null ? fmtDuration(jobDurationMin(j)) : "done") : null}>
+        <TechStage reopened={reopened} setReopened={setReopened} num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? (jobDurationMin(j) != null ? fmtDuration(jobDurationMin(j)) : "done") : null}>
           {!completed && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
@@ -4632,7 +4633,7 @@ function TechJobCard({ job, index, onUpdate }) {
               )}
             </div>
           )}
-        </Stage>
+        </TechStage>
       </div>
       )}
     </div>
