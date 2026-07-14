@@ -285,7 +285,15 @@ const MOCK_TIRES = [
   { id: "mt-3", brand: "Michelin", pattern: "Primacy", width: 275, aspect: 55, rim: 20, year: "2024", price: 55, cost: 42, supplier: "Kuwait Automotive", country: "USA", in_stock: false },
   { id: "mt-4", brand: "RoadX", pattern: "RXMotion", width: 225, aspect: 55, rim: 18, year: "2026", price: 32, cost: 20, supplier: "Abbas Ghuloom", country: "China", in_stock: true },
 ];
-const tireSize = (t) => `${t.width}/${t.aspect}R${t.rim}`;
+const tireSize = (t) => {
+  // Prefer an explicit size string if the catalog provides one (handles flotation
+  // sizes like "33x12.50R17" that don't fit the metric width/aspect/rim model).
+  if (t.size && String(t.size).trim()) return String(t.size).trim();
+  // Flotation stored numerically (diameter present, no aspect): "33x12.50R17"
+  if (t.diameter && t.section && t.rim) return `${t.diameter}x${t.section}R${t.rim}`;
+  // Standard metric fallback
+  return `${t.width}/${t.aspect}R${t.rim}`;
+};
 // Full tire spec string from an item/record: "275/35R21 103Y · 2024 · Germany"
 const liSr = (li, sr) => (li || sr) ? ` ${li || ""}${sr || ""}` : "";
 const itemSpec = (it) => [`${it.size || ""}${liSr(it.load_index, it.speed_rating)}`.trim(), it.oem, it.year, it.country, it.tire_note].filter(Boolean).join(" · ");
@@ -5011,6 +5019,19 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
                   <div style={{ fontWeight: 600 }}>{job.service_type}</div>
                   <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{job.car_brand} {job.car_model} · {fmtDate(job.scheduled_at)}</div>
                   <div style={{ fontSize: 12, color: "var(--muted)" }}>{job.service_details}</div>
+                  {(job.items || []).length > 0 && (
+                    <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 2 }}>
+                      {(job.items || []).map((it, i) => (
+                        <div key={i} style={{ fontSize: 11.5, color: it.kind === "labor" ? "var(--muted)" : "var(--text)", display: "flex", gap: 6 }}>
+                          <span style={{ color: "var(--muted)", flexShrink: 0 }}>{it.kind === "labor" ? "🔧" : "•"}</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>
+                            {Number(it.qty) > 1 ? `${it.qty}× ` : ""}{it.kind === "tire" ? `${it.brand || ""} ${it.pattern || ""} ${it.size || ""}`.replace(/\s+/g, " ").trim() : it.name}
+                            {Number(it.unit_price) > 0 && <span style={{ color: "var(--muted)" }}> · {(Number(it.unit_price) * (Number(it.qty) || 1)).toFixed(2)} KD</span>}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {Number(job.total || 0).toFixed(3)}</div>
