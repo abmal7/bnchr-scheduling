@@ -6613,8 +6613,11 @@ export default function App() {
   }, [authed, loading, deepLink, role, customers]);
 
   const handleJobUpdate = (updated) => {
-    setJobs(prev => prev.map(j => j.id === updated.id ? updated : j));
-    if (selectedJob?.id === updated.id) setSelectedJob(updated);
+    // Stamp local time so stale realtime echoes of our own in-flight saves
+    // (which carry an older/equal updated_at) can never overwrite this row.
+    const stamped = { ...updated, updated_at: new Date().toISOString() };
+    setJobs(prev => prev.map(j => j.id === stamped.id ? stamped : j));
+    if (selectedJob?.id === stamped.id) setSelectedJob(stamped);
   };
 
   const handleJobAction = async (job, patch) => {
