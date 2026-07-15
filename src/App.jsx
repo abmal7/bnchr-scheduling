@@ -4898,7 +4898,7 @@ function openServiceHistoryPDF(car, customer, jobs, mode, lang) {
   body.pdf .foot{margin-top:26px;}
   body.pdf .dlbar{display:none;}
   @page{size:A4;margin:0;}
-  @media print{body{background:none;}.page{margin:0;box-shadow:none;width:auto;min-height:100vh;}.dlbar{display:none;}}
+  @media print{html,body{margin:0;padding:0;background:none;height:auto;}.page{margin:0;box-shadow:none;width:auto;min-height:auto;padding:10mm 12mm;}.dlbar{display:none;}.foot{margin-top:26px;}}
   </style></head><body>
   <div class="page" id="pg">
     <div class="masthead">
