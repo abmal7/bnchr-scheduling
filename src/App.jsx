@@ -43,11 +43,7 @@ const DIST_PASSWORD = "dst5926";         // distributor
 const PURCH_PASSWORD = "prc4183";        // purchaser
 // Per-truck technician logins — each truck has its own password.
 // Edit these codes as needed; only activeTrucks() are offered at login.
-const TRUCK_PASSWORDS = {
-  T1: "t1x482",
-  T2: "t2m945",
-  T4: "t4k736",
-};
+let TRUCK_PASSWORDS = { T1: "t1x482", T2: "t2m945", T4: "t4k736" }; // fallback; hydrated from truck_config
 // Per-agent sales logins — the agent is locked to the session and auto-fills
 // on every new order. The shared PASSWORD still works for sales (no agent lock).
 const SALES_AGENT_PASSWORDS = {
@@ -719,6 +715,9 @@ async function fetchTruckConfig() {
       const cfg = {}, order = [];
       rows.forEach(r => { order.push(r.truck); if (r.active) cfg[r.truck] = { start: Number(r.start_hour), end: Number(r.end_hour) }; });
       TRUCK_CONFIG = cfg; TRUCK_ORDER = order;
+      const pw = {};
+      rows.forEach(r => { if (r.password) pw[r.truck] = r.password; });
+      if (Object.keys(pw).length) TRUCK_PASSWORDS = { ...TRUCK_PASSWORDS, ...pw };
     }
     return rows || [];
   } catch { return []; }
@@ -5540,7 +5539,7 @@ function TruckSettingsView({ rows, onReload, owner }) {
   const [adding, setAdding] = useState(false);
   const [newTruck, setNewTruck] = useState({ truck: "", start_hour: 11, end_hour: 19 });
   const hourOpts = []; for (let h = 6; h <= 23; h++) hourOpts.push(h);
-  const setHours = async (truck, field, val) => { setSaving(truck); await saveTruckConfig(truck, { [field]: Number(val) }); await onReload(); setSaving(""); };
+  const setHours = async (truck, field, val) => { setSaving(truck); await saveTruckConfig(truck, { [field]: field === "password" ? String(val) : Number(val) }); await onReload(); setSaving(""); };
   const toggleActive = async (truck, active) => { setSaving(truck); await saveTruckConfig(truck, { active }); await onReload(); setSaving(""); };
   const addTruck = async () => {
     const code = (newTruck.truck || "").trim().toUpperCase();
@@ -5548,7 +5547,9 @@ function TruckSettingsView({ rows, onReload, owner }) {
     if (rows.some(r => r.truck === code)) { alert(code + " already exists."); return; }
     if (Number(newTruck.end_hour) <= Number(newTruck.start_hour)) { alert("End time must be after start time."); return; }
     setAdding(true);
-    const ok = await addTruckConfig({ truck: code, active: true, start_hour: Number(newTruck.start_hour), end_hour: Number(newTruck.end_hour), sort_order: (Math.max(0, ...rows.map(r => r.sort_order || 0)) + 1) });
+    const genPw = code.toLowerCase() + "abcdefghjkmnpqrstuvwxyz"[Math.floor(Math.random() * 23)] + String(100 + Math.floor(Math.random() * 900));
+    const ok = await addTruckConfig({ truck: code, active: true, password: genPw, start_hour: Number(newTruck.start_hour), end_hour: Number(newTruck.end_hour), sort_order: (Math.max(0, ...rows.map(r => r.sort_order || 0)) + 1) });
+    if (ok) alert(`${code} added — technician password: ${genPw}`);
     if (ok) { setNewTruck({ truck: "", start_hour: 11, end_hour: 19 }); await onReload(); }
     setAdding(false);
   };
@@ -5561,7 +5562,7 @@ function TruckSettingsView({ rows, onReload, owner }) {
       <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
         <div className="card-header"><h3>Trucks & working hours</h3></div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Truck</th><th style={th}>Active</th><th style={th}>Start</th><th style={th}>End</th><th style={th}>Shift</th></tr></thead>
+          <thead><tr><th style={th}>Truck</th><th style={th}>Active</th><th style={th}>Start</th><th style={th}>End</th><th style={th}>Shift</th><th style={th}>Password</th></tr></thead>
           <tbody>
             {sorted.map(r => {
               const c = truckColor(r.truck);
@@ -5572,6 +5573,8 @@ function TruckSettingsView({ rows, onReload, owner }) {
                   <td style={td}><select className="filter-input" value={r.start_hour} disabled={saving === r.truck} onChange={e => setHours(r.truck, "start_hour", e.target.value)}>{hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}</select></td>
                   <td style={td}><select className="filter-input" value={r.end_hour} disabled={saving === r.truck} onChange={e => setHours(r.truck, "end_hour", e.target.value)}>{hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}</select></td>
                   <td style={{ ...td, color: "var(--muted)" }}>{hourLabel(r.start_hour)} – {hourLabel(r.end_hour)}</td>
+                  <td style={td}><input className="filter-input" style={{ width: 92, fontFamily: "monospace" }} defaultValue={r.password || ""} disabled={saving === r.truck}
+                    onBlur={e => { const v = e.target.value.trim(); if (v && v !== r.password) setHours(r.truck, "password", v); }} /></td>
                 </tr>
               );
             })}
@@ -6403,6 +6406,8 @@ export default function App() {
   const [authed, setAuthed] = useState(() => !!loadSession());
   const [role, setRole] = useState(() => loadSession()?.role || "sales");
   const [loginTruck, setLoginTruck] = useState(activeTrucks()[0]); // chosen truck at login
+  const [, setCfgLoaded] = useState(0);
+  useEffect(() => { fetchTruckConfig().then(() => { setCfgLoaded(x => x + 1); setLoginTruck(t => activeTrucks().includes(t) ? t : activeTrucks()[0]); }); }, []);
   const [sessionTruck, setSessionTruck] = useState(() => loadSession()?.truck || null); // locked truck (technician)
   const [loginAgent, setLoginAgent] = useState(SALES_AGENTS[0]);  // chosen agent at login
   const [sessionAgent, setSessionAgent] = useState(() => loadSession()?.agent || null); // locked agent (sales)
