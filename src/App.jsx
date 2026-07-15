@@ -4244,6 +4244,32 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck }) {
     .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
 
   const isDone = (j) => j.truck_status === "completed" || j.status === "done" || j.status === "incomplete";
+
+  // 🔔 New-order alert: when a job appears on this truck's list (realtime), show
+  // a banner + try sound/vibration so the technician notices without watching.
+  const seenIds = useRef(null);
+  const [newAlert, setNewAlert] = useState(null);
+  useEffect(() => {
+    const ids = new Set(todayJobs.map(x => x.id));
+    if (seenIds.current) {
+      const fresh = todayJobs.filter(x => !seenIds.current.has(x.id) && !isDone(x));
+      if (fresh.length) {
+        setNewAlert(fresh[0]);
+        try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch {}
+        try {
+          const ac = new (window.AudioContext || window.webkitAudioContext)();
+          const o = ac.createOscillator(), g = ac.createGain();
+          o.connect(g); g.connect(ac.destination);
+          o.frequency.value = 880; g.gain.value = 0.15;
+          o.start(); o.stop(ac.currentTime + 0.18);
+          setTimeout(() => { const o2 = ac.createOscillator(); o2.connect(g); o2.frequency.value = 1100; o2.start(); o2.stop(ac.currentTime + 0.4); }, 220);
+        } catch {}
+        setTimeout(() => setNewAlert(a => (a && fresh[0] && a.id === fresh[0].id) ? null : a), 10000);
+      }
+    }
+    seenIds.current = ids;
+  }, [todayJobs.map(x => x.id).join(",")]);
+
   const active = todayJobs.filter(j => !isDone(j));
   const completed = todayJobs.filter(isDone);
   const inProgress = active.filter(j => j.truck_status === "processing" || j.truck_status === "arrived").length;
@@ -4251,6 +4277,17 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck }) {
   const tc = truckColor(myTruck);
 
   return (
+    <>
+      {newAlert && (
+        <div onClick={() => { onSelectJob && onSelectJob(newAlert); setNewAlert(null); }}
+          style={{ position: "sticky", top: 8, zIndex: 60, background: "#16A34A", color: "#fff", borderRadius: 12, padding: "12px 16px", marginBottom: 12, boxShadow: "0 6px 18px rgba(22,163,74,.35)", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 14 }}>🔔 New order assigned</div>
+            <div style={{ fontSize: 12.5, marginTop: 2 }}>{fmtTime(newAlert.scheduled_at)} · {newAlert.customer_name} · {newAlert.area || ""}</div>
+          </div>
+          <span onClick={(e) => { e.stopPropagation(); setNewAlert(null); }} style={{ fontWeight: 800, padding: "2px 8px" }}>✕</span>
+        </div>
+      )}
     <>
       <div className="page-header">
         <div className="page-title">My Jobs — {fmtDate(new Date().toISOString())}</div>
@@ -4281,6 +4318,7 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck }) {
       <div className="job-cards">
         {active.map((job, i) => <TechJobCard key={job.id} job={job} index={i} onUpdate={onUpdate} />)}
       </div>
+    </>
     </>
   );
 }
