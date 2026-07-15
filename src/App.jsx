@@ -4877,7 +4877,7 @@ function openServiceHistoryPDF(car, customer, jobs, mode) {
     ${entries || '<div style="color:#9aa0aa;font-size:12px">No completed services on record yet.</div>'}
     <div class="foot">
       <div class="seal"><div class="badge">✓</div><div class="txt"><b>Verified service history</b><br>This record reflects services performed and documented by BNCHR+ mobile service units in Kuwait.</div></div>
-      <div class="url mono">bnchr.com</div>
+      <div class="url mono">bnchrplus.com</div>
     </div>
   </div>
   <div class="dlbar"><button class="dlbtn" onclick="dl()">⬇ Download PDF</button></div>
