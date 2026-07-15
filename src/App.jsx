@@ -4855,6 +4855,11 @@ function openServiceHistoryPDF(car, customer, jobs, mode) {
   .foot .url{font-size:8.5px;color:var(--faint);text-align:right;}
   .dlbar{text-align:center;margin:14px 0 30px;}
   .dlbtn{padding:11px 26px;font-size:13px;font-weight:700;background:#16181d;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:'Archivo',sans-serif;}
+  .entry{page-break-inside:avoid;break-inside:avoid;}
+  body.pdf{background:none;}
+  body.pdf .page{margin:0;box-shadow:none;min-height:auto;width:210mm;}
+  body.pdf .foot{margin-top:26px;}
+  body.pdf .dlbar{display:none;}
   @page{size:A4;margin:0;}
   @media print{body{background:none;}.page{margin:0;box-shadow:none;width:auto;min-height:100vh;}.dlbar{display:none;}}
   </style></head><body>
@@ -4886,8 +4891,15 @@ function openServiceHistoryPDF(car, customer, jobs, mode) {
     function dl(){
       var el = document.getElementById('pg');
       if (window.html2pdf) {
-        html2pdf().set({ margin: 0, filename: '${fname}.pdf', image: { type: 'jpeg', quality: 0.96 },
-          html2canvas: { scale: 2, useCORS: true }, jsPDF: { unit: 'mm', format: 'a4' } }).from(el).save();
+        document.body.classList.add('pdf');
+        html2pdf().set({
+          margin: [8, 0, 10, 0], filename: '${fname}.pdf',
+          image: { type: 'jpeg', quality: 0.96 },
+          html2canvas: { scale: 2, useCORS: true, scrollY: 0, windowWidth: el.scrollWidth },
+          jsPDF: { unit: 'mm', format: 'a4' },
+          pagebreak: { mode: ['css', 'legacy'], avoid: ['.entry', '.summary', '.identity', '.foot'] }
+        }).from(el).save().then(function(){ document.body.classList.remove('pdf'); })
+          .catch(function(){ document.body.classList.remove('pdf'); window.print(); });
       } else { window.print(); }
     }
   <\/script>
