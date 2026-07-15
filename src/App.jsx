@@ -4394,6 +4394,15 @@ function JobNotes({ j, patch, completed }) {
       {!completed && phase && (
         <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: "8px 10px" }}>
           <div style={{ fontSize: 11, fontWeight: 800, color: badge(phase).c, marginBottom: 5 }}>{badge(phase).t}</div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+            {(phase === "pre"
+              ? ["Rim scratch", "Rim bent", "Body scratch", "Body dent", "Tire sidewall damage", "Low tread", "Missing wheel cap", "Missing lock nut key", "Warning light on"]
+              : ["Torque checked", "Pressures set", "Test drive done", "Old parts returned", "Area cleaned"]
+            ).map(s => (
+              <button key={s} type="button" className="btn btn-ghost btn-sm" style={{ fontSize: 10.5, padding: "3px 9px", borderRadius: 14 }}
+                onClick={() => setTxt(t => t ? (t.endsWith(" ") || t.endsWith(",") ? t + s : t + ", " + s) : s)}>{s}</button>
+            ))}
+          </div>
           <textarea className="filter-input" style={{ width: "100%", minHeight: 44 }} placeholder="Note (e.g. front-right rim scratch before service)…" value={txt} onChange={e => setTxt(e.target.value)} />
           {pics.length > 0 && <div style={{ display: "flex", gap: 5, margin: "6px 0", flexWrap: "wrap" }}>{pics.map((u, i) => u === "..." ? <span key={i} style={{ fontSize: 11 }}>⏳</span> : <img key={i} src={u} alt="" style={{ height: 46, borderRadius: 5 }} />)}</div>}
           <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
