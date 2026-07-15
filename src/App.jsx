@@ -1244,6 +1244,19 @@ async function createJob(job) {
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
 const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes"]);
+// Merge a refetched jobs list over local state: a fetched row wins only if
+// strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
+// → keep the local optimistic row (kills the check→uncheck→check flicker).
+function mergeJobs(prev, fresh) {
+  const byId = new Map(prev.map(p => [p.id, p]));
+  return fresh.map(f => {
+    const p = byId.get(f.id);
+    if (!p) return f;
+    const pt = new Date(p.updated_at || 0).getTime();
+    const ft = new Date(f.updated_at || 0).getTime();
+    return ft > pt ? f : p;
+  });
+}
 async function updateJob(id, patch) {
   const clean = { updated_at: new Date().toISOString() }; // every save stamps "last action"
   Object.keys(patch || {}).forEach(k => { if (JOB_COLUMNS.has(k)) clean[k] = patch[k]; });
@@ -6528,10 +6541,11 @@ export default function App() {
       if (document.visibilityState === "hidden") return;
       try {
         const [j, qs] = await Promise.all([fetchJobs(), fetchAllQuotes()]);
-        setJobs(j);
+        let merged;
+        setJobs(prev => (merged = mergeJobs(prev, j)));
         setQuotes(qs);
         setUsingMock(j.some(x => x.id?.startsWith("mock-")));
-        setSelectedJob(prev => prev ? (j.find(x => x.id === prev.id) || prev) : prev);
+        setSelectedJob(prev => prev ? ((merged || j).find(x => x.id === prev.id) || prev) : prev);
       } catch {}
     };
     const iv = setInterval(refreshLive, 60000);
@@ -6551,10 +6565,11 @@ export default function App() {
       t = setTimeout(async () => {
         try {
           const [j, qs] = await Promise.all([fetchJobs(), fetchAllQuotes()]);
-          setJobs(j);
+          let merged;
+          setJobs(prev => (merged = mergeJobs(prev, j)));
           setQuotes(qs);
           setUsingMock(j.some(x => x.id?.startsWith("mock-")));
-          setSelectedJob(prev => prev ? (j.find(x => x.id === prev.id) || prev) : prev);
+          setSelectedJob(prev => prev ? ((merged || j).find(x => x.id === prev.id) || prev) : prev);
         } catch {}
       }, 400);
     };
