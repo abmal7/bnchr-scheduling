@@ -1244,7 +1244,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes"]);
 async function updateJob(id, patch) {
   const clean = { updated_at: new Date().toISOString() }; // every save stamps "last action"
   Object.keys(patch || {}).forEach(k => { if (JOB_COLUMNS.has(k)) clean[k] = patch[k]; });
@@ -3431,6 +3431,17 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
               {jobDurationMin(j) != null && <>{" · "}⏱ Job time: <strong>{fmtDuration(jobDurationMin(j))}</strong></>}
               {Number(j.service_mileage) > 0 && <>{" · "}🧭 Mileage: <strong>{Number(j.service_mileage).toLocaleString()} {j.service_mileage_unit || "KM"}</strong></>}
             </div>
+            {Array.isArray(j.check_notes) && j.check_notes.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                {j.check_notes.map(n => (
+                  <div key={n.id} style={{ fontSize: 12, marginBottom: 4 }}>
+                    <strong style={{ color: n.phase === "pre" ? "#B45309" : "#15803D" }}>{n.phase === "pre" ? "🔍 Pre-check" : "✅ Post-service"}</strong>
+                    {n.text ? ` — ${n.text}` : ""}
+                    {(n.photos || []).map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📷 {i + 1}</a>)}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -4309,6 +4320,64 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
   );
 }
 
+async function uploadJobPhoto(file, jobId) {
+  const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+  const path = `${jobId}/${Date.now()}-${Math.random().toString(36).slice(2,6)}.${ext}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/job-photos/${path}`, {
+    method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": file.type || "image/jpeg" }, body: file });
+  if (!res.ok) throw new Error(await res.text());
+  return `${SUPABASE_URL}/storage/v1/object/public/job-photos/${path}`;
+}
+function JobNotes({ j, patch, completed }) {
+  const [phase, setPhase] = useState(null); // 'pre' | 'post' | null
+  const [txt, setTxt] = useState("");
+  const [pics, setPics] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const notes = Array.isArray(j.check_notes) ? j.check_notes : [];
+  const addPic = async (e) => {
+    const files = Array.from(e.target.files || []); e.target.value = "";
+    setBusy(true);
+    for (const f of files) { try { setPics(p => [...p, "..."]); const u = await uploadJobPhoto(f, j.id); setPics(p => [...p.filter(x => x !== "..."), u]); } catch { setPics(p => p.filter(x => x !== "...")); alert("Photo upload failed — is the job-photos bucket set up?"); } }
+    setBusy(false);
+  };
+  const save = () => {
+    if (!txt.trim() && !pics.length) return;
+    const note = { id: "n" + Date.now(), phase, text: txt.trim(), photos: pics, at: new Date().toISOString() };
+    patch({ check_notes: [...notes, note] });
+    setPhase(null); setTxt(""); setPics([]);
+  };
+  const badge = (p) => p === "pre" ? { t: "🔍 Pre-check", c: "#B45309", bg: "#FFFBEB" } : { t: "✅ Post-service", c: "#15803D", bg: "#F0FDF4" };
+  return (
+    <div style={{ marginBottom: 10 }}>
+      {notes.map(n => { const b = badge(n.phase); return (
+        <div key={n.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", marginBottom: 6, background: b.bg }}>
+          <div style={{ fontSize: 10.5, fontWeight: 800, color: b.c }}>{b.t} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· {fmtDate(n.at)}</span></div>
+          {n.text && <div style={{ fontSize: 12.5, marginTop: 3 }}>{n.text}</div>}
+          {(n.photos || []).length > 0 && <div style={{ display: "flex", gap: 5, marginTop: 5, flexWrap: "wrap" }}>
+            {n.photos.map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ height: 46, borderRadius: 5, border: "1px solid var(--border)", objectFit: "cover" }} /></a>)}
+          </div>}
+        </div>); })}
+      {!completed && !phase && (
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setPhase("pre")}>+ 🔍 Pre-check note</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setPhase("post")}>+ ✅ Post-service note</button>
+        </div>
+      )}
+      {!completed && phase && (
+        <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: "8px 10px" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: badge(phase).c, marginBottom: 5 }}>{badge(phase).t}</div>
+          <textarea className="filter-input" style={{ width: "100%", minHeight: 44 }} placeholder="Note (e.g. front-right rim scratch before service)…" value={txt} onChange={e => setTxt(e.target.value)} />
+          {pics.length > 0 && <div style={{ display: "flex", gap: 5, margin: "6px 0", flexWrap: "wrap" }}>{pics.map((u, i) => u === "..." ? <span key={i} style={{ fontSize: 11 }}>⏳</span> : <img key={i} src={u} alt="" style={{ height: 46, borderRadius: 5 }} />)}</div>}
+          <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer" }}>📷 Add photo<input type="file" accept="image/*" capture="environment" multiple style={{ display: "none" }} onChange={addPic} disabled={busy} /></label>
+            <button className="btn btn-primary btn-sm" disabled={busy || (!txt.trim() && !pics.length)} onClick={save}>Save note</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setPhase(null); setTxt(""); setPics([]); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 function TechStage({ num, title, done, meta, children, muted, reopened, setReopened }) {
   const showBody = !done || reopened[num];
   return (
@@ -4619,6 +4688,7 @@ function TechJobCard({ job, index, onUpdate }) {
         <TechStage reopened={reopened} setReopened={setReopened} num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? (jobDurationMin(j) != null ? fmtDuration(jobDurationMin(j)) : "done") : null}>
           {!completed && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <JobNotes j={j} patch={patch} completed={completed} />
               <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
                 <label style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px" }}>Current mileage (required)</label>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 5 }}>
