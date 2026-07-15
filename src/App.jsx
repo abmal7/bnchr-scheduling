@@ -4396,8 +4396,8 @@ function JobNotes({ j, patch, completed }) {
           <div style={{ fontSize: 11, fontWeight: 800, color: badge(phase).c, marginBottom: 5 }}>{badge(phase).t}</div>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
             {(phase === "pre"
-              ? ["Rim scratch", "Rim bent", "Body scratch", "Body dent", "Tire sidewall damage", "Low tread", "Missing wheel cap", "Missing lock nut key", "Warning light on"]
-              : ["Torque checked", "Pressures set", "Test drive done", "Old parts returned", "Area cleaned"]
+              ? ["6 Points Check", "Rim scratch", "Rim bent", "Body scratch", "Body dent", "Tire sidewall damage", "Low tread", "Missing wheel cap", "Missing lock nut key", "Warning light on"]
+              : ["6 Points Check", "Torque checked", "Pressures set", "Test drive done", "Old parts returned", "Area cleaned"]
             ).map(s => (
               <button key={s} type="button" className="btn btn-ghost btn-sm" style={{ fontSize: 10.5, padding: "3px 9px", borderRadius: 14 }}
                 onClick={() => setTxt(t => t ? (t.endsWith(" ") || t.endsWith(",") ? t + s : t + ", " + s) : s)}>{s}</button>
