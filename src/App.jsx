@@ -4559,8 +4559,9 @@ function TechJobCard({ job, index, onUpdate }) {
     items.forEach(it => {
       const k = it.service_id || it.id;
       if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, isTire: it.kind === "tire", qty: 0, products: [], car: it.car_label || `${j.car_brand || ""} ${j.car_model || ""}`.trim() || "—" };
-      if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim() }); }
-      else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name });
+      const _bad = mism[it.id] && mism[it.id].resolution !== "approved";
+      if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim(), bad: _bad }); }
+      else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name, bad: _bad });
     });
     const groups = {};
     Object.values(svcMap).forEach(l => { (groups[l.car] = groups[l.car] || []).push(l); });
@@ -4662,6 +4663,16 @@ function TechJobCard({ job, index, onUpdate }) {
 
   return (
     <div className="my-job-card" style={{ borderLeft: `4px solid ${statusColor}`, padding: 0, overflow: "hidden" }}>
+      {/* ⚠ mismatch banner — pinned on top whenever any item doesn't match */}
+      {(() => {
+        const bad = productItems.filter(it => mism[it.id] && mism[it.id].resolution !== "approved");
+        if (!bad.length) return null;
+        return (
+          <div style={{ background: "#FEF2F2", borderBottom: "1.5px solid #FCA5A5", padding: "7px 14px", fontSize: 12, fontWeight: 700, color: "#991B1B" }}>
+            ⚠ {bad.length} item{bad.length > 1 ? "s don't" : " doesn't"} match the customer's car — {bad.map(it => it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name).join(" · ")}
+          </div>
+        );
+      })()}
       {/* Collapsed summary — always visible, tap to expand */}
       <div onClick={() => setOpen(o => !o)} style={{ cursor: "pointer", padding: "12px 14px" }}>
         {/* 1 · order number / time */}
@@ -4702,7 +4713,7 @@ function TechJobCard({ job, index, onUpdate }) {
                       <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: "1 1 auto", minWidth: 0, display: "block" }}>
                         {l.products.slice(0, 2).map((p, i) => {
                           const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
-                          return <span key={i} title={p.n}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {short}</span>;
+                          return <span key={i} title={p.n} style={p.bad ? { color: "#DC2626", fontWeight: 700 } : undefined}>{i > 0 ? " · " : ""}<span style={{ color: p.bad ? "#DC2626" : "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.bad ? "⚠ " : ""}{short}</span>;
                         })}
                         {l.products.length > 2 && <span style={{ fontWeight: 600 }}> · +{l.products.length - 2} more</span>}
                       </span>
