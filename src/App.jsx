@@ -1243,7 +1243,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages"]);
 // Merge a refetched jobs list over local state: a fetched row wins only if
 // strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
 // → keep the local optimistic row (kills the check→uncheck→check flicker).
@@ -4449,8 +4449,19 @@ function TechJobCard({ job, index, onUpdate }) {
   useEffect(() => { setJ(job); }, [job.id, job.updated_at, job.status, job.truck_status, job.parts_released, job.techs_released]); // resync only on real changes, not every keystroke re-render
   const [open, setOpen] = useState(false);
   const [reopened, setReopened] = useState({}); // manually reopened done-stages
-  const [mileage, setMileage] = useState(job.service_mileage || "");
-  const [milesUnit, setMilesUnit] = useState(job.service_mileage_unit || "KM");
+  // distinct cars on this order (multi-car orders get one mileage each)
+  const jobCars = (() => {
+    const m = new Map();
+    (job.items || []).forEach(it => {
+      const key = it.car_id || it.car_label || "primary";
+      if (!m.has(key)) m.set(key, { key, car_id: it.car_id || (key === "primary" ? job.car_id : null), label: it.car_label || `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "Car" });
+    });
+    if (!m.size) m.set("primary", { key: "primary", car_id: job.car_id, label: `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "Car" });
+    return [...m.values()];
+  })();
+  const [mileages, setMileages] = useState(() => job.car_mileages || (job.service_mileage ? { [jobCars[0].key]: { km: job.service_mileage, unit: job.service_mileage_unit || "KM" } } : {}));
+  const mSet = (key, patch) => setMileages(p => ({ ...p, [key]: { ...(p[key] || { unit: "KM" }), ...patch } }));
+  const allMiles = jobCars.every(c => Number((mileages[c.key] || {}).km) > 0);
   const items = j.items || [];
   const productItems = items.filter(it => it.tire_id || (Number(it.unit_price) || 0) > 0);
   const hasProducts = productItems.length > 0;
@@ -4515,22 +4526,26 @@ function TechJobCard({ job, index, onUpdate }) {
   const canComplete = !hasProducts || (s2done && s3done);
   const complete = () => {
     if (!canComplete || completed) return;
-    if (!(Number(mileage) > 0)) { alert("Please enter the car's current mileage before completing."); return; }
+    if (!allMiles) { alert("Please enter the current mileage for every car before completing."); return; }
     const now = new Date().toISOString();
+    const cm = {};
+    jobCars.forEach(c => { const v = mileages[c.key]; cm[c.key] = { car_id: c.car_id, label: c.label, km: Number(v.km), unit: v.unit || "KM" }; });
+    const first = cm[jobCars[0].key];
     const p = { truck_status: "completed", status: "done", completed_at: now,
-      service_mileage: Number(mileage), service_mileage_unit: milesUnit };
+      car_mileages: cm, service_mileage: first.km, service_mileage_unit: first.unit };
     if (hasDontFit) {
       p.partial_completion = true;
       p.unfitted_items = dontFitItems.map(it => `${it.qty}× ${it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name} — ${mism[it.id].reason}`).join(" · ");
     }
     patch(p);
     // append to the car's mileage log (fire-and-forget; never blocks completion)
-    if (j.car_id) {
-      appendCarMileage(j.car_id, {
-        date: now, km: Number(mileage), unit: milesUnit,
+    jobCars.forEach(c => {
+      const v = cm[c.key];
+      if (c.car_id && v) appendCarMileage(c.car_id, {
+        date: now, km: v.km, unit: v.unit,
         service: j.service_type || "", job_id: j.id, mobile: j.customer_mobile || "",
       });
-    }
+    });
   };
 
   const ts = completed ? "completed" : started ? "processing" : partsReceived ? "arrived" : "scheduled";
@@ -4740,20 +4755,26 @@ function TechJobCard({ job, index, onUpdate }) {
           {!completed && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px" }}>Current mileage (required)</label>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 5 }}>
-                  <input className="filter-input" style={{ width: 130 }} type="number" min="0" inputMode="numeric"
-                    placeholder="e.g. 82500" value={mileage} onChange={e => setMileage(e.target.value)} />
-                  <div style={{ display: "flex", gap: 4 }}>
-                    {["KM", "Mile"].map(u => (
-                      <button key={u} type="button" className={`btn btn-sm ${milesUnit === u ? "btn-primary" : "btn-ghost"}`} onClick={() => setMilesUnit(u)}>{u}</button>
-                    ))}
-                  </div>
-                </div>
+                <label style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px" }}>Current mileage (required{jobCars.length > 1 ? " — per car" : ""})</label>
+                {jobCars.map(c => {
+                  const v = mileages[c.key] || { km: "", unit: "KM" };
+                  return (
+                    <div key={c.key} style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+                      {jobCars.length > 1 && <span style={{ fontSize: 12, fontWeight: 700, minWidth: 110 }}>🚗 {c.label}</span>}
+                      <input className="filter-input" style={{ width: 120 }} type="number" min="0" inputMode="numeric"
+                        placeholder="e.g. 82500" value={v.km || ""} onChange={e => mSet(c.key, { km: e.target.value })} />
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {["KM", "Mile"].map(u => (
+                          <button key={u} type="button" className={`btn btn-sm ${(v.unit || "KM") === u ? "btn-primary" : "btn-ghost"}`} onClick={() => mSet(c.key, { unit: u })}>{u}</button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
               <div>
-                <button className="btn btn-success btn-sm" disabled={!canComplete || !(Number(mileage) > 0)} onClick={complete}
-                  title={!canComplete ? "Finish stages 1 and 2 first" : !(Number(mileage) > 0) ? "Enter the mileage first" : ""}>
+                <button className="btn btn-success btn-sm" disabled={!canComplete || !allMiles} onClick={complete}
+                  title={!canComplete ? "Finish stages 1 and 2 first" : !allMiles ? "Enter mileage for every car first" : ""}>
                   {hasDontFit ? "Complete Job (partial — skip don't-fit items)" : "Complete Job"}
                 </button>
                 {!canComplete && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>Finish both verifications to unlock.</span>}
