@@ -4927,6 +4927,7 @@ function openServiceHistoryPDF(car, customer, jobs, mode, lang) {
   <script>
     function dl(){
       var el = document.getElementById('pg');
+      if (${ar ? "true" : "false"}) { window.print(); return; } // Arabic: native print shapes letters correctly
       if (window.html2pdf) {
         document.body.classList.add('pdf');
         document.documentElement.classList.add('pdf');
