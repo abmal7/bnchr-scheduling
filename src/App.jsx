@@ -6467,7 +6467,9 @@ export default function App() {
     }
     if (role === "technician") {
       // each truck has its own password; log in locked to that truck
-      if (pw === TRUCK_PASSWORDS[loginTruck]) { setSessionTruck(loginTruck); setSessionAgent(null); setIsOwner(false); setAuthed(true); setPwErr(false); saveSession(loginTruck, null); }
+      const entered = pw.trim();
+      const expected = String(TRUCK_PASSWORDS[loginTruck] || "").trim();
+      if (expected && entered === expected) { setSessionTruck(loginTruck); setSessionAgent(null); setIsOwner(false); setAuthed(true); setPwErr(false); saveSession(loginTruck, null); }
       else setPwErr(true);
     } else if (role === "sales" && pw === SALES_AGENT_PASSWORDS[loginAgent]) {
       // per-agent login: orders auto-fill this agent; Ali's login unlocks profitability
