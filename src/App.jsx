@@ -4320,7 +4320,26 @@ function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
   );
 }
 
-async function uploadJobPhoto(file, jobId) {
+// Shrink a photo in-browser before upload (max 1400px, JPEG ~0.8) — damage
+// documentation doesn't need full camera resolution; this ~10x's storage life.
+async function compressPhoto(file) {
+  try {
+    const img = await new Promise((res, rej) => {
+      const u = URL.createObjectURL(file); const im = new Image();
+      im.onload = () => res(im); im.onerror = rej; im.src = u;
+    });
+    const MAX = 1400;
+    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+    if (scale === 1 && file.size < 400 * 1024) return file; // already small
+    const cv = document.createElement("canvas");
+    cv.width = Math.round(img.width * scale); cv.height = Math.round(img.height * scale);
+    cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+    const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.8));
+    return blob && blob.size < file.size ? new File([blob], (file.name.replace(/\.\w+$/, "") || "photo") + ".jpg", { type: "image/jpeg" }) : file;
+  } catch { return file; } // any failure → upload original rather than block
+}
+async function uploadJobPhoto(rawFile, jobId) {
+  const file = await compressPhoto(rawFile);
   const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
   const path = `${jobId}/${Date.now()}-${Math.random().toString(36).slice(2,6)}.${ext}`;
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/job-photos/${path}`, {
