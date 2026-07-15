@@ -4759,14 +4759,16 @@ function TechJobCard({ job, index, onUpdate }) {
                 {jobCars.map(c => {
                   const v = mileages[c.key] || { km: "", unit: "KM" };
                   return (
-                    <div key={c.key} style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
-                      {jobCars.length > 1 && <span style={{ fontSize: 12, fontWeight: 700, minWidth: 110 }}>🚗 {c.label}</span>}
-                      <input className="filter-input" style={{ width: 120 }} type="number" min="0" inputMode="numeric"
-                        placeholder="e.g. 82500" value={v.km || ""} onChange={e => mSet(c.key, { km: e.target.value })} />
-                      <div style={{ display: "flex", gap: 4 }}>
-                        {["KM", "Mile"].map(u => (
-                          <button key={u} type="button" className={`btn btn-sm ${(v.unit || "KM") === u ? "btn-primary" : "btn-ghost"}`} onClick={() => mSet(c.key, { unit: u })}>{u}</button>
-                        ))}
+                    <div key={c.key} style={{ marginTop: 8 }}>
+                      {jobCars.length > 1 && <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>🚗 {c.label}</div>}
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input className="filter-input" style={{ width: 130 }} type="number" min="0" inputMode="numeric"
+                          placeholder="e.g. 82500" value={v.km || ""} onChange={e => mSet(c.key, { km: e.target.value })} />
+                        <div style={{ display: "flex", gap: 4 }}>
+                          {["KM", "Mile"].map(u => (
+                            <button key={u} type="button" className={`btn btn-sm ${(v.unit || "KM") === u ? "btn-primary" : "btn-ghost"}`} onClick={() => mSet(c.key, { unit: u })}>{u}</button>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   );
