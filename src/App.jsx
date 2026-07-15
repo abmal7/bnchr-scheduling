@@ -3430,17 +3430,6 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
               {jobDurationMin(j) != null && <>{" · "}⏱ Job time: <strong>{fmtDuration(jobDurationMin(j))}</strong></>}
               {Number(j.service_mileage) > 0 && <>{" · "}🧭 Mileage: <strong>{Number(j.service_mileage).toLocaleString()} {j.service_mileage_unit || "KM"}</strong></>}
             </div>
-            {Array.isArray(j.check_notes) && j.check_notes.length > 0 && (
-              <div style={{ marginTop: 8 }}>
-                {j.check_notes.map(n => (
-                  <div key={n.id} style={{ fontSize: 12, marginBottom: 4 }}>
-                    <strong style={{ color: n.phase === "pre" ? "#B45309" : "#15803D" }}>{n.phase === "pre" ? "🔍 Pre-check" : "✅ Post-service"}</strong>
-                    {n.text ? ` — ${n.text}` : ""}
-                    {(n.photos || []).map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer" style={{ marginLeft: 6 }}>📷 {i + 1}</a>)}
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -3555,6 +3544,27 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
           )}
         </div>
       </div>
+
+      {Array.isArray(j.check_notes) && j.check_notes.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-header"><h3>Technician Notes</h3></div>
+          <div style={{ padding: "12px 16px" }}>
+            {j.check_notes.map(n => (
+              <div key={n.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", marginBottom: 8, background: n.phase === "pre" ? "#FFFBEB" : "#F0FDF4" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: n.phase === "pre" ? "#B45309" : "#15803D" }}>
+                  {n.phase === "pre" ? "🔍 Pre-check" : "✅ Post-service"} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· {fmtDate(n.at)}</span>
+                </div>
+                {n.text && <div style={{ fontSize: 13, marginTop: 4 }}>{n.text}</div>}
+                {(n.photos || []).length > 0 && (
+                  <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                    {n.photos.map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ height: 64, borderRadius: 6, border: "1px solid var(--border)", objectFit: "cover" }} /></a>)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {showCancel && (
         <div className="overlay" onClick={e => e.target === e.currentTarget && setShowCancel(false)}>
@@ -4704,9 +4714,9 @@ function TechJobCard({ job, index, onUpdate }) {
 
         {/* Stage 4 · Complete */}
         <TechStage reopened={reopened} setReopened={setReopened} num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? (jobDurationMin(j) != null ? fmtDuration(jobDurationMin(j)) : "done") : null}>
+          <JobNotes j={j} patch={patch} completed={completed} />
           {!completed && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <JobNotes j={j} patch={patch} completed={completed} />
               <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
                 <label style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px" }}>Current mileage (required)</label>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 5 }}>
