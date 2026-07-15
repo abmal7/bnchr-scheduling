@@ -3358,6 +3358,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
   const mismEntries = Object.values(j.tech_mismatch || {});
   const c4Override = checks[3] && mismEntries.some(m => m.resolution === "approved" || m.resolution === "dont_fit");
 
+  const misBad = (id) => { const m = (j.tech_mismatch || {})[id]; return m && m.resolution !== "approved"; };
   // group services by their linked car for the Service Details section
   const svcCarLabel = (s) => {
     const it = (j.items || []).find(x => x.service_id === s.id && x.car_label);
@@ -3511,13 +3512,13 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                             {isTire ? (<>
                               {s.tire_id && (
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span><CollectedChip ok={itemOK(j, s.staggered ? s.id + "-F" : s.id)} /></span>
+                                  <span style={misBad(s.staggered ? s.id + "-F" : s.id) ? { color: "#DC2626", fontWeight: 700 } : undefined}>{misBad(s.staggered ? s.id + "-F" : s.id) ? "⚠ " : ""}<span style={{ color: misBad(s.staggered ? s.id + "-F" : s.id) ? "#DC2626" : "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span><CollectedChip ok={itemOK(j, s.staggered ? s.id + "-F" : s.id)} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.qty) || 0) * (Number(s.unit_price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )}
                               {s.staggered && s.rear_tire_id && (
                                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span><CollectedChip ok={itemOK(j, s.id + "-R")} /></span>
+                                  <span style={misBad(s.id + "-R") ? { color: "#DC2626", fontWeight: 700 } : undefined}>{misBad(s.id + "-R") ? "⚠ " : ""}<span style={{ color: misBad(s.id + "-R") ? "#DC2626" : "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span><CollectedChip ok={itemOK(j, s.id + "-R")} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.rear_unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.rear_qty) || 0) * (Number(s.rear_unit_price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )}
@@ -3525,7 +3526,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
                             </>) : (
                               (s.parts || []).filter(p => p.name || Number(p.price) > 0).length ? (s.parts || []).filter(p => p.name || Number(p.price) > 0).map(p => (
                                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span><span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}<CollectedChip ok={itemOK(j, p.id)} /></span>
+                                  <span style={misBad(p.id) ? { color: "#DC2626", fontWeight: 700 } : undefined}>{misBad(p.id) ? "⚠ " : ""}<span style={{ color: misBad(p.id) ? "#DC2626" : "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}<CollectedChip ok={itemOK(j, p.id)} /></span>
                                   <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(p.price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(p.qty) || 1) * (Number(p.price) || 0)).toFixed(3)}</span></span>
                                 </div>
                               )) : <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — parts with customer{s.description ? ` · ${s.description}` : ""}</div>
