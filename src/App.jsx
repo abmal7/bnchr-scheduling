@@ -4798,7 +4798,7 @@ function openServiceHistoryPDF(car, customer, jobs, mode) {
   const entries = carJobs.map(j => {
     const d = new Date(j.scheduled_at || j.created_at);
     const km = kmFor(j);
-    const ch = detailed || true ? chipsFor(j) : "";
+    const ch = detailed ? chipsFor(j) : "";
     return `<div class="entry">
       <div class="date"><div class="dow">${DOW[d.getDay()]}</div><div class="dm mono">${d.getDate()} ${MON[d.getMonth()]}</div><div class="yr mono">${d.getFullYear()}</div></div>
       <div class="spine"><div class="node"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.2"/><path d="M12 4.5v1.6M19.5 12h-1.6M12 19.5v-1.6M4.5 12h1.6"/></svg></div></div>
@@ -4856,8 +4856,9 @@ function openServiceHistoryPDF(car, customer, jobs, mode) {
   .dlbar{text-align:center;margin:14px 0 30px;}
   .dlbtn{padding:11px 26px;font-size:13px;font-weight:700;background:#16181d;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:'Archivo',sans-serif;}
   .entry{page-break-inside:avoid;break-inside:avoid;}
-  body.pdf{background:none;}
-  body.pdf .page{margin:0;box-shadow:none;min-height:auto;width:210mm;}
+  body.pdf{background:none;margin:0;padding:0;}
+  html.pdf{margin:0;padding:0;}
+  body.pdf .page{margin:0 !important;box-shadow:none;min-height:auto;width:794px;padding:34px 40px 28px;}
   body.pdf .foot{margin-top:26px;}
   body.pdf .dlbar{display:none;}
   @page{size:A4;margin:0;}
@@ -4892,14 +4893,16 @@ function openServiceHistoryPDF(car, customer, jobs, mode) {
       var el = document.getElementById('pg');
       if (window.html2pdf) {
         document.body.classList.add('pdf');
+        document.documentElement.classList.add('pdf');
+        window.scrollTo(0, 0);
         html2pdf().set({
-          margin: [8, 0, 10, 0], filename: '${fname}.pdf',
+          margin: 0, filename: '${fname}.pdf',
           image: { type: 'jpeg', quality: 0.96 },
-          html2canvas: { scale: 2, useCORS: true, scrollY: 0, windowWidth: el.scrollWidth },
+          html2canvas: { scale: 2, useCORS: true, scrollX: 0, scrollY: 0, x: 0, y: 0, windowWidth: 794 },
           jsPDF: { unit: 'mm', format: 'a4' },
           pagebreak: { mode: ['css', 'legacy'], avoid: ['.entry', '.summary', '.identity', '.foot'] }
-        }).from(el).save().then(function(){ document.body.classList.remove('pdf'); })
-          .catch(function(){ document.body.classList.remove('pdf'); window.print(); });
+        }).from(el).save().then(function(){ document.body.classList.remove('pdf'); document.documentElement.classList.remove('pdf'); })
+          .catch(function(){ document.body.classList.remove('pdf'); document.documentElement.classList.remove('pdf'); window.print(); });
       } else { window.print(); }
     }
   <\/script>
