@@ -1280,7 +1280,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician"]);
 // Merge a refetched jobs list over local state: a fetched row wins only if
 // strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
 // → keep the local optimistic row (kills the check→uncheck→check flicker).
@@ -1318,6 +1318,37 @@ async function fetchCatalogItems() {
   try { const d = await sbAll("/catalog_items?select=*&active=eq.true&order=description.asc"); return d || []; }
   catch { return []; }
 }
+
+// ─── Upsell leads (technician-spotted opportunities) ──────────────────────────
+async function fetchUpsellLeads() {
+  try { const d = await sbAll("/upsell_leads?select=*&order=created_at.desc"); return d || []; }
+  catch { return []; }
+}
+async function createUpsellLead(lead) {
+  try { const r = await sb("/upsell_leads", { method: "POST", body: JSON.stringify(lead) }); return r?.[0] || { ...lead, id: `lu-${Date.now()}`, status: "open", created_at: new Date().toISOString() }; }
+  catch (e) {
+    console.error("Upsell lead create FAILED:", e?.message || e);
+    alert("⚠ Could not save the upsell to the server.\n\n" + String(e?.message || e).slice(0, 300));
+    return null;
+  }
+}
+async function updateUpsellLead(id, patch) {
+  try { await sb(`/upsell_leads?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }) }); return true; }
+  catch (e) { console.error("Upsell lead save FAILED:", e?.message || e); return false; }
+}
+// Walk a thread up to its root order (revisits/upsells always link to the root).
+function rootJobId(job, all) {
+  let cur = job, guard = 0;
+  while (cur && cur.parent_job_id && guard++ < 10) {
+    const p = (all || []).find(x => x.id === cur.parent_job_id);
+    if (!p) return cur.parent_job_id;
+    cur = p;
+  }
+  return cur ? cur.id : null;
+}
+const leadAgeDays = (l) => Math.floor((Date.now() - new Date(l.created_at || Date.now()).getTime()) / 86400000);
+const leadAgeColor = (d) => d >= 7 ? "#DC2626" : d >= 3 ? "#B45309" : "var(--muted)";
+const LINK_BADGE = { revisit: { t: "🔁 Revisit", c: "#1D4ED8", bg: "#EFF6FF" }, upsell: { t: "⬆ Upsell", c: "#15803D", bg: "#F0FDF4" } };
 async function fetchAddresses() {
   try { const d = await sbAll("/customer_addresses?select=*&order=id.asc"); return d || []; }
   catch { return MOCK_ADDRESSES; }
@@ -2742,6 +2773,18 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       const services = prefillOrder.services.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: null }));
       setF(p => ({ ...p, services, ...(prefillOrder.mobile && !c ? { customer_mobile: prefillOrder.mobile } : {}) }));
     }
+    // Revisit: carry over the customer + address from the original order, prime the
+    // feedback note — but start with a FRESH service (sales picks what's needed).
+    const rv = prefillOrder.revisitOf;
+    if (rv) {
+      setF(p => ({
+        ...p,
+        ...(c ? {} : { customer_name: p.customer_name || rv.customer_name || "", customer_mobile: p.customer_mobile || rv.customer_mobile || "" }),
+        area: rv.area || (c && c.area) || p.area, governorate: rv.governorate || "",
+        block: rv.block || "", street: rv.street || "", lane: rv.lane || "", house: rv.house || "", map_link: rv.map_link || "",
+        notes: p.notes || prefillOrder.noteHint || "",
+      }));
+    }
     const src = prefillOrder.sourceJob;
     if (src) {
       // Rebuild service blocks from the source job (copy services/cars/prices/discounts;
@@ -2963,6 +3006,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
 
     const job = {
       ...common,
+      ...(prefillOrder && prefillOrder.linkTo ? prefillOrder.linkTo : {}), // thread link: parent_job_id / link_type / upsell credit
       created_at: new Date().toISOString(),
       parts_status: "pending",
       truck_status: "scheduled",
@@ -2986,6 +3030,12 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
+          {!isEdit && prefillOrder?.linkTo && (
+            <div style={{ margin: "0 0 14px", padding: "8px 12px", background: prefillOrder.linkTo.link_type === "upsell" ? "#F0FDF4" : "#EFF6FF", border: `1px solid ${prefillOrder.linkTo.link_type === "upsell" ? "#BBF7D0" : "#BFDBFE"}`, borderRadius: 8, fontSize: 12.5, color: prefillOrder.linkTo.link_type === "upsell" ? "#166534" : "#1E40AF", fontWeight: 600 }}>
+              {prefillOrder.linkLabel || `🔗 This order will be linked to the original order as a ${prefillOrder.linkTo.link_type}.`}
+              {prefillOrder.linkTo.link_type === "upsell" && prefillOrder.linkTo.upsell_truck ? ` · credit: ${prefillOrder.linkTo.upsell_truck}` : ""}
+            </div>
+          )}
           {isEdit && editJob.status === "cancelled" && (
             <div style={{ margin: "10px 16px 0", padding: "8px 12px", background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12.5, color: "#92400E" }}>
               ↺ This order is <strong>cancelled</strong>. Saving will restore it as <strong>Booked</strong> and it will go through parts &amp; verification again.
@@ -3379,7 +3429,139 @@ function NewCustomerModal({ initialName, initialMobile, onClose, onCreated }) {
 const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 
 // ─── Job Detail (with order actions) ─────────────────────────────────────────
-function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, role }) {
+// ─── Threads: revisits & upsells linked to an original order ──────────────────
+function UpsellLeadCard({ lead, role, onConvert, onDismiss, showCustomer }) {
+  const [dismissing, setDismissing] = useState(false);
+  const [reason, setReason] = useState("Customer declined");
+  const age = leadAgeDays(lead);
+  const open = lead.status === "open";
+  const photos = Array.isArray(lead.photo_urls) ? lead.photo_urls : [];
+  return (
+    <div style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${open ? leadAgeColor(age) : "var(--border)"}`, borderRadius: 8, padding: "10px 12px", background: "var(--card)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>
+          ⬆ {lead.service_type || "Service"}
+          {showCustomer && lead.customer_name ? <span style={{ fontWeight: 500, color: "var(--muted)" }}> · {lead.customer_name}{lead.customer_mobile ? ` · ${lead.customer_mobile}` : ""}</span> : null}
+        </div>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: open ? leadAgeColor(age) : "var(--muted)" }}>
+          {open ? (age === 0 ? "today" : `${age} day${age > 1 ? "s" : ""} old`) : lead.status === "converted" ? "✓ converted" : "✕ dismissed"}
+        </div>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>
+        Spotted by <strong style={{ color: "var(--text)" }}>{lead.truck || "—"}</strong>{lead.technician ? ` · ${lead.technician}` : ""} · {fmtDate(lead.created_at)}
+      </div>
+      {lead.note && <div style={{ fontSize: 12.5, marginTop: 6 }}>{lead.note}</div>}
+      {photos.length > 0 && (
+        <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+          {photos.map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)" }} /></a>)}
+        </div>
+      )}
+      {lead.status === "dismissed" && lead.dismiss_reason && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>Reason: {lead.dismiss_reason}</div>}
+      {open && role === "sales" && (onConvert || onDismiss) && (
+        !dismissing ? (
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            {onConvert && <button type="button" className="btn btn-primary btn-sm" onClick={() => onConvert(lead)}>✓ Convert to order</button>}
+            {onDismiss && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDismissing(true)}>✕ Dismiss</button>}
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <select className="filter-select" value={reason} onChange={e => setReason(e.target.value)}>
+              {["Customer declined", "Not needed after check", "Too expensive for customer", "Customer will do elsewhere", "Duplicate", "Other"].map(r => <option key={r}>{r}</option>)}
+            </select>
+            <button type="button" className="btn btn-sm" style={{ background: "var(--danger)", color: "#fff" }} onClick={() => { onDismiss(lead, reason); setDismissing(false); }}>Confirm dismiss</button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDismissing(false)}>Back</button>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+function TechUpsellForm({ job, onCreate }) {
+  const [open, setOpen] = useState(false);
+  const [svc, setSvc] = useState(SERVICE_NAMES[0]);
+  const [note, setNote] = useState("");
+  const [pics, setPics] = useState([]); // File[]
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    let photo_urls = [];
+    try { photo_urls = await Promise.all(pics.slice(0, 3).map(f => uploadJobPhoto(f, `upsell-${job.id}`))); }
+    catch (e) { alert("⚠ Photo upload failed — the upsell will be saved without photos."); }
+    const ok = await onCreate({
+      job_id: job.id, truck: job.assigned_truck || null, technician: job.assigned_technician || null,
+      customer_name: job.customer_name || "", customer_mobile: job.customer_mobile || "",
+      service_type: svc, note: note.trim(), photo_urls, status: "open",
+    });
+    setBusy(false);
+    if (ok) { setOpen(false); setNote(""); setPics([]); }
+  };
+  if (!open) return <button type="button" className="btn btn-primary btn-sm" onClick={() => setOpen(true)}>⬆ Upsell</button>;
+  return (
+    <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: 10, marginTop: 8, width: "100%" }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>⬆ New upsell — {job.assigned_truck}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <select className="filter-select" value={svc} onChange={e => setSvc(e.target.value)}>
+          {SERVICE_NAMES.map(n => <option key={n}>{n}</option>)}
+        </select>
+        <textarea className="filter-input" rows={2} placeholder="What did you notice? (e.g., front pads at 20%, tires cracking)" value={note} onChange={e => setNote(e.target.value)} style={{ resize: "vertical" }} />
+        <input type="file" accept="image/*" multiple onChange={e => setPics(Array.from(e.target.files || []).slice(0, 3))} />
+        {pics.length > 0 && <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{pics.length} photo{pics.length > 1 ? "s" : ""} attached</div>}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={submit}>{busy ? "Saving…" : "Send to sales"}</button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, onDismissLead }) {
+  const parent = j.parent_job_id ? (jobs || []).find(x => x.id === j.parent_job_id) : null;
+  const children = (jobs || []).filter(x => x.parent_job_id === j.id);
+  const leads = (upsellLeads || []).filter(l => l.job_id === j.id);
+  if (!parent && !j.parent_job_id && children.length === 0 && leads.length === 0) return null;
+  const linkRow = (job, badgeKey) => {
+    const b = LINK_BADGE[badgeKey] || { t: "🔗 Linked", c: "var(--muted)", bg: "var(--bg)" };
+    return (
+      <div key={job.id} onClick={() => onOpenJob && onOpenJob(job)} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, cursor: onOpenJob ? "pointer" : "default", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10.5, fontWeight: 800, color: b.c, background: b.bg, border: `1px solid ${b.c}33`, borderRadius: 5, padding: "2px 7px" }}>{b.t}</span>
+          <span style={{ fontSize: 12.5, fontWeight: 600 }}>{job.service_type}</span>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(job.scheduled_at)} · {job.assigned_truck}{badgeKey === "upsell" && job.upsell_truck ? ` · credit ${job.upsell_truck}` : ""}</span>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--accent)" }}>KWD {Number(job.total || 0).toFixed(3)}</span>
+          <StatusPill status={job.status} />
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div className="card">
+      <div className="card-body" style={{ padding: "12px 16px" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>🧵 Thread</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {j.parent_job_id && (parent
+            ? (
+              <div onClick={() => onOpenJob && onOpenJob(parent)} style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, cursor: onOpenJob ? "pointer" : "default", background: "var(--bg)", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--muted)" }}>ORIGINAL</span>
+                <span style={{ fontSize: 12.5, fontWeight: 600 }}>{parent.service_type}</span>
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(parent.scheduled_at)} · {parent.assigned_truck}{parent.invoice_no ? ` · ${parent.invoice_no}` : ""}</span>
+                {j.link_type && LINK_BADGE[j.link_type] && <span style={{ fontSize: 11, color: LINK_BADGE[j.link_type].c, fontWeight: 700, marginLeft: "auto" }}>this order is a {LINK_BADGE[j.link_type].t.replace(/^\S+ /, "")}</span>}
+              </div>
+            )
+            : <div style={{ fontSize: 12, color: "var(--muted)" }}>🔗 Linked to an original order (not loaded)</div>
+          )}
+          {children.map(ch => linkRow(ch, ch.link_type || "revisit"))}
+          {leads.map(l => <UpsellLeadCard key={l.id} lead={l} role={role} onConvert={onConvertLead} onDismiss={onDismissLead} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onRevisit, jobs, upsellLeads, onOpenJob, onCreateUpsell, onConvertLead, onDismissLead, role }) {
   const [j, setJ] = useState(job);
   useEffect(() => { setJ(job); }, [job]); // follow live updates (edits, realtime sync)
   const [showCancel, setShowCancel] = useState(false);
@@ -3473,9 +3655,10 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, rol
           {j.notes && <div style={{ fontSize: 12.5, color: "#B45309", fontWeight: 500 }}>⚠ {j.notes}</div>}
         </div>
         {role === "sales" && !isCancelled && (
-          <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(j)}>✏ Edit</button>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => onReschedule(j)}>↻ Reschedule</button>
+            {jobSuccessful(j) && onRevisit && <button type="button" className="btn btn-ghost btn-sm" style={{ color: "#1D4ED8" }} onClick={() => onRevisit(j)}>🔁 Revisit / Follow-up</button>}
             <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", marginLeft: "auto" }} onClick={() => setShowCancel(true)}>✕ Cancel</button>
           </div>
         )}
@@ -3487,6 +3670,24 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, rol
           </div>
         )}
       </div>
+
+      {/* ── Thread: original / revisits / upsells linked to this order ── */}
+      <ThreadSection j={j} jobs={jobs} upsellLeads={upsellLeads} role={role} onOpenJob={onOpenJob} onConvertLead={onConvertLead} onDismissLead={onDismissLead} />
+
+      {/* ── Technician: spot an upsell on a completed job ── */}
+      {role === "technician" && jobSuccessful(j) && !isCancelled && onCreateUpsell && (
+        <div className="card">
+          <div className="card-body" style={{ padding: "12px 16px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Spotted something the car needs?</div>
+                <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>Send it to sales — if it converts, the credit counts for {j.assigned_truck}.</div>
+              </div>
+              <TechUpsellForm job={j} onCreate={onCreateUpsell} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Order actions — one slim card ── */}
       {(role === "sales" || role === "purchaser") && (
@@ -4997,7 +5198,10 @@ function HistoryView({ jobs, onSelectJob, onEdit, onReorder }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
             <div>
               <div style={{ fontWeight: 600, fontSize: 14 }}>{job.customer_name}</div>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>{job.service_type} · {job.car_brand} {job.car_model}</div>
+              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>
+                {job.link_type && LINK_BADGE[job.link_type] && <span style={{ fontSize: 10, fontWeight: 800, color: LINK_BADGE[job.link_type].c, background: LINK_BADGE[job.link_type].bg, border: `1px solid ${LINK_BADGE[job.link_type].c}33`, borderRadius: 5, padding: "1px 6px", marginRight: 6 }}>{LINK_BADGE[job.link_type].t}</span>}
+                {job.service_type} · {job.car_brand} {job.car_model}
+              </div>
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{fmtDateTime(job.scheduled_at)} · {job.assigned_truck} · {job.sales_agent}</div>
               {job.status === "cancelled" && job.cancel_reason && job.cancel_reason !== "—" && (
                 <div style={{ fontSize: 12, color: "#991B1B", marginTop: 4 }}>✕ {job.cancel_reason}{job.cancelled_at ? ` · ${fmtDate(job.cancelled_at)}` : ""}</div>
@@ -6613,6 +6817,7 @@ export default function App() {
   const [editingJob, setEditingJob] = useState(null);
   const [prefillSlot, setPrefillSlot] = useState(null);
   const [prefillOrder, setPrefillOrder] = useState(null);
+  const [upsellLeads, setUpsellLeads] = useState([]);
   // Deep link from the Tire System: ?tire_id=…&qty=4&mobile=… → open New Order prefilled
   const [deepLink, setDeepLink] = useState(() => {
     try {
@@ -6669,7 +6874,8 @@ export default function App() {
   useEffect(() => {
     if (!authed) return;
     setLoading(true);
-    Promise.all([fetchTruckConfig(), fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes(), fetchCatalogItems()]).then(([tc, j, c, cr, ad, qs, cat]) => {
+    Promise.all([fetchTruckConfig(), fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes(), fetchCatalogItems(), fetchUpsellLeads()]).then(([tc, j, c, cr, ad, qs, cat, ul]) => {
+      setUpsellLeads(ul || []);
       setTruckCfg(tc);
       setJobs(j);
       setQuotes(qs);
@@ -6810,6 +7016,59 @@ export default function App() {
     customers.find(c => last8(c.mobile) === last8(job.customer_mobile)) || null,
     job
   );
+
+  // ── Threads: revisits & upsells ──
+  const matchCustomerOf = (job) =>
+    customers.find(c => c.id === job.customer_id) ||
+    customers.find(c => last8(c.mobile) === last8(job.customer_mobile)) || null;
+
+  // Sales: create a linked follow-up order after customer feedback.
+  const revisitJob = (job) => {
+    setSelectedJob(null); setSelectedCustomer(null); setPrefillSlot(null);
+    setPrefillOrder({
+      customer: matchCustomerOf(job),
+      name: job.customer_name, mobile: job.customer_mobile,
+      revisitOf: job,
+      noteHint: "Revisit — customer feedback: ",
+      linkTo: { parent_job_id: rootJobId(job, jobs), link_type: "revisit" },
+      linkLabel: `🔁 Revisit — will be linked to ${job.customer_name}'s order of ${fmtDate(job.scheduled_at)}`,
+    });
+    setShowNew(true);
+  };
+
+  // Technician: log an upsell lead on a completed job.
+  const handleCreateUpsell = async (lead) => {
+    const r = await createUpsellLead(lead);
+    if (r) setUpsellLeads(prev => [r, ...prev]);
+    return !!r;
+  };
+
+  // Sales: dismiss an open lead with a reason.
+  const handleDismissLead = async (lead, reason) => {
+    setUpsellLeads(prev => prev.map(l => l.id === lead.id ? { ...l, status: "dismissed", dismiss_reason: reason } : l));
+    await updateUpsellLead(lead.id, { status: "dismissed", dismiss_reason: reason });
+  };
+
+  // Sales: convert an open lead into a linked order (credit frozen to the spotting truck).
+  const handleConvertLead = (lead) => {
+    const parent = jobs.find(j => j.id === lead.job_id) || null;
+    setSelectedJob(null); setSelectedCustomer(null); setPrefillSlot(null);
+    setPrefillOrder({
+      customer: parent ? matchCustomerOf(parent) : (customers.find(c => last8(c.mobile) === last8(lead.customer_mobile)) || null),
+      name: lead.customer_name, mobile: lead.customer_mobile,
+      services: [{ ...newService(lead.service_type || SERVICE_NAMES[0]), labor: Number(SERVICE_CATALOG[lead.service_type]?.flatLabor) || 0 }],
+      revisitOf: parent || undefined, // reuse address carry-over
+      leadId: lead.id,
+      linkTo: {
+        parent_job_id: parent ? rootJobId(parent, jobs) : lead.job_id,
+        link_type: "upsell",
+        upsell_truck: lead.truck || null,
+        upsell_technician: lead.technician || null,
+      },
+      linkLabel: `⬆ Upsell spotted by ${lead.truck || "truck"} — will be linked to the original order`,
+    });
+    setShowNew(true);
+  };
 
   const handleBookQuote = (quote, line) => {
     setSelectedJob(null);
@@ -6990,7 +7249,7 @@ export default function App() {
               {tabs.map(t => (
                 <button key={t.key} className={`nav-tab ${tab === t.key ? "active" : ""}`}
                   onClick={() => { setTab(t.key); setSelectedJob(null); setSelectedCustomer(null); }}>
-                  {t.label}
+                  {t.label}{t.key === "quotes" && upsellLeads.filter(l => l.status === "open").length > 0 ? <span style={{ marginLeft: 5, fontSize: 10.5, fontWeight: 800, background: "#15803D", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{upsellLeads.filter(l => l.status === "open").length}</span> : null}
                 </button>
               ))}
             </nav>
@@ -7005,7 +7264,7 @@ export default function App() {
           {loading && <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>Loading…</div>}
 
           {!loading && selectedJob && (
-            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onEdit={setEditingJob} onReorder={role === "sales" ? reorderJob : undefined} onAction={handleJobAction} />
+            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onEdit={setEditingJob} onReorder={role === "sales" ? reorderJob : undefined} onRevisit={role === "sales" ? revisitJob : undefined} jobs={jobs} upsellLeads={upsellLeads} onOpenJob={setSelectedJob} onCreateUpsell={handleCreateUpsell} onConvertLead={handleConvertLead} onDismissLead={handleDismissLead} onAction={handleJobAction} />
           )}
 
           {!loading && !selectedJob && selectedCustomer && tab === "customers" && (
@@ -7032,7 +7291,27 @@ export default function App() {
             <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
-            <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
+            <>
+              {(() => {
+                const open = upsellLeads.filter(l => l.status === "open").sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                if (!open.length) return null;
+                return (
+                  <div className="card" style={{ marginBottom: 16 }}>
+                    <div className="card-header">
+                      <h3>💡 Upsell leads from trucks</h3>
+                      <span style={{ fontSize: 12, color: "var(--muted)" }}>{open.length} open — convert or dismiss; the spotting truck keeps the credit</span>
+                    </div>
+                    <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {open.map(l => (
+                        <UpsellLeadCard key={l.id} lead={l} role={role} showCustomer
+                          onConvert={handleConvertLead} onDismiss={handleDismissLead} />
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+              <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
+            </>
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
             <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
@@ -7068,7 +7347,7 @@ export default function App() {
             {tabs.map(t => (
               <button key={t.key} className={`bottom-nav-item ${tab === t.key ? "active" : ""}`}
                 onClick={() => { setTab(t.key); setSelectedJob(null); setSelectedCustomer(null); }}>
-                <span className="bottom-nav-icon">{t.icon}</span>
+                <span className="bottom-nav-icon" style={{ position: "relative" }}>{t.icon}{t.key === "quotes" && upsellLeads.filter(l => l.status === "open").length > 0 ? <span style={{ position: "absolute", top: -4, right: -10, fontSize: 9, fontWeight: 800, background: "#15803D", color: "#fff", borderRadius: 7, padding: "0px 4px" }}>{upsellLeads.filter(l => l.status === "open").length}</span> : null}</span>
                 {t.label}
               </button>
             ))}
@@ -7115,7 +7394,15 @@ export default function App() {
           jobs={jobs}
           prefill={prefillSlot}
           onClose={() => { setShowNew(false); setPrefillSlot(null); setPrefillOrder(null); }}
-          onCreated={(j, quoteId) => { setJobs(prev => [j, ...prev]); stampQuoteSuccess(quoteId, j); }}
+          onCreated={(j, quoteId) => {
+            setJobs(prev => [j, ...prev]);
+            stampQuoteSuccess(quoteId, j);
+            const leadId = prefillOrder?.leadId;
+            if (leadId) {
+              setUpsellLeads(prev => prev.map(l => l.id === leadId ? { ...l, status: "converted", converted_job_id: j.id } : l));
+              updateUpsellLead(leadId, { status: "converted", converted_job_id: j.id });
+            }
+          }}
           onNewCustomer={handleNewCustomer}
           onCarCreated={handleCarCreated}
           onAddressCreated={handleAddressCreated}
