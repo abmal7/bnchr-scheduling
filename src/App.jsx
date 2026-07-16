@@ -200,6 +200,26 @@ const SERVICE_CATALOG = {
 };
 const SERVICE_NAMES = Object.keys(SERVICE_CATALOG);
 
+// ─── Labor-line detection ──────────────────────────────────────────────────────
+// Pure labor/service lines are never purchased from a supplier, so they must never
+// ask for a supplier or cost (Costs page) nor count as "missing costs" (Reports).
+// Catches every shape: labor_only flags, labor/service/other kinds, SV service SKUs,
+// and legacy imported items stored as kind "part" but named after a labor service.
+const LABOR_LINE_NAMES = new Set([
+  ...SERVICE_NAMES, ...SERVICE_TYPES,
+  "Tire Patch", "Patch", "Puncture Repair", "Tire Check", "Tire Rotation", "Rotation",
+  "Tire Change", "Tire Change & Balancing", "Balancing", "Wheel Balancing",
+  "Wheel Alignment", "Alignment", "Disc Skimming", "AC Gas Refill",
+  "Car Computer Check", "Computer Check", "Mechanical Check", "Programming",
+  "Wheel Repair", "Inspection", "6 Points Check", "Labor", "Labour", "Service Charge", "Delivery",
+].map(s => s.toLowerCase()));
+function isLaborLine(it) {
+  if (it.labor_only || ["labor", "service", "other"].includes(it.kind)) return true;
+  if (/^SV/i.test(String(it.sku || ""))) return true; // service SKUs are labor
+  const nm = String(it.name || "").toLowerCase().replace(/\(labor only\)/g, "").trim();
+  return LABOR_LINE_NAMES.has(nm) || /\blabou?r\b/.test(nm);
+}
+
 // Tire mount labor table (by qty; standard vs center-lock)
 const LABOR = {
   standard: { 1: 15, 2: 15, 3: 20, 4: 20, 5: 25 },
@@ -5729,8 +5749,7 @@ function CostsView({ jobs, onUpdate }) {
   const [q, setQ] = useState("");
 
   const custOwned = (it) => /customer/i.test(String(it.supplier || "")); // customer-supplied → nothing to cost
-  const laborItem = (it) => it.labor_only || ["labor", "service", "other"].includes(it.kind); // labor/service charge → no supplier, no cost
-  const costable = (it) => !custOwned(it) && !laborItem(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part");
+  const costable = (it) => !custOwned(it) && !isLaborLine(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part");
   const needsCost = (it) => costable(it) && !(Number(it.cost) > 0);
   const ql = q.trim().toLowerCase();
   const rows = jobs
@@ -6086,7 +6105,7 @@ function ReportsView({ jobs, quotes, customers, owner }) {
           const cost = items.reduce((s, it) => s + itemCostOf(it), 0);
           const rev = Number(j.total) || 0;
           // labor-only orders have nothing to cost — never flag them as "missing costs"
-          const costableItems = items.filter(it => !/customer/i.test(String(it.supplier || "")) && !(it.labor_only || ["labor", "service", "other"].includes(it.kind)) && ((it.kind === "tire" && it.tire_id) || it.kind === "part"));
+          const costableItems = items.filter(it => !/customer/i.test(String(it.supplier || "")) && !isLaborLine(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part"));
           return { id: j.id, name: j.customer_name, date: j.scheduled_at, svc: j.service_type, rev, cost, profit: rev - cost, margin: rev ? Math.round(((rev - cost) / rev) * 100) : 0, hasCost: costableItems.length === 0 || costableItems.some(it => Number(it.cost) > 0) };
         }).sort((a, b) => b.profit - a.profit);
 
