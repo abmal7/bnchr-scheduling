@@ -2742,7 +2742,6 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       const services = prefillOrder.services.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: null }));
       setF(p => ({ ...p, services, ...(prefillOrder.mobile && !c ? { customer_mobile: prefillOrder.mobile } : {}) }));
     }
-    if (!c) return;
     const src = prefillOrder.sourceJob;
     if (src) {
       // Rebuild service blocks from the source job (copy services/cars/prices/discounts;
@@ -2767,11 +2766,12 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       setF(p => ({
         ...p,
         services,
+        ...(c ? {} : { customer_name: p.customer_name || src.customer_name || "", customer_mobile: p.customer_mobile || src.customer_mobile || "" }),
         sales_match_confirmed: false,         // always re-verify
         start_hour: null, assigned_truck: "T1", scheduled_date: today(),
         payment_status: "pending", payment_link: "", payment_through: "Link",
         xero_ref: "", invoice_no: "", status: "draft", notes: src.notes || "",
-        area: src.area || c.area || p.area, governorate: src.governorate || "",
+        area: src.area || (c && c.area) || p.area, governorate: src.governorate || "",
         block: src.block || "", street: src.street || "", lane: src.lane || "", house: src.house || "", map_link: src.map_link || "",
       }));
     }
@@ -2933,6 +2933,16 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
       const itemsChanged = sig(hydrateServices(editJob)) !== sig(services);
       const patch = { ...common };
       delete patch.created_at; // preserve original
+      if (editJob.status === "cancelled") {
+        // Saving an edit on a cancelled order restores it into the pipeline
+        patch.status = "booked";
+        patch.cancel_reason = null;
+        patch.cancelled_at = null;
+        patch.truck_status = "scheduled";
+        patch.parts_status = "pending";
+        patch.parts_released = false;
+        patch.techs_released = false;
+      }
       if (itemsChanged) {
         // re-verification habit: clear all match confirmations + downstream per-item checks
         patch.sales_match_confirmed = false;
@@ -2976,6 +2986,11 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">
+          {isEdit && editJob.status === "cancelled" && (
+            <div style={{ margin: "10px 16px 0", padding: "8px 12px", background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12.5, color: "#92400E" }}>
+              ↺ This order is <strong>cancelled</strong>. Saving will restore it as <strong>Booked</strong> and it will go through parts &amp; verification again.
+            </div>
+          )}
           {isEdit && (editJob.parts_released || editJob.techs_released || editJob.truck_status === "processing" || editJob.truck_status === "completed") && (
             <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 8, padding: "10px 14px", margin: "0 0 14px", fontSize: 13, color: "#92400E" }}>
               ⚠ Work has already started on this order ({editJob.parts_released ? "parts released" : ""}{editJob.parts_released && (editJob.techs_released || editJob.truck_status !== "scheduled") ? ", " : ""}{editJob.techs_released ? "shown to technicians" : ""}{editJob.truck_status && editJob.truck_status !== "scheduled" ? ` · truck ${editJob.truck_status}` : ""}). Editing services or items will reset the verification checks and the distributor/technician will need to re-verify. Proceed carefully.
@@ -3364,7 +3379,7 @@ function NewCustomerModal({ initialName, initialMobile, onClose, onCreated }) {
 const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 
 // ─── Job Detail (with order actions) ─────────────────────────────────────────
-function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
+function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, role }) {
   const [j, setJ] = useState(job);
   useEffect(() => { setJ(job); }, [job]); // follow live updates (edits, realtime sync)
   const [showCancel, setShowCancel] = useState(false);
@@ -3462,6 +3477,13 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, role }) {
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(j)}>✏ Edit</button>
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => onReschedule(j)}>↻ Reschedule</button>
             <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", marginLeft: "auto" }} onClick={() => setShowCancel(true)}>✕ Cancel</button>
+          </div>
+        )}
+        {role === "sales" && isCancelled && (
+          <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)", alignItems: "center" }}>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(j)}>✏ Edit &amp; Restore</button>
+            {onReorder && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onReorder(j)}>↻ Reorder</button>}
+            <span style={{ fontSize: 11.5, color: "var(--muted)", marginLeft: "auto" }}>Restore this order, or start a fresh one from it</span>
           </div>
         )}
       </div>
@@ -4891,7 +4913,7 @@ function TechJobCard({ job, index, onUpdate }) {
   );
 }
 
-function HistoryView({ jobs, onSelectJob }) {
+function HistoryView({ jobs, onSelectJob, onEdit, onReorder }) {
   const [search, setSearch] = useState("");
   const [filterTruck, setFilterTruck] = useState("all");
   const [filterAgent, setFilterAgent] = useState("all");
@@ -4979,6 +5001,12 @@ function HistoryView({ jobs, onSelectJob }) {
               <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{fmtDateTime(job.scheduled_at)} · {job.assigned_truck} · {job.sales_agent}</div>
               {job.status === "cancelled" && job.cancel_reason && job.cancel_reason !== "—" && (
                 <div style={{ fontSize: 12, color: "#991B1B", marginTop: 4 }}>✕ {job.cancel_reason}{job.cancelled_at ? ` · ${fmtDate(job.cancelled_at)}` : ""}</div>
+              )}
+              {job.status === "cancelled" && (onEdit || onReorder) && (
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  {onEdit && <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onEdit(job); }}>✏ Edit &amp; Restore</button>}
+                  {onReorder && <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onReorder(job); }}>↻ Reorder</button>}
+                </div>
               )}
               {job.status === "incomplete" && (
                 <div style={{ fontSize: 12, color: "#B45309", marginTop: 4 }}>⚠ {job.incomplete_reason || "Incomplete"}{job.incomplete_at ? ` · ${fmtDate(job.incomplete_at)}` : ""}</div>
@@ -6776,6 +6804,13 @@ export default function App() {
     setShowNew(true);
   };
 
+  // Reorder from any job card: match the customer record by id, then mobile.
+  const reorderJob = (job) => handleNewOrderFor(
+    customers.find(c => c.id === job.customer_id) ||
+    customers.find(c => last8(c.mobile) === last8(job.customer_mobile)) || null,
+    job
+  );
+
   const handleBookQuote = (quote, line) => {
     setSelectedJob(null);
     setSelectedCustomer(null);
@@ -6970,7 +7005,7 @@ export default function App() {
           {loading && <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>Loading…</div>}
 
           {!loading && selectedJob && (
-            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
+            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onEdit={setEditingJob} onReorder={role === "sales" ? reorderJob : undefined} onAction={handleJobAction} />
           )}
 
           {!loading && !selectedJob && selectedCustomer && tab === "customers" && (
@@ -7009,7 +7044,7 @@ export default function App() {
             <TruckSettingsView owner={isOwner} rows={truckCfg} onReload={async () => { const tc = await fetchTruckConfig(); setTruckCfg(tc); setCfgTick(x => x + 1); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
-            <HistoryView jobs={jobs} onSelectJob={setSelectedJob} />
+            <HistoryView jobs={jobs} onSelectJob={setSelectedJob} onEdit={role === "sales" ? setEditingJob : undefined} onReorder={role === "sales" ? reorderJob : undefined} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "customers" && (
             <CustomersView customers={customers} cars={cars} jobs={jobs} onSelectCustomer={setSelectedCustomer} onNewCustomer={() => { setNewCustomerName(""); setNewCustomerMobile(""); setNewCustomerCallback(null); setShowNewCustomer(true); }} />
