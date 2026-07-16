@@ -6827,7 +6827,8 @@ export default function App() {
     { key: "distributor",label: "Collect",         icon: "📦", roles: ["distributor"] },
     { key: "disthistory",label: "History",         icon: "🕘", roles: ["distributor"] },
   ];
-  const tabs = allTabs.filter(t => t.roles.includes(role));
+  // Master/owner access sees every page (incl. purchaser Costs, tech views, distributor)
+  const tabs = allTabs.filter(t => isOwner || t.roles.includes(role));
 
   if (!authed) {
     return (
