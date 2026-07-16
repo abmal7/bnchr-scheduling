@@ -4617,15 +4617,15 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck, onCreateUpsell }
             <div className="modal-body" style={{ padding: 18 }}>
               {upsellStep === "ask" ? (
                 <>
-                  <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>✅ Job completed — one last thing</div>
+                  <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>✅ Job completed - Do you have Upsell?</div>
                   <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 }}>
                     While you were on the car, did you notice anything it needs?
                     Tires, brakes, battery, valves — anything worth a quote.
                     If it converts, the credit counts for <strong style={{ color: "var(--text)" }}>{upsellJob.assigned_truck}</strong>.
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <button type="button" className="btn btn-primary" onClick={() => setUpsellStep("form")}>⬆ Yes — the car needs something</button>
-                    <button type="button" className="btn btn-ghost" onClick={() => stampResponse("none")}>Nothing to report on this car</button>
+                    <button type="button" className="btn btn-primary" onClick={() => setUpsellStep("form")}>Yes, I have Upsell</button>
+                    <button type="button" className="btn btn-ghost" onClick={() => stampResponse("none")}>No, nothing to report</button>
                   </div>
                 </>
               ) : (
