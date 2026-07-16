@@ -5729,11 +5729,13 @@ function CostsView({ jobs, onUpdate }) {
   const [q, setQ] = useState("");
 
   const custOwned = (it) => /customer/i.test(String(it.supplier || "")); // customer-supplied → nothing to cost
-  const needsCost = (it) => !custOwned(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part") && !(Number(it.cost) > 0);
+  const laborItem = (it) => it.labor_only || ["labor", "service", "other"].includes(it.kind); // labor/service charge → no supplier, no cost
+  const costable = (it) => !custOwned(it) && !laborItem(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part");
+  const needsCost = (it) => costable(it) && !(Number(it.cost) > 0);
   const ql = q.trim().toLowerCase();
   const rows = jobs
     .filter(j => j.status !== "cancelled")
-    .filter(j => (j.items || []).some(needsCost) || (showAll && (j.items || []).some(it => (it.kind === "tire" && it.tire_id) || it.kind === "part")))
+    .filter(j => (j.items || []).some(needsCost) || (showAll && (j.items || []).some(costable))) // labor-only orders never appear
     .filter(j => !ql || `${j.customer_name || ""} ${j.customer_mobile || ""} ${j.invoice_no || ""}`.toLowerCase().includes(ql))
     .sort((a, b) => new Date(b.scheduled_at || b.created_at) - new Date(a.scheduled_at || a.created_at));
 
@@ -5785,7 +5787,7 @@ function CostsView({ jobs, onUpdate }) {
       {rows.length === 0 && <div className="empty"><h3>Nothing to fill</h3><p>Every item across your orders has a cost entered. Margins in Reports are accurate.</p></div>}
 
       {rows.map(job => {
-        const items = (job.items || []).filter(it => !custOwned(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part"));
+        const items = (job.items || []).filter(costable);
         const missing = items.filter(needsCost).length;
         const dirty = (drafts[job.id] && Object.values(drafts[job.id]).some(v => v !== "" && v !== undefined))
           || (supDrafts[job.id] && Object.keys(supDrafts[job.id]).length > 0);
@@ -6083,7 +6085,9 @@ function ReportsView({ jobs, quotes, customers, owner }) {
           const items = j.items || [];
           const cost = items.reduce((s, it) => s + itemCostOf(it), 0);
           const rev = Number(j.total) || 0;
-          return { id: j.id, name: j.customer_name, date: j.scheduled_at, svc: j.service_type, rev, cost, profit: rev - cost, margin: rev ? Math.round(((rev - cost) / rev) * 100) : 0, hasCost: items.some(it => Number(it.cost) > 0) };
+          // labor-only orders have nothing to cost — never flag them as "missing costs"
+          const costableItems = items.filter(it => !/customer/i.test(String(it.supplier || "")) && !(it.labor_only || ["labor", "service", "other"].includes(it.kind)) && ((it.kind === "tire" && it.tire_id) || it.kind === "part"));
+          return { id: j.id, name: j.customer_name, date: j.scheduled_at, svc: j.service_type, rev, cost, profit: rev - cost, margin: rev ? Math.round(((rev - cost) / rev) * 100) : 0, hasCost: costableItems.length === 0 || costableItems.some(it => Number(it.cost) > 0) };
         }).sort((a, b) => b.profit - a.profit);
 
         // 3 · PER SKU / ITEM — which products earn best
