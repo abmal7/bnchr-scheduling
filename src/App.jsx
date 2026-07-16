@@ -228,7 +228,7 @@ const LABOR_LINE_NAMES = new Set([
   "Wheel Alignment", "Alignment", "Disc Skimming", "AC Gas Refill",
   "Car Computer Check", "Computer Check", "Mechanical Check", "Programming",
   "Wheel Repair", "Inspection", "6 Points Check", "Labor", "Labour", "Service Charge", "Delivery",
-  "Spare Tire Change", "Distance Charges", "Distance Charge", "Valve Sensor Replacement", "Valve Change", "Battery Check",
+  "Spare Tire Change", "Distance Charges", "Distance Charge", "Valve Sensor Replacement", "Valve Change", "Valve Check", "Battery Check",
 ].map(s => s.toLowerCase()));
 function isLaborLine(it) {
   if (it.labor_only || ["labor", "service", "other"].includes(it.kind)) return true;
