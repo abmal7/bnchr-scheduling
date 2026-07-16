@@ -236,7 +236,7 @@ const SALES_AGENTS = ["Alaa", "Hussain", "Ali"];
 const OTHER_SUPPLIERS = [
   "Alamdar", "Hitish", "Korean Store", "Ahlia", "Porsche Dealer", "Al Babtain Group",
   "Istiqlal", "Motul", "Mercedes Benz Dealer", "Super Shine", "BMW Dealer", "BNCHR+ Inventory",
-  "Grip Autos", "Safeena",
+  "Grip Autos", "Safeena", "Customer",
 ];
 const ROLES = [
   { key: "sales", label: "Sales" },
@@ -5728,7 +5728,8 @@ function CostsView({ jobs, onUpdate }) {
   const [showAll, setShowAll] = useState(false);
   const [q, setQ] = useState("");
 
-  const needsCost = (it) => ((it.kind === "tire" && it.tire_id) || it.kind === "part") && !(Number(it.cost) > 0);
+  const custOwned = (it) => /customer/i.test(String(it.supplier || "")); // customer-supplied → nothing to cost
+  const needsCost = (it) => !custOwned(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part") && !(Number(it.cost) > 0);
   const ql = q.trim().toLowerCase();
   const rows = jobs
     .filter(j => j.status !== "cancelled")
@@ -5784,14 +5785,15 @@ function CostsView({ jobs, onUpdate }) {
       {rows.length === 0 && <div className="empty"><h3>Nothing to fill</h3><p>Every item across your orders has a cost entered. Margins in Reports are accurate.</p></div>}
 
       {rows.map(job => {
-        const items = (job.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
+        const items = (job.items || []).filter(it => !custOwned(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part"));
         const missing = items.filter(needsCost).length;
         const dirty = (drafts[job.id] && Object.values(drafts[job.id]).some(v => v !== "" && v !== undefined))
           || (supDrafts[job.id] && Object.keys(supDrafts[job.id]).length > 0);
         return (
           <div key={job.id} className="card" style={{ marginBottom: 14, borderLeft: missing ? "3px solid #B45309" : "3px solid var(--success)" }}>
             <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-              <h3 style={{ margin: 0 }}>{job.customer_name} <span style={{ fontSize: 12, fontWeight: 500, color: "var(--muted)" }}>· {job.customer_mobile} · {fmtDate(job.scheduled_at)} · {job.assigned_truck || "—"}{job.invoice_no ? ` · ${job.invoice_no}` : ""}</span></h3>
+              <h3 style={{ margin: 0 }}>{job.customer_name} <span style={{ fontSize: 12, fontWeight: 500, color: "var(--muted)" }}>· {job.customer_mobile} · {fmtDate(job.scheduled_at)} · {job.assigned_truck || "—"}{job.invoice_no ? ` · ${job.invoice_no}` : ""}</span>
+                {(job.car_brand || job.car_model) && <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 3 }}>🚗 {job.car_brand} {job.car_model} {job.car_year || ""}</div>}</h3>
               {missing > 0 ? <span style={{ fontSize: 11, fontWeight: 700, color: "#B45309" }}>{missing} missing</span> : <span style={{ fontSize: 11, fontWeight: 700, color: "var(--success)" }}>✓ complete</span>}
             </div>
             <div style={{ overflowX: "auto" }}>
@@ -5804,7 +5806,7 @@ function CostsView({ jobs, onUpdate }) {
                     const has = Number(it.cost) > 0;
                     return (
                       <tr key={it.id} style={{ background: !has && draftVal === undefined ? "#FFFBEB" : "transparent" }}>
-                        <td style={{ ...td, fontWeight: 600 }}>{name}{it.sku ? <span style={{ fontSize: 10.5, color: "var(--muted)" }}> · {it.sku}</span> : ""}</td>
+                        <td style={{ ...td, fontWeight: 600 }}>{name}{it.sku ? <span style={{ fontSize: 10.5, color: "var(--muted)" }}> · {it.sku}</span> : ""}{it.car_label ? <div style={{ fontSize: 10.5, color: "var(--muted)", fontWeight: 500 }}>🚗 {it.car_label}</div> : ""}</td>
                         <td style={td}>
                           <input className="filter-input" style={{ width: 130 }} placeholder="supplier"
                             value={(supDrafts[job.id] || {})[it.id] !== undefined ? (supDrafts[job.id])[it.id] : (it.supplier || "")}
