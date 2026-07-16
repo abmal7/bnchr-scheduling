@@ -4518,6 +4518,15 @@ function DistributorCard({ job, onUpdate }) {
 
 // ─── Technician Dashboard (per truck) ─────────────────────────────────────────
 function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck, onCreateUpsell }) {
+  const [upsellJob, setUpsellJob] = useState(null);     // job that just completed
+  const [upsellStep, setUpsellStep] = useState("ask");  // "ask" | "form"
+  const promptUpsell = (job) => { setUpsellJob(job); setUpsellStep("ask"); };
+  const stampResponse = (resp) => {
+    const next = { ...upsellJob, upsell_response: resp };
+    onUpdate(next);                                    // local state (full job object)
+    updateJob(upsellJob.id, { upsell_response: resp }); // server patch
+    setUpsellJob(null);
+  };
   const [pickTruck, setPickTruck] = useState(activeTrucks()[0]);
   const myTruck = lockedTruck || pickTruck;
   const todayJobs = jobs
@@ -4598,8 +4607,36 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck, onCreateUpsell }
       {active.length === 0 && <div className="empty"><h3>No active jobs</h3><p>{completed.length > 0 ? `${completed.length} completed today — see History.` : `All clear for ${myTruck}.`}</p></div>}
 
       <div className="job-cards">
-        {active.map((job, i) => <TechJobCard key={job.id} job={job} index={i} onUpdate={onUpdate} onCreateUpsell={onCreateUpsell} />)}
+        {active.map((job, i) => <TechJobCard key={job.id} job={job} index={i} onUpdate={onUpdate} onCompletedPrompt={onCreateUpsell ? promptUpsell : null} />)}
       </div>
+
+      {/* ⬆ post-completion upsell prompt — survives the job card unmounting */}
+      {upsellJob && (
+        <div className="overlay">
+          <div className="modal" style={{ maxWidth: 440 }}>
+            <div className="modal-body" style={{ padding: 18 }}>
+              {upsellStep === "ask" ? (
+                <>
+                  <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>✅ Job completed — one last thing</div>
+                  <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 }}>
+                    While you were on the car, did you notice anything it needs?
+                    Tires, brakes, battery, valves — anything worth a quote.
+                    If it converts, the credit counts for <strong style={{ color: "var(--text)" }}>{upsellJob.assigned_truck}</strong>.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <button type="button" className="btn btn-primary" onClick={() => setUpsellStep("form")}>⬆ Yes — the car needs something</button>
+                    <button type="button" className="btn btn-ghost" onClick={() => stampResponse("none")}>Nothing to report on this car</button>
+                  </div>
+                </>
+              ) : (
+                <TechUpsellForm job={upsellJob} autoOpen onCreate={onCreateUpsell}
+                  onDone={() => stampResponse("added")}
+                  onCancel={() => setUpsellStep("ask")} />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
     </>
   );
@@ -4765,9 +4802,8 @@ function TechStage({ num, title, done, meta, children, muted, reopened, setReope
   );
 }
 
-function TechJobCard({ job, index, onUpdate, onCreateUpsell }) {
+function TechJobCard({ job, index, onUpdate, onCompletedPrompt }) {
   const [j, setJ] = useState(job);
-  const [upsellPrompt, setUpsellPrompt] = useState(null); // null | "ask" | "form"
   useEffect(() => { setJ(job); }, [job.id, job.updated_at, job.status, job.truck_status, job.parts_released, job.techs_released]); // resync only on real changes, not every keystroke re-render
   const [open, setOpen] = useState(false);
   const [reopened, setReopened] = useState({}); // manually reopened done-stages
@@ -4860,7 +4896,7 @@ function TechJobCard({ job, index, onUpdate, onCreateUpsell }) {
       p.unfitted_items = dontFitItems.map(it => `${it.qty}× ${it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name} — ${mism[it.id].reason}`).join(" · ");
     }
     patch(p);
-    if (onCreateUpsell) setUpsellPrompt("ask"); // "One last thing" — capture upsells at the moment of completion
+    if (onCompletedPrompt) onCompletedPrompt({ ...j, ...p }); // "one last thing" — prompt lives in MyJobsView (this card unmounts on completion)
     // append to the car's mileage log (fire-and-forget; never blocks completion)
     jobCars.forEach(c => {
       const v = cm[c.key];
@@ -4986,33 +5022,6 @@ function TechJobCard({ job, index, onUpdate, onCreateUpsell }) {
 
   return (
     <div className="my-job-card" style={{ borderLeft: `4px solid ${statusColor}`, padding: 0, overflow: "hidden" }}>
-      {/* ⬆ post-completion upsell prompt — "one last thing" */}
-      {upsellPrompt && (
-        <div className="overlay" style={{ zIndex: 60 }}>
-          <div className="modal" style={{ maxWidth: 440 }}>
-            <div className="modal-body" style={{ padding: 18 }}>
-              {upsellPrompt === "ask" ? (
-                <>
-                  <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>✅ Job completed — one last thing</div>
-                  <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 }}>
-                    While you were on the car, did you notice anything it needs?
-                    Tires, brakes, battery, valves — anything worth a quote.
-                    If it converts, the credit counts for <strong style={{ color: "var(--text)" }}>{j.assigned_truck}</strong>.
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <button type="button" className="btn btn-primary" onClick={() => setUpsellPrompt("form")}>⬆ Yes — the car needs something</button>
-                    <button type="button" className="btn btn-ghost" onClick={() => { patch({ upsell_response: "none" }); setUpsellPrompt(null); }}>Nothing to report on this car</button>
-                  </div>
-                </>
-              ) : (
-                <TechUpsellForm job={j} autoOpen onCreate={onCreateUpsell}
-                  onDone={() => { patch({ upsell_response: "added" }); setUpsellPrompt(null); }}
-                  onCancel={() => setUpsellPrompt("ask")} />
-              )}
-            </div>
-          </div>
-        </div>
-      )}
       {/* ⚠ mismatch banner — pinned on top whenever any item doesn't match */}
       {(() => {
         const bad = productItems.filter(it => mism[it.id] && mism[it.id].resolution !== "approved");
