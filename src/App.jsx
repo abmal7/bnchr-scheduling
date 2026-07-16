@@ -5909,21 +5909,18 @@ function ReportsView({ jobs, quotes, customers, owner }) {
   const orders = inRange.length;
   const ticket = orders ? totalSales / orders : 0;
 
-  // cost of a service block (product cost only — labor is contribution)
-  const svcCostOf = (s) => {
-    if (s.kind === "tire") {
-      if (s.staggered) return (Number(s.cost) || 0) * (Number(s.qty) || 2) + (Number(s.rear_cost) || 0) * (Number(s.rear_qty) || 2);
-      return (Number(s.cost) || 0) * (Number(s.qty) || 4);
-    }
-    return (s.parts || []).reduce((t, p) => t + (Number(p.cost) || 0) * (Number(p.qty) || 1), 0);
-  };
-  // collections: sold & delivered but money not in
-  const uncollectedJobs = inRange.filter(j => jobSuccessful(j) && j.payment_status !== "paid");
+  // ── cost: single source of truth = job.items (what the purchaser fills in Costs tab) ──
+  const itemCostOf = (it) => (Number(it.cost) || 0) * (Number(it.qty) || 1);
+  const jobItemsCost = (j) => (j.items || []).reduce((s, it) => s + itemCostOf(it), 0);
+  const custOwnedIt = (it) => /customer/i.test(String(it.supplier || ""));
+  const costableIt = (it) => !custOwnedIt(it) && !isLaborLine(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part");
+  // collections: sold & delivered but money not in (either paid signal counts)
+  const uncollectedJobs = inRange.filter(j => jobSuccessful(j) && j.payment_status !== "paid" && j.status !== "paid");
   const uncollectedKD = uncollectedJobs.reduce((s, j) => s + (Number(j.total) || 0), 0);
-  // margin watchdog: items sold with no cost entered
+  // margin watchdog: purchasable items sold with no cost entered (matches the Costs tab)
   let zeroCostItems = 0;
   inRange.forEach(j => (j.items || []).forEach(it => {
-    if (((it.kind === "tire" && it.tire_id) || it.kind === "part") && !(Number(it.cost) > 0)) zeroCostItems++;
+    if (costableIt(it) && !(Number(it.cost) > 0)) zeroCostItems++;
   }));
 
   // new vs loyal: customer existed before the period start = loyal
@@ -5964,16 +5961,24 @@ function ReportsView({ jobs, quotes, customers, owner }) {
   }).filter(p => p.orders || p.quotes).sort((x, y) => y.sales - x.sales);
 
   // ── services breakdown (count · % of orders · KD · % of sales) ──
+  // Revenue comes from service blocks (or job total for imported orders without blocks).
+  // Cost comes from ITEMS — the only place the purchaser fills it — attributed to the
+  // item's service_type (falls back to the job's headline service).
   const svcStats = {};
   let svcCount = 0;
+  const bump = (t) => (svcStats[t] = svcStats[t] || { n: 0, kd: 0, cost: 0 });
   inRange.forEach(j => {
     const blocks = (j.services && j.services.length) ? j.services : [{ service_type: j.service_type || "Other", _fallbackTotal: Number(j.total) || 0 }];
     blocks.forEach(s => {
       const t = s.service_type || "Other";
       const rev = s._fallbackTotal != null ? s._fallbackTotal : serviceTotals(s).total;
-      const cost = s._fallbackTotal != null ? 0 : svcCostOf(s);
-      svcStats[t] = svcStats[t] || { n: 0, kd: 0, cost: 0 };
-      svcStats[t].n++; svcStats[t].kd += rev; svcStats[t].cost += cost; svcCount++;
+      bump(t); svcStats[t].n++; svcStats[t].kd += rev; svcCount++;
+    });
+    (j.items || []).forEach(it => {
+      const c = itemCostOf(it);
+      if (!c) return;
+      const t = it.service_type || j.service_type || "Other";
+      bump(t); svcStats[t].cost += c;
     });
   });
   const svcRows = Object.entries(svcStats).map(([t, v]) => ({ type: t, ...v })).sort((a, b) => b.kd - a.kd);
@@ -6075,7 +6080,7 @@ function ReportsView({ jobs, quotes, customers, owner }) {
                 <td style={td}>{p.conv == null ? "—" : p.conv + "%"}</td>
               </tr>
             ))}
-            {perAgent.length === 0 && <tr><td style={td} colSpan={5}>No activity in this range.</td></tr>}
+            {perAgent.length === 0 && <tr><td style={td} colSpan={6}>No activity in this range.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -6102,14 +6107,13 @@ function ReportsView({ jobs, quotes, customers, owner }) {
                 </>}
               </tr>
             ))}
-            {svcRows.length === 0 && <tr><td style={td} colSpan={5}>No orders in this range.</td></tr>}
+            {svcRows.length === 0 && <tr><td style={td} colSpan={owner ? 7 : 4}>No orders in this range.</td></tr>}
           </tbody>
         </table>
       </div>
 
       {/* ═══ OWNER MARGIN REPORTS ═══ */}
       {owner && (() => {
-        const itemCostOf = (it) => (Number(it.cost) || 0) * (Number(it.qty) || 1);
         const itemRevOf = (it) => (Number(it.unit_price) || 0) * (Number(it.qty) || 1);
 
         // 1 · PER SERVICE TYPE — margin (already have svcRows with kd+cost)
@@ -6119,17 +6123,18 @@ function ReportsView({ jobs, quotes, customers, owner }) {
         // 2 · PER ORDER — full margin per job
         const orderRows = inRange.map(j => {
           const items = j.items || [];
-          const cost = items.reduce((s, it) => s + itemCostOf(it), 0);
+          const cost = jobItemsCost(j);
           const rev = Number(j.total) || 0;
           // labor-only orders have nothing to cost — never flag them as "missing costs"
-          const costableItems = items.filter(it => !/customer/i.test(String(it.supplier || "")) && !isLaborLine(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part"));
+          const costableItems = items.filter(costableIt);
           return { id: j.id, name: j.customer_name, date: j.scheduled_at, svc: j.service_type, rev, cost, profit: rev - cost, margin: rev ? Math.round(((rev - cost) / rev) * 100) : 0, hasCost: costableItems.length === 0 || costableItems.some(it => Number(it.cost) > 0) };
         }).sort((a, b) => b.profit - a.profit);
 
-        // 3 · PER SKU / ITEM — which products earn best
+        // 3 · PER SKU / ITEM — which products earn best (real products only:
+        // skip labor lines and customer-supplied items so margins aren't fake 100%)
         const skuMap = {};
         inRange.forEach(j => (j.items || []).forEach(it => {
-          if (!((it.kind === "tire" && it.tire_id) || it.kind === "part")) return;
+          if (!costableIt(it)) return;
           const key = it.sku || (it.kind === "tire" ? `${it.brand} ${it.pattern || ""} ${it.size || ""}`.trim() : it.name) || "—";
           skuMap[key] = skuMap[key] || { key, name: it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name, units: 0, rev: 0, cost: 0 };
           skuMap[key].units += Number(it.qty) || 0;
@@ -6174,7 +6179,9 @@ function ReportsView({ jobs, quotes, customers, owner }) {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead><tr><th style={th}>Customer</th><th style={th}>Service</th><th style={th}>Revenue</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
                 <tbody>
-                  {[...orderRows.slice(0, 8), ...(orderRows.length > 16 ? [{ divider: true }] : []), ...orderRows.slice(-8).filter((_, i, a) => orderRows.length > 8)].map((r, i) => r.divider
+                  {(orderRows.length <= 16
+                    ? orderRows
+                    : [...orderRows.slice(0, 8), { divider: true }, ...orderRows.slice(-8)]).map((r, i) => r.divider
                     ? <tr key="d"><td style={{ ...td, textAlign: "center", color: "var(--muted)", fontSize: 11 }} colSpan={6}>⋯ middle orders hidden ⋯</td></tr>
                     : (
                       <tr key={r.id}>
