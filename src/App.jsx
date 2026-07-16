@@ -141,6 +141,14 @@ const SERVICE_CATALOG = {
     kind: "other",
     flatLabor: 10, // 10 KD
   },
+  "Spare Tire Change": {
+    kind: "other",
+    flatLabor: 10, // 10 KD
+  },
+  "Valve Sensor Replacement": {
+    kind: "other",
+    flatLabor: 20, // 20 KD
+  },
   "Tire Rotation": {
     kind: "other",
     flatLabor: 20, // 20 KD
@@ -154,6 +162,10 @@ const SERVICE_CATALOG = {
     kind: "other",
     variants: { tier: ["Normal", "Complex"] },
     labor: { Normal: 10, Complex: 15 },
+  },
+  "Battery Check": {
+    kind: "other",
+    flatLabor: 10, // 10 KD
   },
   "Brake Pads": {
     kind: "other",
@@ -182,6 +194,10 @@ const SERVICE_CATALOG = {
   "Car Computer Check": {
     kind: "other",
     flatLabor: 20, // 20 KD
+  },
+  "Distance Charges": {
+    kind: "other",
+    flatLabor: 5, // 5 KD
   },
   "Part Replacement": {
     kind: "other", // labor entered manually per order
@@ -212,6 +228,7 @@ const LABOR_LINE_NAMES = new Set([
   "Wheel Alignment", "Alignment", "Disc Skimming", "AC Gas Refill",
   "Car Computer Check", "Computer Check", "Mechanical Check", "Programming",
   "Wheel Repair", "Inspection", "6 Points Check", "Labor", "Labour", "Service Charge", "Delivery",
+  "Spare Tire Change", "Distance Charges", "Distance Charge", "Valve Sensor Replacement", "Valve Change", "Battery Check",
 ].map(s => s.toLowerCase()));
 function isLaborLine(it) {
   if (it.labor_only || ["labor", "service", "other"].includes(it.kind)) return true;
