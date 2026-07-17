@@ -3560,6 +3560,132 @@ function TechUpsellForm({ job, onCreate, autoOpen, onDone, onCancel }) {
   );
 }
 
+// ─── Upsells page: the technician-generated funnel, with its own simple report ──
+function UpsellsView({ upsellLeads, jobs, role, onConvert, onDismiss, onSelectJob }) {
+  const [filter, setFilter] = useState("open"); // open | converted | dismissed | all
+  const [truckF, setTruckF] = useState("all");
+  const [q, setQ] = useState("");
+
+  const leads = upsellLeads || [];
+  const jobOf = (l) => l.converted_job_id ? jobs.find(j => j.id === l.converted_job_id) : null;
+
+  // ── KPIs ──
+  const open = leads.filter(l => l.status === "open");
+  const converted = leads.filter(l => l.status === "converted");
+  const dismissed = leads.filter(l => l.status === "dismissed");
+  const decided = converted.length + dismissed.length;
+  const convRate = decided ? Math.round((converted.length / decided) * 100) : null;
+  const convJobs = converted.map(jobOf).filter(Boolean);
+  const convKD = convJobs.reduce((s, j) => s + (Number(j.total) || 0), 0);
+  const completedKD = convJobs.filter(j => jobSuccessful(j)).reduce((s, j) => s + (Number(j.total) || 0), 0);
+
+  // ── Per truck (the incentive view: credit stays with the spotting truck) ──
+  const trucks = {};
+  leads.forEach(l => {
+    const t = l.truck || "—";
+    trucks[t] = trucks[t] || { t, spotted: 0, open: 0, converted: 0, completed: 0, kd: 0 };
+    trucks[t].spotted++;
+    if (l.status === "open") trucks[t].open++;
+    if (l.status === "converted") {
+      trucks[t].converted++;
+      const cj = jobOf(l);
+      if (cj && jobSuccessful(cj)) { trucks[t].completed++; trucks[t].kd += Number(cj.total) || 0; }
+    }
+  });
+  const truckRows = Object.values(trucks).sort((a, b) => b.kd - a.kd || b.converted - a.converted);
+
+  // ── List ──
+  const ql = q.trim().toLowerCase();
+  const shown = leads
+    .filter(l => filter === "all" ? true : l.status === filter)
+    .filter(l => truckF === "all" ? true : l.truck === truckF)
+    .filter(l => !ql || [l.customer_name, l.customer_mobile, l.service_type, l.car_label, l.truck, l.technician].some(v => String(v || "").toLowerCase().includes(ql)))
+    .sort((a, b) => filter === "open" ? new Date(a.created_at) - new Date(b.created_at) : new Date(b.created_at) - new Date(a.created_at));
+
+  const chip = (label, val, sub, color) => (
+    <div style={{ flex: "1 1 120px", minWidth: 120, border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--card)" }}>
+      <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: color || "var(--text)", marginTop: 2 }}>{val}</div>
+      {sub && <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+  const th = { textAlign: "left", fontSize: 10.5, fontWeight: 800, color: "var(--muted)", padding: "6px 8px", textTransform: "uppercase" };
+  const td = { fontSize: 12.5, padding: "7px 8px", borderTop: "1px solid var(--border)" };
+
+  return (
+    <>
+      <div className="page-title">Upsells</div>
+      <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>Opportunities spotted by the trucks. Credit always stays with the truck that spotted it — whoever completes the order.</div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {chip("Open", open.length, open.length ? "oldest first below" : "all handled 🎉", open.some(l => leadAgeDays(l) >= 7) ? "#DC2626" : open.some(l => leadAgeDays(l) >= 3) ? "#B45309" : undefined)}
+        {chip("Converted", converted.length, decided ? `${convRate}% of decided` : null, "#15803D")}
+        {chip("Dismissed", dismissed.length, null)}
+        {chip("Converted value", `KWD ${convKD.toFixed(0)}`, "all converted orders")}
+        {chip("Completed value", `KWD ${completedKD.toFixed(0)}`, "counts for incentives", "#15803D")}
+      </div>
+
+      {truckRows.length > 0 && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="card-header"><h3>Per truck</h3><span style={{ fontSize: 11.5, color: "var(--muted)" }}>completed = converted order finished (official incentive count)</span></div>
+          <div className="card-body" style={{ padding: 0, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr><th style={th}>Truck</th><th style={th}>Spotted</th><th style={th}>Open</th><th style={th}>Converted</th><th style={th}>Completed</th><th style={{ ...th, textAlign: "right" }}>KD (completed)</th></tr></thead>
+              <tbody>
+                {truckRows.map(r => (
+                  <tr key={r.t}>
+                    <td style={{ ...td, fontWeight: 700 }}>{r.t}</td>
+                    <td style={td}>{r.spotted}</td>
+                    <td style={{ ...td, color: r.open ? "#B45309" : "var(--muted)", fontWeight: r.open ? 700 : 400 }}>{r.open}</td>
+                    <td style={td}>{r.converted}</td>
+                    <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{r.completed}</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{r.kd.toFixed(0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+        {["open", "converted", "dismissed", "all"].map(f => (
+          <button key={f} type="button" className={`btn btn-sm ${filter === f ? "btn-primary" : "btn-ghost"}`} onClick={() => setFilter(f)} style={{ textTransform: "capitalize" }}>
+            {f}{f === "open" && open.length ? ` (${open.length})` : ""}
+          </button>
+        ))}
+        <select className="filter-select" value={truckF} onChange={e => setTruckF(e.target.value)}>
+          <option value="all">All trucks</option>
+          {[...new Set(leads.map(l => l.truck).filter(Boolean))].sort().map(t => <option key={t}>{t}</option>)}
+        </select>
+        <input className="filter-input" placeholder="Search name, mobile, service…" value={q} onChange={e => setQ(e.target.value)} style={{ flex: "1 1 180px" }} />
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {shown.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "18px 4px" }}>No upsells here{filter !== "all" ? ` — try another filter` : " yet. They'll appear when technicians spot opportunities on completed jobs."}</div>}
+        {shown.map(l => {
+          const cj = jobOf(l);
+          return (
+            <div key={l.id}>
+              <UpsellLeadCard lead={l} role={role} showCustomer onConvert={onConvert} onDismiss={onDismiss} />
+              {cj && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "4px 0 0 12px", fontSize: 12 }}>
+                  <span style={{ color: "var(--muted)" }}>↳ order:</span>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSelectJob && onSelectJob(cj)}>
+                    {fmtDate(cj.scheduled_at)} · {cj.assigned_truck} · KWD {Number(cj.total || 0).toFixed(3)}
+                  </button>
+                  <StatusPill status={cj.status} />
+                  {jobSuccessful(cj) && <span style={{ fontSize: 11, fontWeight: 700, color: "#15803D" }}>✓ counts for {l.truck}</span>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, onDismissLead }) {
   const parent = j.parent_job_id ? (jobs || []).find(x => x.id === j.parent_job_id) : null;
   const children = (jobs || []).filter(x => x.parent_job_id === j.id);
@@ -7296,6 +7422,7 @@ export default function App() {
   const allTabs = [
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
+    { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales"] },
     { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
     { key: "costs",      label: "Costs",           icon: "💰", roles: ["purchaser"] },
     { key: "settings",   label: "Settings",        icon: "⚙️", roles: ["sales", "purchaser"] },
@@ -7385,7 +7512,7 @@ export default function App() {
               {tabs.map(t => (
                 <button key={t.key} className={`nav-tab ${tab === t.key ? "active" : ""}`}
                   onClick={() => { setTab(t.key); setSelectedJob(null); setSelectedCustomer(null); }}>
-                  {t.label}{t.key === "quotes" && upsellLeads.filter(l => l.status === "open").length > 0 ? <span style={{ marginLeft: 5, fontSize: 10.5, fontWeight: 800, background: "#15803D", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{upsellLeads.filter(l => l.status === "open").length}</span> : null}
+                  {t.label}{t.key === "upsells" && upsellLeads.filter(l => l.status === "open").length > 0 ? <span style={{ marginLeft: 5, fontSize: 10.5, fontWeight: 800, background: "#15803D", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{upsellLeads.filter(l => l.status === "open").length}</span> : null}
                 </button>
               ))}
             </nav>
@@ -7427,27 +7554,10 @@ export default function App() {
             <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
-            <>
-              {(() => {
-                const open = upsellLeads.filter(l => l.status === "open").sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-                if (!open.length) return null;
-                return (
-                  <div className="card" style={{ marginBottom: 16 }}>
-                    <div className="card-header">
-                      <h3>💡 Upsell leads from trucks</h3>
-                      <span style={{ fontSize: 12, color: "var(--muted)" }}>{open.length} open — convert or dismiss; the spotting truck keeps the credit</span>
-                    </div>
-                    <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {open.map(l => (
-                        <UpsellLeadCard key={l.id} lead={l} role={role} showCustomer
-                          onConvert={handleConvertLead} onDismiss={handleDismissLead} />
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
-              <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
-            </>
+            <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "upsells" && (
+            <UpsellsView upsellLeads={upsellLeads} jobs={jobs} role={role} onConvert={handleConvertLead} onDismiss={handleDismissLead} onSelectJob={setSelectedJob} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
             <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
@@ -7483,7 +7593,7 @@ export default function App() {
             {tabs.map(t => (
               <button key={t.key} className={`bottom-nav-item ${tab === t.key ? "active" : ""}`}
                 onClick={() => { setTab(t.key); setSelectedJob(null); setSelectedCustomer(null); }}>
-                <span className="bottom-nav-icon" style={{ position: "relative" }}>{t.icon}{t.key === "quotes" && upsellLeads.filter(l => l.status === "open").length > 0 ? <span style={{ position: "absolute", top: -4, right: -10, fontSize: 9, fontWeight: 800, background: "#15803D", color: "#fff", borderRadius: 7, padding: "0px 4px" }}>{upsellLeads.filter(l => l.status === "open").length}</span> : null}</span>
+                <span className="bottom-nav-icon" style={{ position: "relative" }}>{t.icon}{t.key === "upsells" && upsellLeads.filter(l => l.status === "open").length > 0 ? <span style={{ position: "absolute", top: -4, right: -10, fontSize: 9, fontWeight: 800, background: "#15803D", color: "#fff", borderRadius: 7, padding: "0px 4px" }}>{upsellLeads.filter(l => l.status === "open").length}</span> : null}</span>
                 {t.label}
               </button>
             ))}
