@@ -106,18 +106,20 @@ function deriveChecks(job) {
   const itemCk = job.item_checks || {};
   const ordCk = job.tech_checks_order || {};
   const carCk = { ...(job.tech_checks || {}), ...(job.tech_checks_car || {}) };
-  // Each checkpoint judges exactly the items its screen shows:
-  // distributor collects physical goods; technicians verify everything on their checklist.
-  // Labor-only lines belong to neither — a checkpoint with nothing to check passes.
+  // Distributor collects physical goods. Technicians verify EVERY line — labor included —
+  // so no order (e.g. a converted upsell for a labor-only service) auto-passes checks 3–4.
+  // Settled orders keep the old product-only rule so completed/imported history doesn't flip.
   const collectable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
-  const verifiable  = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
+  const productLines = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
+  const settled = ["done", "invoiced", "paid", "cancelled", "incomplete"].includes(job.status) || job.truck_status === "completed";
+  const verifiable = settled ? productLines : items;
   // #1 sales confirmed match at order submission
   const c1 = !!job.sales_match_confirmed;
   // #2 distributor confirmed every collectable item matches (before loading)
   const c2 = collectable.length === 0 ? true : collectable.every(it => itemCk[it.id]);
-  // #3 technicians verified every part matches the ORDER details
+  // #3 technicians verified every line matches the ORDER details
   const c3 = !!job.tech_arrival_match || (verifiable.length === 0 ? true : verifiable.every(it => ordCk[it.id]));
-  // #4 technicians verified every part matches the CUSTOMER'S CAR (office-approved mismatch counts, flagged as override)
+  // #4 technicians verified every line matches the CUSTOMER'S CAR (office-approved mismatch counts, flagged as override)
   const mm = job.tech_mismatch || {};
   const c4 = verifiable.length === 0 ? true : verifiable.every(it => carCk[it.id] || (mm[it.id] && (mm[it.id].resolution === "approved" || mm[it.id].resolution === "dont_fit")));
   return [c1, c2, c3, c4];
@@ -1639,7 +1641,7 @@ const itemOK = (job, itemId) => !!(job.item_checks || {})[itemId];
 function forceCompletePatch(job) {
   const items = job.items || [];
   const collectable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
-  const verifiable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
+  const verifiable = items; // every line, labor included — mirrors the live verification rule
   const now = new Date().toISOString();
   const allTrue = (list) => { const m = {}; list.forEach(it => { m[it.id] = true; }); return m; };
   return {
@@ -5019,7 +5021,8 @@ function TechJobCard({ job, index, onUpdate, onCompletedPrompt }) {
   const mSet = (key, patch) => setMileages(p => ({ ...p, [key]: { ...(p[key] || { unit: "KM" }), ...patch } }));
   const allMiles = jobCars.every(c => Number((mileages[c.key] || {}).km) > 0);
   const items = j.items || [];
-  const productItems = items.filter(it => it.tire_id || (Number(it.unit_price) || 0) > 0);
+  // EVERY line — labor included — must be ticked by the technicians (no auto-pass for labor-only orders)
+  const productItems = items;
   const hasProducts = productItems.length > 0;
   const ordChecks = j.tech_checks_order || {};
   const carChecks = j.tech_checks_car || {};
@@ -7697,4 +7700,3 @@ export default function App() {
     </>
   );
 }
-      
