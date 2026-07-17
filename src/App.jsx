@@ -7154,10 +7154,11 @@ export default function App() {
     const refreshLive = async () => {
       if (document.visibilityState === "hidden") return;
       try {
-        const [j, qs] = await Promise.all([fetchJobs(), fetchAllQuotes()]);
+        const [j, qs, ul] = await Promise.all([fetchJobs(), fetchAllQuotes(), fetchUpsellLeads()]);
         let merged;
         setJobs(prev => (merged = mergeJobs(prev, j)));
         setQuotes(qs);
+        setUpsellLeads(ul || []);
         setUsingMock(j.some(x => x.id?.startsWith("mock-")));
         setSelectedJob(prev => prev ? ((merged || j).find(x => x.id === prev.id) || prev) : prev);
       } catch {}
@@ -7178,10 +7179,11 @@ export default function App() {
       clearTimeout(t);
       t = setTimeout(async () => {
         try {
-          const [j, qs] = await Promise.all([fetchJobs(), fetchAllQuotes()]);
+          const [j, qs, ul] = await Promise.all([fetchJobs(), fetchAllQuotes(), fetchUpsellLeads()]);
           let merged;
           setJobs(prev => (merged = mergeJobs(prev, j)));
           setQuotes(qs);
+          setUpsellLeads(ul || []);
           setUsingMock(j.some(x => x.id?.startsWith("mock-")));
           setSelectedJob(prev => prev ? ((merged || j).find(x => x.id === prev.id) || prev) : prev);
         } catch {}
@@ -7191,6 +7193,7 @@ export default function App() {
       .channel("bnchr-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, bump)
       .on("postgres_changes", { event: "*", schema: "public", table: "quotes" }, bump)
+      .on("postgres_changes", { event: "*", schema: "public", table: "upsell_leads" }, bump)
       .subscribe();
     return () => { clearTimeout(t); sbRealtime.removeChannel(ch); };
   }, [authed]);
@@ -7694,3 +7697,4 @@ export default function App() {
     </>
   );
 }
+      
