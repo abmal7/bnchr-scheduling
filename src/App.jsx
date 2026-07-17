@@ -1280,7 +1280,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date"]);
 // Merge a refetched jobs list over local state: a fetched row wins only if
 // strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
 // → keep the local optimistic row (kills the check→uncheck→check flicker).
@@ -3007,6 +3007,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     const job = {
       ...common,
       ...(prefillOrder && prefillOrder.linkTo ? prefillOrder.linkTo : {}), // thread link: parent_job_id / link_type / upsell credit
+      sale_date: today(), // revenue is recognized the day the order is PLACED, not scheduled/completed
       created_at: new Date().toISOString(),
       parts_status: "pending",
       truck_status: "scheduled",
@@ -6391,7 +6392,9 @@ function ReportsView({ jobs, quotes, customers, owner }) {
   };
 
   const fmtKD = (n) => Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
-  const jobDate = (j) => { const s = j.scheduled_at || j.created_at; return s ? iso(new Date(s)) : ""; };
+  // Revenue attribution: SALE DATE (day the order was placed). Falls back to the
+  // scheduled day for historical orders created before sale_date existed.
+  const jobDate = (j) => j.sale_date || ((s => s ? iso(new Date(s)) : "")(j.scheduled_at || j.created_at));
   const inRange = jobs.filter(j => j.status !== "cancelled" && jobDate(j) >= from && jobDate(j) <= to);
 
   // ── headline KPIs ──
