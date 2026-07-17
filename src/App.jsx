@@ -3495,17 +3495,25 @@ function TechUpsellForm({ job, onCreate, autoOpen, onDone, onCancel }) {
     return [...m.values()];
   })();
   const [carKey, setCarKey] = useState(jobCars[0].key);
+  const [uploading, setUploading] = useState(0);
+  // Photos upload the moment they're picked — no waiting at submit, × to remove
+  const addPics = async (e) => {
+    const files = Array.from(e.target.files || []).slice(0, Math.max(0, 3 - pics.length)); e.target.value = "";
+    for (const f of files) {
+      setUploading(u => u + 1);
+      try { const u = await uploadJobPhoto(f, `upsell-${job.id}`); setPics(p => p.length < 3 ? [...p, u] : p); }
+      catch { alert("⚠ Photo upload failed — please try again."); }
+      setUploading(u => u - 1);
+    }
+  };
   const submit = async () => {
     setBusy(true);
-    let photo_urls = [];
-    try { photo_urls = await Promise.all(pics.slice(0, 3).map(f => uploadJobPhoto(f, `upsell-${job.id}`))); }
-    catch (e) { alert("⚠ Photo upload failed — the upsell will be saved without photos."); }
     const car = jobCars.find(c => c.key === carKey) || jobCars[0];
     const ok = await onCreate({
       job_id: job.id, truck: job.assigned_truck || null, technician: job.assigned_technician || null,
       customer_name: job.customer_name || "", customer_mobile: job.customer_mobile || "",
       car_id: car.car_id || null, car_label: car.label || "",
-      service_type: svc, note: note.trim(), photo_urls, status: "open",
+      service_type: svc, note: note.trim(), photo_urls: pics, status: "open",
     });
     setBusy(false);
     if (ok) { setOpen(false); setNote(""); setPics([]); if (onDone) onDone(); }
@@ -3527,10 +3535,24 @@ function TechUpsellForm({ job, onCreate, autoOpen, onDone, onCancel }) {
           {SERVICE_NAMES.map(n => <option key={n}>{n}</option>)}
         </select>
         <textarea className="filter-input" rows={2} placeholder="What did you notice? (e.g., front pads at 20%, tires cracking)" value={note} onChange={e => setNote(e.target.value)} style={{ resize: "vertical" }} />
-        <input type="file" accept="image/*" multiple onChange={e => setPics(Array.from(e.target.files || []).slice(0, 3))} />
-        {pics.length > 0 && <div style={{ fontSize: 11.5, color: "var(--muted)" }}>{pics.length} photo{pics.length > 1 ? "s" : ""} attached</div>}
+        {(pics.length > 0 || uploading > 0) && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {pics.map((u, i) => (
+              <span key={i} style={{ position: "relative", display: "inline-block" }}>
+                <a href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ height: 52, borderRadius: 6, border: "1px solid var(--border)", objectFit: "cover" }} /></a>
+                <button type="button" onClick={(e) => { e.preventDefault(); setPics(p => p.filter(x => x !== u)); }}
+                  style={{ position: "absolute", top: -6, right: -6, width: 17, height: 17, borderRadius: "50%", border: "none", background: "var(--danger)", color: "#fff", fontSize: 10, fontWeight: 800, lineHeight: 1, cursor: "pointer", padding: 0 }}>×</button>
+              </span>
+            ))}
+            {uploading > 0 && <span style={{ fontSize: 11.5, color: "var(--muted)" }}>⏳ uploading{uploading > 1 ? ` ×${uploading}` : ""}…</span>}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer", opacity: pics.length >= 3 ? .5 : 1 }}>📷 Add photo<input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={addPics} disabled={pics.length >= 3} /></label>
+          {pics.length >= 3 && <span style={{ fontSize: 10.5, color: "var(--muted)" }}>max 3 photos</span>}
+        </div>
         <div style={{ display: "flex", gap: 6 }}>
-          <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={submit}>{busy ? "Saving…" : "Send to sales"}</button>
+          <button type="button" className="btn btn-primary btn-sm" disabled={busy || uploading > 0} onClick={submit}>{busy ? "Saving…" : uploading > 0 ? "Uploading photos…" : "Send to sales"}</button>
           <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={cancel}>Cancel</button>
         </div>
       </div>
@@ -4730,36 +4752,81 @@ async function uploadJobPhoto(rawFile, jobId) {
 function JobNotes({ j, patch, completed }) {
   const [phase, setPhase] = useState(null); // 'pre' | 'post' | null
   const [txt, setTxt] = useState("");
-  const [pics, setPics] = useState([]);
-  const [busy, setBusy] = useState(false);
+  const [draftId, setDraftId] = useState(null);
+  const [uploading, setUploading] = useState(0);
   const notes = Array.isArray(j.check_notes) ? j.check_notes : [];
+  // Always read/patch through refs so async photo uploads never act on a stale snapshot
+  const notesRef = useRef(notes); notesRef.current = notes;
+  const patchRef = useRef(patch); patchRef.current = patch;
+
+  const openPhase = (p) => { setPhase(p); setTxt(""); setDraftId("n" + Date.now()); };
+
+  // Photos AUTO-SAVE onto the order the moment each upload finishes — no Save button.
+  const commitPhoto = (url, ph, id) => {
+    const cur = notesRef.current;
+    const ex = cur.find(n => n.id === id);
+    patchRef.current({
+      check_notes: ex
+        ? cur.map(n => n.id === id ? { ...n, photos: [...(n.photos || []), url] } : n)
+        : [...cur, { id, phase: ph, text: "", photos: [url], at: new Date().toISOString() }],
+    });
+  };
   const addPic = async (e) => {
     const files = Array.from(e.target.files || []); e.target.value = "";
-    setBusy(true);
-    for (const f of files) { try { setPics(p => [...p, "..."]); const u = await uploadJobPhoto(f, j.id); setPics(p => [...p.filter(x => x !== "..."), u]); } catch { setPics(p => p.filter(x => x !== "...")); alert("Photo upload failed — is the job-photos bucket set up?"); } }
-    setBusy(false);
+    for (const f of files) {
+      setUploading(u => u + 1);
+      try { const u = await uploadJobPhoto(f, j.id); commitPhoto(u, phase, draftId); }
+      catch { alert("⚠ Photo upload failed — please try again."); }
+      setUploading(u => u - 1);
+    }
   };
-  const save = () => {
-    if (!txt.trim() && !pics.length) return;
-    const note = { id: "n" + Date.now(), phase, text: txt.trim(), photos: pics, at: new Date().toISOString() };
-    patch({ check_notes: [...notes, note] });
-    setPhase(null); setTxt(""); setPics([]);
+  // × delete a photo from any note (drops empty notes entirely)
+  const delPic = (noteId, url) => {
+    const next = notesRef.current
+      .map(n => n.id === noteId ? { ...n, photos: (n.photos || []).filter(u => u !== url) } : n)
+      .filter(n => (n.text && n.text.trim()) || (n.photos || []).length > 0);
+    patchRef.current({ check_notes: next });
   };
+  // Done: persist the text (if any) into the draft note, then close
+  const done = () => {
+    const t = txt.trim();
+    if (t) {
+      const cur = notesRef.current;
+      const ex = cur.find(n => n.id === draftId);
+      patchRef.current({
+        check_notes: ex
+          ? cur.map(n => n.id === draftId ? { ...n, text: t } : n)
+          : [...cur, { id: draftId, phase, text: t, photos: [], at: new Date().toISOString() }],
+      });
+    }
+    setPhase(null); setTxt(""); setDraftId(null);
+  };
+
   const badge = (p) => p === "pre" ? { t: "🔍 Pre-check", c: "#B45309", bg: "#FFFBEB" } : { t: "✅ Post-service", c: "#15803D", bg: "#F0FDF4" };
+  const thumb = (n, u, i) => (
+    <span key={i} style={{ position: "relative", display: "inline-block" }}>
+      <a href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ height: 46, borderRadius: 5, border: "1px solid var(--border)", objectFit: "cover" }} /></a>
+      {!completed && (
+        <button type="button" onClick={(e) => { e.preventDefault(); delPic(n.id, u); }}
+          style={{ position: "absolute", top: -6, right: -6, width: 17, height: 17, borderRadius: "50%", border: "none", background: "var(--danger)", color: "#fff", fontSize: 10, fontWeight: 800, lineHeight: 1, cursor: "pointer", padding: 0 }}>×</button>
+      )}
+    </span>
+  );
+  const draftNote = notes.find(n => n.id === draftId);
   return (
     <div style={{ marginBottom: 10 }}>
-      {notes.map(n => { const b = badge(n.phase); return (
+      {notes.filter(n => n.id !== draftId).map(n => { const b = badge(n.phase); return (
         <div key={n.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", marginBottom: 6, background: b.bg }}>
           <div style={{ fontSize: 10.5, fontWeight: 800, color: b.c }}>{b.t} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· {fmtDate(n.at)}</span></div>
           {n.text && <div style={{ fontSize: 12.5, marginTop: 3 }}>{n.text}</div>}
-          {(n.photos || []).length > 0 && <div style={{ display: "flex", gap: 5, marginTop: 5, flexWrap: "wrap" }}>
-            {n.photos.map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ height: 46, borderRadius: 5, border: "1px solid var(--border)", objectFit: "cover" }} /></a>)}
+          {(n.photos || []).length > 0 && <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+            {n.photos.map((u, i) => thumb(n, u, i))}
           </div>}
         </div>); })}
       {!completed && !phase && (
         <div style={{ display: "flex", gap: 6 }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => setPhase("pre")}>+ 🔍 Pre-check note</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setPhase("post")}>+ ✅ Post-service note</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => openPhase("pre")}>+ 🔍 Pre-check note</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => openPhase("post")}>+ ✅ Post-service note</button>
         </div>
       )}
       {!completed && phase && (
@@ -4775,11 +4842,16 @@ function JobNotes({ j, patch, completed }) {
             ))}
           </div>
           <textarea className="filter-input" style={{ width: "100%", minHeight: 44 }} placeholder="Note (e.g. front-right rim scratch before service)…" value={txt} onChange={e => setTxt(e.target.value)} />
-          {pics.length > 0 && <div style={{ display: "flex", gap: 5, margin: "6px 0", flexWrap: "wrap" }}>{pics.map((u, i) => u === "..." ? <span key={i} style={{ fontSize: 11 }}>⏳</span> : <img key={i} src={u} alt="" style={{ height: 46, borderRadius: 5 }} />)}</div>}
-          <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer" }}>📷 Add photo<input type="file" accept="image/*" capture="environment" multiple style={{ display: "none" }} onChange={addPic} disabled={busy} /></label>
-            <button className="btn btn-primary btn-sm" disabled={busy || (!txt.trim() && !pics.length)} onClick={save}>Save note</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => { setPhase(null); setTxt(""); setPics([]); }}>Cancel</button>
+          {(draftNote?.photos?.length > 0 || uploading > 0) && (
+            <div style={{ display: "flex", gap: 8, margin: "8px 0 2px", flexWrap: "wrap", alignItems: "center" }}>
+              {(draftNote?.photos || []).map((u, i) => thumb(draftNote, u, i))}
+              {uploading > 0 && <span style={{ fontSize: 11.5, color: "var(--muted)" }}>⏳ uploading{uploading > 1 ? ` ×${uploading}` : ""}…</span>}
+            </div>
+          )}
+          <div style={{ fontSize: 10.5, color: "var(--muted)", margin: "4px 0 6px" }}>Photos save automatically — use × to remove a mistake.</div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer" }}>📷 Add photo<input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={addPic} /></label>
+            <button className="btn btn-primary btn-sm" disabled={uploading > 0} onClick={done}>✓ Done</button>
           </div>
         </div>
       )}
