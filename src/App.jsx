@@ -2260,7 +2260,7 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                           </div>
                           <div>
                             <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price/tire (KD)</label>
-                            <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
+                            <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price || ""} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
                           </div>
                         </div>
                       </div>
@@ -2286,7 +2286,7 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                           </div>
                           <div>
                             <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price/tire (KD)</label>
-                            <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.rear_unit_price} onChange={e => upd(svc.id, { rear_unit_price: e.target.value })} />
+                            <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.rear_unit_price || ""} onChange={e => upd(svc.id, { rear_unit_price: e.target.value })} />
                           </div>
                         </div>
                       </div>
@@ -2361,11 +2361,11 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                           </div>
                           <div style={{ width: 76 }}>
                             <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price</label>
-                            <input type="number" min={0} className="filter-input" style={{ width: "100%" }} value={p.price} onChange={e => updPart(svc.id, p.id, { price: e.target.value })} />
+                            <input type="number" min={0} className="filter-input" style={{ width: "100%" }} value={p.price || ""} onChange={e => updPart(svc.id, p.id, { price: e.target.value })} />
                           </div>
                           <div style={{ width: 76 }}>
                             <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Cost <span style={{ textTransform: "none", fontWeight: 400 }}>opt</span></label>
-                            <input type="number" min={0} className="filter-input" style={{ width: "100%" }} value={p.cost} onChange={e => updPart(svc.id, p.id, { cost: e.target.value })} />
+                            <input type="number" min={0} className="filter-input" style={{ width: "100%" }} value={p.cost || ""} onChange={e => updPart(svc.id, p.id, { cost: e.target.value })} />
                           </div>
                         </div>
                       </div>
@@ -2390,7 +2390,7 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                       <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Price/tire (KD)</label>
-                      <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
+                      <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price || ""} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
                     </div>
                   </>
                 )}
@@ -2405,7 +2405,7 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                   <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Labor (KD) · auto</label>
-                  <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.labor} onChange={e => upd(svc.id, { labor: e.target.value })} />
+                  <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.labor || ""} onChange={e => upd(svc.id, { labor: e.target.value })} />
                 </div>
                 <DiscountField base={t.grossLabor} disc={svc.labor_disc} onChange={(d) => upd(svc.id, { labor_disc: d })} label="Labor" />
                 <div style={{ marginLeft: "auto", textAlign: "right" }}>
