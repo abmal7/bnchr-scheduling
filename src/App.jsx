@@ -284,6 +284,15 @@ const ROLES = [
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const today = () => new Date().toISOString().split("T")[0];
+// Revenue is recognized on the SALE DATE (day the order was placed).
+// Falls back to the scheduled/created day for pre-sale_date historical orders.
+const saleDateOf = (j) => {
+  if (j.sale_date) return j.sale_date;
+  const s = j.scheduled_at || j.created_at;
+  if (!s) return "";
+  const d = new Date(s);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" }) : "—";
 const fmtTime = (d) => d ? new Date(d).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "—";
 const fmtDateTime = (d) => d ? `${fmtDate(d)} ${fmtTime(d)}` : "—";
@@ -4167,6 +4176,14 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
 
   // Day summary — whole day always (never affected by the pills)
   const totalKD = base.reduce((s, j) => s + (j.status !== "cancelled" ? Number(j.total || 0) : 0), 0);
+  // Headline revenue = orders SOLD on this day (sale_date), matching the Reports page,
+  // regardless of when they're scheduled. Truck/search scope still applies.
+  const salesKD = jobs.filter(j => {
+    if (j.status === "cancelled") return false;
+    if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
+    if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
+    return saleDateOf(j) === (filterDate || today());
+  }).reduce((s, j) => s + (Number(j.total) || 0), 0);
   const done = base.filter(jobSuccessful).length;
 
   return (
@@ -4174,7 +4191,11 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
       <div className="stats-grid">
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{base.length}</div><div className="stat-lbl">Jobs today</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{done}</div><div className="stat-lbl">Completed</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>KWD {totalKD.toFixed(3)}</div><div className="stat-lbl">Revenue (shown)</div></div>
+        <div className="stat-card">
+          <div className="stat-num" style={{ color: "var(--accent)" }}>KWD {salesKD.toFixed(3)}</div>
+          <div className="stat-lbl">{(filterDate || today()) === today() ? "Today's Revenue" : "Revenue (sold this day)"}</div>
+          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>on this day's schedule: KWD {totalKD.toFixed(3)}</div>
+        </div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{base.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid</div></div>
       </div>
 
@@ -6392,9 +6413,8 @@ function ReportsView({ jobs, quotes, customers, owner }) {
   };
 
   const fmtKD = (n) => Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
-  // Revenue attribution: SALE DATE (day the order was placed). Falls back to the
-  // scheduled day for historical orders created before sale_date existed.
-  const jobDate = (j) => j.sale_date || ((s => s ? iso(new Date(s)) : "")(j.scheduled_at || j.created_at));
+  // Revenue attribution: SALE DATE (day the order was placed) — shared helper.
+  const jobDate = saleDateOf;
   const inRange = jobs.filter(j => j.status !== "cancelled" && jobDate(j) >= from && jobDate(j) <= to);
 
   // ── headline KPIs ──
