@@ -2995,6 +2995,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
         q: Number(s.qty) || 0, p: Number(s.unit_price) || 0, car: s.car_id || null,
       })));
       const itemsChanged = sig(hydrateServices(editJob)) !== sig(services);
+      const settled = jobSuccessful(editJob); // completed orders are a historical record
       const patch = { ...common };
       delete patch.created_at; // preserve original
       if (editJob.status === "cancelled") {
@@ -3007,8 +3008,10 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
         patch.parts_released = false;
         patch.techs_released = false;
       }
-      if (itemsChanged) {
-        // re-verification habit: clear all match confirmations + downstream per-item checks
+      if (itemsChanged && !settled) {
+        // re-verification habit: clear all match confirmations + downstream per-item checks.
+        // NEVER on completed orders — corrections (e.g. linking the car afterwards) must
+        // not erase the verification history of work already delivered.
         patch.sales_match_confirmed = false;
         patch.tech_arrival_match = false;
         patch.item_checks = {};
@@ -3018,7 +3021,32 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
         patch.ver_times = { c1: patch.sales_match_confirmed === false ? null : ((editJob.ver_times || {}).c1 || null), c2: null, c3: null, c4: null };
         patch.items_edited_at = new Date().toISOString();
       }
+      // Late car link on a completed order → back-fill the recorded mileage onto the
+      // car's own log. appendCarMileage de-dupes by job_id, so re-saving is harmless.
+      const backfills = [];
+      if (settled) {
+        const cm = editJob.car_mileages
+          || (Number(editJob.service_mileage) > 0 ? { primary: { km: Number(editJob.service_mileage), unit: editJob.service_mileage_unit || "KM" } } : null);
+        if (cm) {
+          const realIds = [...new Set([common.car_id, ...services.map(s => s.car_id)]
+            .filter(id => id && cars.some(c => c.id === id)))];
+          const fixedCm = { ...cm };
+          Object.entries(cm).forEach(([key, e]) => {
+            if (!(Number(e?.km) > 0)) return;
+            const target = (e.car_id && cars.some(c => c.id === e.car_id)) ? e.car_id
+              : (realIds.length === 1 ? realIds[0] : null); // single-car order → unambiguous
+            if (!target) return;
+            fixedCm[key] = { ...e, car_id: target };
+            backfills.push({ carId: target, entry: {
+              date: editJob.completed_at || new Date().toISOString(), km: Number(e.km), unit: e.unit || "KM",
+              service: editJob.service_type || "", job_id: editJob.id, mobile: common.customer_mobile || "",
+            } });
+          });
+          patch.car_mileages = fixedCm;
+        }
+      }
       await updateJob(editJob.id, patch);
+      backfills.forEach(b => appendCarMileage(b.carId, b.entry)); // fire-and-forget, de-duped
       onEdited({ ...editJob, ...patch });
       setSaving(false);
       onClose();
