@@ -1289,7 +1289,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date","no_products_reason"]);
 // Merge a refetched jobs list over local state: a fetched row wins only if
 // strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
 // → keep the local optimistic row (kills the check→uncheck→check flicker).
@@ -2642,6 +2642,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     lead_from: "WhatsApp", sales_agent: defaultAgent || "",
     xero_ref: "", invoice_no: "", payment_through: "Link", payment_status: "pending", payment_link: "", notes: "",
     status: "draft",
+    no_products_reason: null, // required choice when the order has no products: 'labor_only' | 'customer_parts'
     checks: [false, false, false, false],
   };
   const [f, setF] = useState(blank);
@@ -2840,6 +2841,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
   else if (!f.services.every(s => s.kind === "tire" ? true : (partsGross(s.parts) > 0 || (s.parts || []).some(p => p.name) || s.labor)))
     submitReasons.push("Each non-tire service needs a part or labor");
   if (hasProducts && !f.sales_match_confirmed) submitReasons.push("Confirm the products match the customer's car");
+  if (!hasProducts && (f.services || []).length && !f.no_products_reason) submitReasons.push("Select: labor only, or parts/tires with customer");
   if (f.start_hour == null) submitReasons.push("Pick a time slot");
   const canSubmit = submitReasons.length === 0;
 
@@ -2960,6 +2962,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     });
     const common = {
       ...f,
+      no_products_reason: hasProducts ? null : (f.no_products_reason || null),
       car_id: primaryCar ? primaryCar.id : (f.car_id || null),
       car_brand: primaryCar ? (primaryCar.brand || "") : (f.car_brand || ""),
       car_model: primaryCar ? (primaryCar.model || "") : (f.car_model || ""),
@@ -3237,9 +3240,20 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
                 <span style={{ fontSize: 13, fontWeight: 600 }}>I'm sure the tires / products match the customer's car. <span style={{ color: "var(--danger)" }}>*</span></span>
               </label>
             ) : (
-              <div className="form-full" style={{ display: "flex", gap: 10, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 8, padding: "10px 12px" }}>
-                <span style={{ fontSize: 18 }}>🔧</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "#1E40AF" }}>Labor only — no products for this order. Parts/tires with customer.</span>
+              <div className="form-full" style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1E40AF", marginBottom: 8 }}>No products on this order — tell the technicians exactly what to expect: <span style={{ color: "var(--danger)" }}>*</span></div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {[
+                    { v: "labor_only", icon: "🔧", t: "Labor only — no products for this order" },
+                    { v: "customer_parts", icon: "🛞", t: "Parts/tires with customer" },
+                  ].map(o => (
+                    <label key={o.v} style={{ display: "flex", gap: 9, alignItems: "center", background: f.no_products_reason === o.v ? "#DBEAFE" : "#fff", border: `1.5px solid ${f.no_products_reason === o.v ? "#2563EB" : "var(--border)"}`, borderRadius: 8, padding: "8px 11px", cursor: "pointer" }}>
+                      <input type="radio" name="no_products_reason" checked={f.no_products_reason === o.v} onChange={() => setF(p => ({ ...p, no_products_reason: o.v }))} />
+                      <span style={{ fontSize: 15 }}>{o.icon}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#1E40AF" }}>{o.t}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -5333,10 +5347,17 @@ function TechJobCard({ job, index, onUpdate, onCompletedPrompt }) {
             </TechStage>
           </>
         ) : (
-          <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 10, padding: "9px 12px", marginBottom: 8 }}>
-            <span style={{ fontSize: 15 }}>🔧</span>
-            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#1E40AF" }}>Labor only — no products for this order. Parts/tires with customer.</span>
-          </div>
+          j.no_products_reason === "customer_parts" ? (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#FFFBEB", border: "1.5px solid #FCD34D", borderRadius: 10, padding: "9px 12px", marginBottom: 8 }}>
+              <span style={{ fontSize: 15 }}>🛞</span>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: "#92400E" }}>Parts/tires are WITH THE CUSTOMER — install what the customer provides.</span>
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 10, padding: "9px 12px", marginBottom: 8 }}>
+              <span style={{ fontSize: 15 }}>🔧</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#1E40AF" }}>{j.no_products_reason === "labor_only" ? "Labor only — no products for this order." : "Labor only — no products for this order. Parts/tires with customer."}</span>
+            </div>
+          )
         )}
 
         {/* Stage 4 · Complete */}
