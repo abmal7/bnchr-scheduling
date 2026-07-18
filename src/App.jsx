@@ -2648,6 +2648,15 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
   const [f, setF] = useState(blank);
   const [mobileQ, setMobileQ] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState(null);
+
+  // EDIT MODE: restore the customer link immediately so the per-service car selector
+  // and saved addresses show the order's actual selections (not "select car").
+  useEffect(() => {
+    if (!isEdit || selectedCustomer) return;
+    const c = customers.find(x => x.id === editJob.customer_id) ||
+              customers.find(x => last8(x.mobile) === last8(editJob.customer_mobile));
+    if (c) setSelectedCustomer(c);
+  }, [isEdit, customers]);
   const [selectedCar, setSelectedCar] = useState(null);
   const [selectedAddr, setSelectedAddr] = useState(null);
   const [addrMode, setAddrMode] = useState("pick"); // pick | new
@@ -2717,21 +2726,21 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     setQuoteOpen(false);
   };
 
-  // Explicit inline saves — write to the customer profile immediately (optimistic + background persist)
-  const saveInlineCar = (sid) => {
+  // Explicit inline saves — create on the SERVER first so the row gets a real id.
+  // (Previously a local "lcar-…" text id was POSTed into a uuid column — Supabase
+  // rejected the insert silently, so cars/addresses added here never persisted.)
+  const saveInlineCar = async (sid) => {
     const s = f.services.find(x => x.id === sid);
     if (!selectedCustomer || !s?.new_car?.brand || !s?.new_car?.model) return;
-    const car = { ...s.new_car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, customer_id: selectedCustomer.id, created_at: new Date().toISOString() };
-    if (onCarCreated) onCarCreated(car);                    // appears in profile + dropdowns immediately
+    const car = await createCar({ ...s.new_car, customer_id: selectedCustomer.id, created_at: new Date().toISOString() });
+    if (onCarCreated) onCarCreated(car);                    // appears in profile + dropdowns
     setServices(prev => prev.map(x => x.id === sid ? { ...x, car_id: car.id, new_car: null, parts: rebrandParts(x.parts, car.brand) } : x));
-    createCar(car);                                          // persist in background (non-blocking)
   };
-  const saveInlineAddress = () => {
+  const saveInlineAddress = async () => {
     if (!selectedCustomer || !f.area) return;
-    const a = { id: `laddr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, label: f.area, area: f.area, governorate: f.governorate || govFor(f.area), block: f.block, street: f.street, lane: f.lane, house: f.house, map_link: f.map_link || buildMapsLink({ ...f, governorate: f.governorate || govFor(f.area) }), customer_id: selectedCustomer.id, created_at: new Date().toISOString() };
-    if (onAddressCreated) onAddressCreated(a);              // appears in saved addresses immediately
+    const a = await createAddress({ label: f.area, area: f.area, governorate: f.governorate || govFor(f.area), block: f.block, street: f.street, lane: f.lane, house: f.house, map_link: f.map_link || buildMapsLink({ ...f, governorate: f.governorate || govFor(f.area) }), customer_id: selectedCustomer.id, created_at: new Date().toISOString() });
+    if (onAddressCreated) onAddressCreated(a);              // appears in saved addresses
     setSelectedAddr(a); setAddrMode("pick");
-    createAddress(a);                                        // persist in background (non-blocking)
   };
   const [savingCustomer, setSavingCustomer] = useState(false);
   const saveAsNewCustomer = async () => {
