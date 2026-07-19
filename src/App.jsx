@@ -581,6 +581,10 @@ const quoteAge = (d) => {
 };
 // Estimated tires-only value of a quote (cheapest option × qty; staggered = F+R pairs)
 function quoteValue(q) {
+  if (q.kind === "service") {
+    const prods = (q.lines || []).reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0);
+    return prods + (Number(q.labor) || 0) - (Number(q.discount) || 0);
+  }
   if (q.staggered) {
     const opts = staggeredOptions(q);
     const cheapest = opts.reduce((a, b) => (b.price < a.price ? b : a), opts[0] || { price: 0 });
@@ -621,6 +625,28 @@ function staggeredOptions(q) {
 }
 // Build an order service block from a quote line (line optional; staggered uses F+R)
 function quoteToService(q, line) {
+  // Service quotes (from the Tire System's Service Quote page): one service block,
+  // all quote lines as parts, labor/discount carried over. Service type from category.
+  if (q.kind === "service") {
+    const lines = q.lines || [];
+    const catCount = {};
+    lines.forEach(l => { catCount[l.category] = (catCount[l.category] || 0) + 1; });
+    const domCat = Object.keys(catCount).sort((a, b) => catCount[b] - catCount[a])[0] || "other";
+    const brakeType = String((lines.find(l => l.category === "brake") || {}).name || "").toLowerCase();
+    const typeMap = {
+      battery: "Battery",
+      engine_oil: "Oil & Filter", filter: "Oil & Filter",
+      brake: brakeType.includes("disc") ? "Brake Disc" : "Brake Pads",
+      spark_plug: "Spark Plugs",
+      fluid: "Part Replacement", other: "Part Replacement",
+    };
+    const svcType = SERVICE_CATALOG[typeMap[domCat]] ? typeMap[domCat] : "Part Replacement";
+    const svc = newService(svcType);
+    svc.parts = lines.map(l => ({ id: uid(), name: l.name || l.sku || "", supplier: "", qty: Number(l.qty) || 1, price: Number(l.unit_price) || 0, cost: 0, sku: l.sku || "", product_id: l.product_id || null }));
+    svc.labor = Number(q.labor) || catalogLabor(svcType, svc.variant, 1);
+    if (Number(q.discount) > 0) svc.price_disc = { type: "amt", value: Number(q.discount) };
+    return svc;
+  }
   const svc = newService("Tire Change & Balancing");
   const fillFront = (ln) => ln && Object.assign(svc, { tire_id: ln.tire_id, brand: ln.brand, pattern: ln.pattern, size: ln.size, year: ln.year || "", unit_price: Number(ln.price) || 0 });
   if (q.staggered) {
@@ -7052,7 +7078,19 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
               </div>
             )}
 
-            {isStag ? (
+            {q.kind === "service" ? (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
+                <div>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0369A1", marginBottom: 3 }}>🛠 SERVICE QUOTE</div>
+                  {(q.lines || []).map((l, li) => (
+                    <div key={li}><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(l.unit_price || 0).toFixed(3)} KD</span></div>
+                  ))}
+                  {Number(q.labor) > 0 && <div style={{ color: "var(--muted)" }}>Labor: {Number(q.labor).toFixed(3)} KD</div>}
+                  {Number(q.discount) > 0 && <div style={{ color: "var(--muted)" }}>Discount: -{Number(q.discount).toFixed(3)} KD</div>}
+                </div>
+                {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, null)}>Book</button>}
+              </div>
+            ) : isStag ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {staggeredOptions(q).map((opt, oi) => (
                   <div key={oi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
