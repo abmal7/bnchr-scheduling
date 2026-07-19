@@ -652,7 +652,12 @@ function quoteToService(q, line) {
     }
     const svc = newService(svcType);
     if (q.variant) Object.entries(q.variant).forEach(([axis, val]) => {
-      if ((SERVICE_CATALOG[svcType]?.variants || {})[axis]?.includes(val)) svc.variant[axis] = val;
+      // quote sides use Front/Rear/Front & Rear; the order form's brake variants use One/Two sides
+      let v = val;
+      if (axis === "sides" && (svcType === "Brake Pads" || svcType === "Brake Disc")) {
+        v = val === "Front & Rear" ? "Two sides" : (val === "Front" || val === "Rear") ? "One side" : val;
+      }
+      if ((SERVICE_CATALOG[svcType]?.variants || {})[axis]?.includes(v)) svc.variant[axis] = v;
     });
     svc.parts = lines.map(l => ({ id: uid(), name: l.name || l.sku || "", supplier: "", qty: Number(l.qty) || 1, price: Number(l.unit_price) || 0, cost: 0, sku: l.sku || "", product_id: l.product_id || null }));
     svc.labor = Number(q.labor) || catalogLabor(svcType, svc.variant, 1);
