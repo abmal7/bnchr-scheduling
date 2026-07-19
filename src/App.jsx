@@ -2838,7 +2838,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     }
     // Deep link from the Tire System: prefilled service blocks (tire already picked)
     if (prefillOrder.services && prefillOrder.services.length) {
-      const services = prefillOrder.services.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: null }));
+      const services = prefillOrder.services.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: s.new_car || null }));
       setF(p => ({ ...p, services, ...(prefillOrder.mobile && !c ? { customer_mobile: prefillOrder.mobile } : {}) }));
     }
     // Revisit: carry over the customer + address from the original order, prime the
@@ -7490,7 +7490,18 @@ export default function App() {
     setSelectedJob(null);
     setSelectedCustomer(null);
     const svc = quoteToService(quote, line);
-    const customer = customers.find(x => last8(x.mobile) === last8(quote.customer_mobile)) || null;
+    const customer = customers.find(x => x.id === quote.customer_id) ||
+                     customers.find(x => last8(x.mobile) === last8(quote.customer_mobile)) || null;
+    // Service quotes carry the car: link the exact car when it's really this customer's,
+    // otherwise pre-fill the inline new-car form so sales only taps save.
+    if (quote.kind === "service") {
+      const carOk = quote.car_id && customer && cars.some(c => c.id === quote.car_id && c.customer_id === customer.id);
+      if (carOk) svc.car_id = quote.car_id;
+      else if (quote.car && quote.car.brand) {
+        svc.car_id = null;
+        svc.new_car = { brand: quote.car.brand || "", model: quote.car.model || "", year: String(quote.car.year || ""), plate: quote.car.vin || "" };
+      }
+    }
     setPrefillSlot(null);
     setPrefillOrder({ customer, services: [svc], mobile: quote.customer_mobile, name: quote.customer_name || "", quoteId: quote.id });
     setShowNew(true);
