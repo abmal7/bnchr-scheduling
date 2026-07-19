@@ -582,8 +582,13 @@ const quoteAge = (d) => {
 // Estimated tires-only value of a quote (cheapest option × qty; staggered = F+R pairs)
 function quoteValue(q) {
   if (q.kind === "service") {
+    const labor = Number(q.labor) || 0, disc = Number(q.discount) || 0;
+    if (q.service_type === "Battery" && (q.lines || []).length > 1) {
+      // batteries are ALTERNATIVES: pipeline value = the best single option (battery + labor)
+      return Math.max(...q.lines.map(l => (Number(l.qty) || 1) * (Number(l.unit_price) || 0))) + labor - disc;
+    }
     const prods = (q.lines || []).reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0);
-    return prods + (Number(q.labor) || 0) - (Number(q.discount) || 0);
+    return prods + labor - disc;
   }
   if (q.staggered) {
     const opts = staggeredOptions(q);
@@ -628,7 +633,8 @@ function quoteToService(q, line) {
   // Service quotes (from the Tire System's Service Quote page): one service block,
   // all quote lines as parts, labor/discount carried over. Service type from category.
   if (q.kind === "service") {
-    const lines = q.lines || [];
+    // Battery quotes list ALTERNATIVES — booking a chosen option carries only that battery
+    const lines = (q.service_type === "Battery" && line) ? [line] : (q.lines || []);
     let svcType = q.service_type && SERVICE_CATALOG[q.service_type] ? q.service_type : null;
     if (!svcType) {
       const catCount = {};
@@ -7101,7 +7107,20 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
               </div>
             )}
 
-            {q.kind === "service" ? (
+            {q.kind === "service" && q.service_type === "Battery" && (q.lines || []).length > 1 ? (
+              <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0369A1", marginBottom: 5 }}>🛠 BATTERY QUOTE — {q.lines.length} OPTIONS{q.car && (q.car.brand || q.car.model) ? ` · 🚗 ${[q.car.brand, q.car.model, q.car.year].filter(Boolean).join(" ")}` : ""}</div>
+                {(q.lines || []).map((l, li) => {
+                  const optTotal = (Number(l.qty) || 1) * (Number(l.unit_price) || 0) + (Number(q.labor) || 0) - (Number(q.discount) || 0);
+                  return (
+                    <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "4px 0", borderTop: li ? "1px solid var(--border)" : "none" }}>
+                      <div><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>= {optTotal.toFixed(3)} KD</span> <span style={{ color: "var(--muted)", fontSize: 11 }}>incl. labor</span></div>
+                      {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, l)}>Book</button>}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : q.kind === "service" ? (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
                 <div>
                   <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0369A1", marginBottom: 3 }}>🛠 {(q.service_type || "SERVICE").toUpperCase()} QUOTE{q.car && (q.car.brand || q.car.model) ? ` · 🚗 ${[q.car.brand, q.car.model, q.car.year].filter(Boolean).join(" ")}` : ""}</div>
