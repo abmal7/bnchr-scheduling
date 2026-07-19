@@ -629,19 +629,25 @@ function quoteToService(q, line) {
   // all quote lines as parts, labor/discount carried over. Service type from category.
   if (q.kind === "service") {
     const lines = q.lines || [];
-    const catCount = {};
-    lines.forEach(l => { catCount[l.category] = (catCount[l.category] || 0) + 1; });
-    const domCat = Object.keys(catCount).sort((a, b) => catCount[b] - catCount[a])[0] || "other";
-    const brakeType = String((lines.find(l => l.category === "brake") || {}).name || "").toLowerCase();
-    const typeMap = {
-      battery: "Battery",
-      engine_oil: "Oil & Filter", filter: "Oil & Filter",
-      brake: brakeType.includes("disc") ? "Brake Disc" : "Brake Pads",
-      spark_plug: "Spark Plugs",
-      fluid: "Part Replacement", other: "Part Replacement",
-    };
-    const svcType = SERVICE_CATALOG[typeMap[domCat]] ? typeMap[domCat] : "Part Replacement";
+    let svcType = q.service_type && SERVICE_CATALOG[q.service_type] ? q.service_type : null;
+    if (!svcType) {
+      const catCount = {};
+      lines.forEach(l => { catCount[l.category] = (catCount[l.category] || 0) + 1; });
+      const domCat = Object.keys(catCount).sort((a, b) => catCount[b] - catCount[a])[0] || "other";
+      const brakeType = String((lines.find(l => l.category === "brake") || {}).name || "").toLowerCase();
+      const typeMap = {
+        battery: "Battery",
+        engine_oil: "Oil & Filter", filter: "Oil & Filter",
+        brake: brakeType.includes("disc") ? "Brake Disc" : "Brake Pads",
+        spark_plug: "Spark Plugs",
+        fluid: "Part Replacement", other: "Part Replacement",
+      };
+      svcType = SERVICE_CATALOG[typeMap[domCat]] ? typeMap[domCat] : "Part Replacement";
+    }
     const svc = newService(svcType);
+    if (q.variant) Object.entries(q.variant).forEach(([axis, val]) => {
+      if ((SERVICE_CATALOG[svcType]?.variants || {})[axis]?.includes(val)) svc.variant[axis] = val;
+    });
     svc.parts = lines.map(l => ({ id: uid(), name: l.name || l.sku || "", supplier: "", qty: Number(l.qty) || 1, price: Number(l.unit_price) || 0, cost: 0, sku: l.sku || "", product_id: l.product_id || null }));
     svc.labor = Number(q.labor) || catalogLabor(svcType, svc.variant, 1);
     if (Number(q.discount) > 0) svc.price_disc = { type: "amt", value: Number(q.discount) };
@@ -1350,8 +1356,25 @@ async function createCar(car) {
   catch { return { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
 }
 async function fetchCatalogItems() {
-  try { const d = await sbAll("/catalog_items?select=*&active=eq.true&order=description.asc"); return d || []; }
-  catch { return []; }
+  // SINGLE SOURCE: the Tire System's service_products (+ offers for best cost).
+  // Adapted to the CatalogPicker shape; the legacy catalog_items table is retired.
+  try {
+    const [p, o] = await Promise.all([
+      sbAll("/service_products?select=*&active=eq.true&order=sku.asc"),
+      sbAll("/service_product_offers?select=*"),
+    ]);
+    const best = {};
+    (o || []).forEach(x => {
+      const c = Number(x.cost) || 0;
+      if (c > 0 && (!best[x.product_id] || c < best[x.product_id].cost)) best[x.product_id] = { cost: c, supplier: x.supplier };
+    });
+    const CATMAP = { engine_oil: "EO", battery: "BT", filter: "FT", fluid: "FL", brake: "BP", spark_plug: "SP", other: "PT" };
+    return (p || []).map(x => ({
+      id: x.id, category: CATMAP[x.category] || "PT", sku: x.sku,
+      description: x.name, price: x.selling_price,
+      cost: best[x.id] ? best[x.id].cost : 0, supplier: best[x.id] ? best[x.id].supplier : "",
+    }));
+  } catch { return []; }
 }
 
 // ─── Upsell leads (technician-spotted opportunities) ──────────────────────────
@@ -7081,7 +7104,7 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
             {q.kind === "service" ? (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
                 <div>
-                  <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0369A1", marginBottom: 3 }}>🛠 SERVICE QUOTE</div>
+                  <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0369A1", marginBottom: 3 }}>🛠 {(q.service_type || "SERVICE").toUpperCase()} QUOTE{q.car && (q.car.brand || q.car.model) ? ` · 🚗 ${[q.car.brand, q.car.model, q.car.year].filter(Boolean).join(" ")}` : ""}</div>
                   {(q.lines || []).map((l, li) => (
                     <div key={li}><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(l.unit_price || 0).toFixed(3)} KD</span></div>
                   ))}
