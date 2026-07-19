@@ -1289,7 +1289,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date","no_products_reason"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date","no_products_reason","paid_date"]);
 // Merge a refetched jobs list over local state: a fetched row wins only if
 // strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
 // → keep the local optimistic row (kills the check→uncheck→check flicker).
@@ -2972,6 +2972,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
     const common = {
       ...f,
       no_products_reason: hasProducts ? null : (f.no_products_reason || null),
+      paid_date: f.payment_status === "paid" ? ((editJob && editJob.paid_date) || today()) : null,
       car_id: primaryCar ? primaryCar.id : (f.car_id || null),
       car_brand: primaryCar ? (primaryCar.brand || "") : (f.car_brand || ""),
       car_model: primaryCar ? (primaryCar.model || "") : (f.car_model || ""),
@@ -4179,7 +4180,7 @@ function OrderActions({ job, onAction, compact }) {
     });
     return (
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-        <span style={chip(isPaid)} onClick={stop(() => onAction({ payment_status: isPaid ? "pending" : "paid", status: isPaid ? job.status : (job.status === "draft" ? "booked" : job.status) }))}>{isPaid ? "✓" : "○"} Paid</span>
+        <span style={chip(isPaid)} onClick={stop(() => onAction({ payment_status: isPaid ? "pending" : "paid", paid_date: isPaid ? null : today(), status: isPaid ? job.status : (job.status === "draft" ? "booked" : job.status) }))}>{isPaid ? "✓" : "○"} Paid</span>
         <span style={chip(job.parts_released)} onClick={stop(() => onAction({ parts_released: !job.parts_released }))}>{job.parts_released ? "✓" : "○"} Parts Ready</span>
         <span style={chip(job.techs_released)} onClick={stop(() => onAction({ techs_released: !job.techs_released }))}>{job.techs_released ? "✓" : "○"} Show Technicians</span>
         <span style={chip(job.invoice_shared)} onClick={stop(() => onAction({ invoice_shared: !job.invoice_shared }))}>{job.invoice_shared ? "✓" : "○"} Invoice Sent</span>
@@ -4235,6 +4236,13 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
     if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
     return saleDateOf(j) === (filterDate || today());
   }).reduce((s, j) => s + (Number(j.total) || 0), 0);
+  // Cash companion: money actually collected this day (Paid trigger stamps paid_date)
+  const collectedKD = jobs.filter(j => {
+    if (j.status === "cancelled" || !j.paid_date) return false;
+    if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
+    if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
+    return j.paid_date === (filterDate || today());
+  }).reduce((s, j) => s + (Number(j.total) || 0), 0);
   const done = base.filter(jobSuccessful).length;
 
   return (
@@ -4246,6 +4254,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
           <div className="stat-num" style={{ color: "var(--accent)" }}>KWD {salesKD.toFixed(3)}</div>
           <div className="stat-lbl">{(filterDate || today()) === today() ? "Today's Revenue" : "Revenue (sold this day)"}</div>
           <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>on this day's schedule: KWD {totalKD.toFixed(3)}</div>
+          <div style={{ fontSize: 10, color: "#059669", fontWeight: 600, marginTop: 1 }}>collected this day: KWD {collectedKD.toFixed(3)}</div>
         </div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{base.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid</div></div>
       </div>
