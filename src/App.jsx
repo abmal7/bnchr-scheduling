@@ -1248,53 +1248,6 @@ const CAR_DATA = {
 const CAR_BRANDS = Object.keys(CAR_DATA).sort();
 const modelsFor = (brand) => CAR_DATA[brand] || [];
 
-// ═══ VIN decoder — Level 1 offline (structure/check digit/brand/year) + NHTSA suggestions ═══
-const VIN_WMI = { "1HG":"Honda","2HG":"Honda","JHM":"Honda","5FN":"Honda","WP0":"Porsche","WP1":"Porsche","ZAM":"Maserati","ZFF":"Ferrari","ZHW":"Lamborghini","ZPB":"Lamborghini","WDB":"Mercedes-Benz","WDC":"Mercedes-Benz","WDD":"Mercedes-Benz","W1K":"Mercedes-Benz","W1N":"Mercedes-Benz","W1V":"Mercedes-Benz","4JG":"Mercedes-Benz","WBA":"BMW","WBS":"BMW","WBX":"BMW","WBY":"BMW","5UX":"BMW","5YM":"BMW","WAU":"Audi","WA1":"Audi","TRU":"Audi","WUA":"Audi","WVW":"Volkswagen","WVG":"Volkswagen","1V2":"Volkswagen","JTM":"Toyota","JTE":"Toyota","JTD":"Toyota","JTG":"Toyota","JTN":"Toyota","JTB":"Toyota","MR0":"Toyota","JTJ":"Lexus","JTH":"Lexus","JN1":"Nissan","JN8":"Nissan","JN6":"Nissan","SJN":"Nissan","1N4":"Nissan","5N1":"Nissan","MNT":"Nissan","KM8":"Hyundai","KMH":"Hyundai","KNA":"Kia","KND":"Kia","1G1":"Chevrolet","1GC":"Chevrolet","1GN":"Chevrolet","2GN":"Chevrolet","3GN":"Chevrolet","KL1":"Chevrolet","1GT":"GMC","1GK":"GMC","1GD":"GMC","1GY":"Cadillac","1FA":"Ford","1FT":"Ford","1FM":"Ford","MAJ":"Ford","1C4":"Jeep","1J4":"Jeep","1C6":"Dodge","2C3":"Dodge","1C3":"Dodge","SAL":"Land Rover","SCA":"Rolls-Royce","SCB":"Bentley","SJA":"Bentley","YV1":"Volvo","YV4":"Volvo","JM1":"Mazda","JM3":"Mazda","JMZ":"Mazda","5YJ":"Tesla","7SA":"Tesla","LRW":"Tesla","XP7":"Tesla","JA3":"Mitsubishi","JA4":"Mitsubishi","JMB":"Mitsubishi","VF3":"Peugeot","VF1":"Renault","ZN6":"Maserati" };
-const VIN_YEAR_CHARS = "ABCDEFGHJKLMNPRSTVWXY123456789"; // 1980–2009, repeating every 30y
-const vinYearOf = (ch) => {
-  const i = VIN_YEAR_CHARS.indexOf(String(ch || "").toUpperCase());
-  if (i < 0) return null;
-  const max = new Date().getFullYear() + 1;
-  let y = 1980 + i;
-  while (y + 30 <= max) y += 30;
-  return y;
-};
-const vinBrandOf = (vin) => VIN_WMI[vin.slice(0, 3)] || null;
-const vinCheckDigitOk = (vin) => {
-  const v = vin.toUpperCase();
-  const tr = { A:1,B:2,C:3,D:4,E:5,F:6,G:7,H:8,J:1,K:2,L:3,M:4,N:5,P:7,R:9,S:2,T:3,U:4,V:5,W:6,X:7,Y:8,Z:9 };
-  const wt = [8,7,6,5,4,3,2,10,0,9,8,7,6,5,4,3,2];
-  let sum = 0;
-  for (let i = 0; i < 17; i++) { const c = v[i]; const n = tr[c] !== undefined ? tr[c] : Number(c); if (Number.isNaN(n)) return false; sum += n * wt[i]; }
-  const r = sum % 11;
-  return (r === 10 ? "X" : String(r)) === v[8];
-};
-// returns { structureOk, checkOk, brand, year }
-const vinDecode = (vinRaw) => {
-  const vin = String(vinRaw || "").trim().toUpperCase();
-  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) return null; // not a complete standard VIN
-  return { structureOk: true, checkOk: vinCheckDigitOk(vin), brand: vinBrandOf(vin), year: vinYearOf(vin[9]) };
-};
-const VIN_MAKE_MAP = { "MERCEDES-BENZ": "Mercedes-Benz", "LAND ROVER": "Land Rover", "ROLLS-ROYCE": "Rolls-Royce", "BMW": "BMW", "GMC": "GMC", "MG": "MG" };
-const vinNormMake = (m) => {
-  const u = String(m || "").trim().toUpperCase();
-  if (!u) return "";
-  return VIN_MAKE_MAP[u] || u.split(" ").map(w => w.charAt(0) + w.slice(1).toLowerCase()).join(" ");
-};
-// NHTSA vPIC — free US-gov decoder; GCC-spec cars may return thin results (that's fine)
-async function vinFetchSuggestion(vin) {
-  try {
-    const r = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(vin)}?format=json`);
-    const j = await r.json();
-    const d = (j.Results || [])[0] || {};
-    const model = (d.Model || "").trim();
-    const engine = [d.DisplacementL ? `${Number(d.DisplacementL).toFixed(1)}L` : "", d.EngineCylinders ? `${d.EngineCylinders}cyl` : ""].filter(Boolean).join(" ");
-    const sub = (d.Trim || "").trim() || (d.Series || "").trim() || engine;
-    if (!model && !sub) return null;
-    return { make: vinNormMake(d.Make), model, sub, year: (d.ModelYear || "").trim() };
-  } catch (e) { return null; }
-}
-
 // Optional sub-model (trim) per brand|model — ComboBox allows custom entries for gaps.
 const SUB_MODELS = {
   "Porsche|911": ["Carrera","Carrera S","Carrera 4","Carrera 4S","Carrera GTS","Carrera 4 GTS","Targa 4","Targa 4S","Turbo","Turbo S","GT3","GT3 RS","GT3 Touring","Dakar","S/T"],
@@ -1858,38 +1811,6 @@ function CollectedChip({ ok }) {
 }
 
 // ─── ComboBox: autocomplete that suggests from a list but allows custom input ─
-// VIN assist line + NHTSA suggestion chip — used in AddCarModal and the inline new-car form
-function VinAssist({ vin, onAutoBrandYear, onApplyModel }) {
-  const [info, setInfo] = useState(null);
-  const [sug, setSug] = useState(null);
-  useEffect(() => {
-    const d = vinDecode((vin || "").trim());
-    setInfo(d);
-    setSug(null);
-    if (!d) return;
-    if (onAutoBrandYear) onAutoBrandYear(d);
-    let alive = true;
-    vinFetchSuggestion((vin || "").trim()).then(sg => { if (alive && sg && (sg.model || sg.sub)) setSug(sg); });
-    return () => { alive = false; };
-  }, [vin]);
-  if (!info && !sug) return null;
-  return (
-    <div style={{ gridColumn: "1 / -1" }}>
-      {info && (
-        <div style={{ fontSize: 11, fontWeight: 700, color: info.checkOk ? "var(--success)" : "#8A6A00" }}>
-          {info.checkOk ? "✓ Valid VIN" : "⚠ Check digit doesn't validate (common on non-US market cars)"}
-          {info.brand ? ` — ${info.brand}` : ""}{info.year ? ` ${info.year}` : ""}
-        </div>
-      )}
-      {sug && onApplyModel && (
-        <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 3 }} onClick={() => { onApplyModel(sug); setSug(null); }}>
-          🔍 Detected: {[sug.model, sug.sub].filter(Boolean).join(" · ")} — tap to apply
-        </button>
-      )}
-    </div>
-  );
-}
-
 function ComboBox({ value, onChange, options, placeholder, disabled }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -2663,11 +2584,7 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                     <ComboBox value={svc.new_car.sub_model || ""} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, sub_model: v } })} options={subModelsFor(svc.new_car.brand, svc.new_car.model)} placeholder="Sub-Model (optional)" />
                     <ComboBox value={svc.new_car.year} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, year: v } })} options={carYears} placeholder="Year" />
                     <input className="filter-input" value={svc.new_car.plate} onChange={e => upd(svc.id, { new_car: { ...svc.new_car, plate: e.target.value } })} placeholder="VIN" />
-                    <VinAssist vin={svc.new_car.plate}
-                      onAutoBrandYear={(d) => upd(svc.id, { new_car: { ...svc.new_car,
-                        brand: (d.brand && !svc.new_car.brand && !svc.new_car.model) ? d.brand : svc.new_car.brand,
-                        year: (d.year && !svc.new_car.year) ? String(d.year) : svc.new_car.year } })}
-                      onApplyModel={(sg) => upd(svc.id, { new_car: { ...svc.new_car, model: sg.model || svc.new_car.model, sub_model: sg.sub || svc.new_car.sub_model } })} />
+
                     <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, alignItems: "center" }}>
                       <button type="button" className="btn btn-primary btn-sm" disabled={!onSaveCar || !svc.new_car.brand || !svc.new_car.model} onClick={() => onSaveCar && onSaveCar(svc.id)}>💾 Save car to profile</button>
                       <span style={{ fontSize: 11, color: "var(--muted)" }}>{onSaveCar ? "Saves to the customer's cars." : "Save or select the customer first — then cars attach to their profile."}</span>
@@ -6212,11 +6129,6 @@ function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
             <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v, sub_model: "" }))} options={modelsFor(f.brand)} placeholder="Land Cruiser" /></div>
             <div className="form-field"><label>Sub-Model</label><ComboBox value={f.sub_model} onChange={(v) => setF(p => ({ ...p, sub_model: v }))} options={subModelsFor(f.brand, f.model)} placeholder="Carrera / VXR / Denali…" /></div>
             <div className="form-field"><label>VIN</label><input value={f.plate} onChange={set("plate")} placeholder="VIN" /></div>
-            <VinAssist vin={f.plate}
-              onAutoBrandYear={(d) => setF(p => ({ ...p,
-                brand: (d.brand && !p.brand && !p.model) ? d.brand : p.brand,
-                year: (d.year && !p.year) ? String(d.year) : p.year }))}
-              onApplyModel={(sg) => setF(p => ({ ...p, model: sg.model || p.model, sub_model: sg.sub || p.sub_model }))} />
           </div>
         </div>
         <div className="modal-footer">
