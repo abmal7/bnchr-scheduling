@@ -583,6 +583,15 @@ const quoteAge = (d) => {
 function quoteValue(q) {
   if (q.kind === "service") {
     const labor = Number(q.labor) || 0, disc = Number(q.discount) || 0;
+    if (Array.isArray(q.services) && q.services.length) {
+      const batteryOnly = q.services.length === 1 && q.services[0].type === "Battery" && (q.services[0].lines || []).length > 1;
+      if (batteryOnly) {
+        const b = q.services[0];
+        return Math.max(...b.lines.map(l => (Number(l.qty) || 1) * (Number(l.unit_price) || 0))) + (Number(b.labor) || 0) - disc;
+      }
+      return q.services.reduce((s, b) =>
+        s + (b.lines || []).reduce((x, l) => x + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0) + (Number(b.labor) || 0), 0) - disc;
+    }
     if (q.service_type === "Battery" && (q.lines || []).length > 1) {
       // batteries are ALTERNATIVES: pipeline value = the best single option (battery + labor)
       return Math.max(...q.lines.map(l => (Number(l.qty) || 1) * (Number(l.unit_price) || 0))) + labor - disc;
@@ -630,39 +639,51 @@ function staggeredOptions(q) {
 }
 // Build an order service block from a quote line (line optional; staggered uses F+R)
 function quoteToService(q, line) {
-  // Service quotes (from the Tire System's Service Quote page): one service block,
-  // all quote lines as parts, labor/discount carried over. Service type from category.
+  // Service quotes (from the Tire System's Service Quote page).
+  // Multi-service quotes (q.services array) return an ARRAY of service blocks.
   if (q.kind === "service") {
-    // Battery quotes list ALTERNATIVES — booking a chosen option carries only that battery
-    const lines = (q.service_type === "Battery" && line) ? [line] : (q.lines || []);
-    let svcType = q.service_type && SERVICE_CATALOG[q.service_type] ? q.service_type : null;
-    if (!svcType) {
-      const catCount = {};
-      lines.forEach(l => { catCount[l.category] = (catCount[l.category] || 0) + 1; });
-      const domCat = Object.keys(catCount).sort((a, b) => catCount[b] - catCount[a])[0] || "other";
-      const brakeType = String((lines.find(l => l.category === "brake") || {}).name || "").toLowerCase();
-      const typeMap = {
-        battery: "Battery",
-        engine_oil: "Oil & Filter", filter: "Oil & Filter",
-        brake: brakeType.includes("disc") ? "Brake Disc" : "Brake Pads",
-        spark_plug: "Spark Plugs",
-        fluid: "Part Replacement", other: "Part Replacement",
-      };
-      svcType = SERVICE_CATALOG[typeMap[domCat]] ? typeMap[domCat] : "Part Replacement";
-    }
-    const svc = newService(svcType);
-    if (q.variant) Object.entries(q.variant).forEach(([axis, val]) => {
-      // quote sides use Front/Rear/Front & Rear; the order form's brake variants use One/Two sides
-      let v = val;
-      if (axis === "sides" && (svcType === "Brake Pads" || svcType === "Brake Disc")) {
-        v = val === "Front & Rear" ? "Two sides" : (val === "Front" || val === "Rear") ? "One side" : val;
+    const buildBlock = (type, variant, blines, labor, discount) => {
+      let svcType = type && SERVICE_CATALOG[type] ? type : null;
+      if (!svcType) {
+        const catCount = {};
+        blines.forEach(l => { catCount[l.category] = (catCount[l.category] || 0) + 1; });
+        const domCat = Object.keys(catCount).sort((a, b) => catCount[b] - catCount[a])[0] || "other";
+        const brakeType = String((blines.find(l => l.category === "brake") || {}).name || "").toLowerCase();
+        const typeMap = {
+          battery: "Battery",
+          engine_oil: "Oil & Filter", filter: "Oil & Filter",
+          brake: brakeType.includes("disc") ? "Brake Disc" : "Brake Pads",
+          spark_plug: "Spark Plugs",
+          fluid: "Part Replacement", other: "Part Replacement",
+        };
+        svcType = SERVICE_CATALOG[typeMap[domCat]] ? typeMap[domCat] : "Part Replacement";
       }
-      if ((SERVICE_CATALOG[svcType]?.variants || {})[axis]?.includes(v)) svc.variant[axis] = v;
-    });
-    svc.parts = lines.map(l => ({ id: uid(), name: l.name || l.sku || "", supplier: "", qty: Number(l.qty) || 1, price: Number(l.unit_price) || 0, cost: 0, sku: l.sku || "", product_id: l.product_id || null }));
-    svc.labor = Number(q.labor) || catalogLabor(svcType, svc.variant, 1);
-    if (Number(q.discount) > 0) svc.price_disc = { type: "amt", value: Number(q.discount) };
-    return svc;
+      const svc = newService(svcType);
+      if (variant) Object.entries(variant).forEach(([axis, val]) => {
+        // quote sides use Front/Rear/Front & Rear; the order form's brake variants use One/Two sides
+        let v = val;
+        if (axis === "sides" && (svcType === "Brake Pads" || svcType === "Brake Disc")) {
+          v = val === "Front & Rear" ? "Two sides" : (val === "Front" || val === "Rear") ? "One side" : val;
+        }
+        if ((SERVICE_CATALOG[svcType]?.variants || {})[axis]?.includes(v)) svc.variant[axis] = v;
+      });
+      svc.parts = blines.map(l => ({ id: uid(), name: l.name || l.sku || "", supplier: "", qty: Number(l.qty) || 1, price: Number(l.unit_price) || 0, cost: 0, sku: l.sku || "", product_id: l.product_id || null }));
+      svc.labor = Number(labor) || catalogLabor(svcType, svc.variant, 1);
+      if (Number(discount) > 0) svc.price_disc = { type: "amt", value: Number(discount) };
+      return svc;
+    };
+    if (Array.isArray(q.services) && q.services.length) {
+      const batteryOnly = q.services.length === 1 && q.services[0].type === "Battery";
+      return q.services.map((b, i) => buildBlock(
+        b.type, b.variant,
+        (batteryOnly && line) ? [line] : (b.lines || []), // chosen battery option carries only that battery
+        b.labor,
+        i === 0 ? q.discount : 0, // quote-level discount applied once
+      ));
+    }
+    // legacy flat single-service quotes
+    const lines = (q.service_type === "Battery" && line) ? [line] : (q.lines || []);
+    return buildBlock(q.service_type, q.variant, lines, q.labor, q.discount);
   }
   const svc = newService("Tire Change & Balancing");
   const fillFront = (ln) => ln && Object.assign(svc, { tire_id: ln.tire_id, brand: ln.brand, pattern: ln.pattern, size: ln.size, year: ln.year || "", unit_price: Number(ln.price) || 0 });
@@ -7129,10 +7150,22 @@ function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdat
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
                 <div>
                   <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0369A1", marginBottom: 3 }}>🛠 {(q.service_type || "SERVICE").toUpperCase()} QUOTE{q.car && (q.car.brand || q.car.model) ? ` · 🚗 ${[q.car.brand, q.car.model, q.car.year].filter(Boolean).join(" ")}` : ""}</div>
-                  {(q.lines || []).map((l, li) => (
-                    <div key={li}><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(l.unit_price || 0).toFixed(3)} KD</span></div>
-                  ))}
-                  {Number(q.labor) > 0 && <div style={{ color: "var(--muted)" }}>Labor: {Number(q.labor).toFixed(3)} KD</div>}
+                  {Array.isArray(q.services) && q.services.length > 1 ? (
+                    q.services.map((b, bi) => (
+                      <div key={bi} style={{ marginBottom: 4, paddingTop: bi ? 4 : 0, borderTop: bi ? "1px dashed var(--border)" : "none" }}>
+                        <div style={{ fontWeight: 800, fontSize: 11.5 }}>{b.type}{Object.values(b.variant || {}).length ? ` · ${Object.values(b.variant).join(" / ")}` : ""}</div>
+                        {(b.lines || []).map((l, li) => (
+                          <div key={li}><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(l.unit_price || 0).toFixed(3)} KD</span></div>
+                        ))}
+                        {Number(b.labor) > 0 && <div style={{ color: "var(--muted)" }}>Labor: {Number(b.labor).toFixed(3)} KD</div>}
+                      </div>
+                    ))
+                  ) : (
+                    (q.lines || []).map((l, li) => (
+                      <div key={li}><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(l.unit_price || 0).toFixed(3)} KD</span></div>
+                    ))
+                  )}
+                  {!(Array.isArray(q.services) && q.services.length > 1) && Number(q.labor) > 0 && <div style={{ color: "var(--muted)" }}>Labor: {Number(q.labor).toFixed(3)} KD</div>}
                   {Number(q.discount) > 0 && <div style={{ color: "var(--muted)" }}>Discount: -{Number(q.discount).toFixed(3)} KD</div>}
                 </div>
                 {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, null)}>Book</button>}
@@ -7513,21 +7546,26 @@ export default function App() {
   const handleBookQuote = (quote, line) => {
     setSelectedJob(null);
     setSelectedCustomer(null);
-    const svc = quoteToService(quote, line);
+    const built = quoteToService(quote, line);
+    const svcList = Array.isArray(built) ? built : [built];
     const customer = customers.find(x => x.id === quote.customer_id) ||
                      customers.find(x => last8(x.mobile) === last8(quote.customer_mobile)) || null;
     // Service quotes carry the car: link the exact car when it's really this customer's,
     // otherwise pre-fill the inline new-car form so sales only taps save.
     if (quote.kind === "service") {
       const carOk = quote.car_id && customer && cars.some(c => c.id === quote.car_id && c.customer_id === customer.id);
-      if (carOk) svc.car_id = quote.car_id;
-      else if (quote.car && quote.car.brand) {
-        svc.car_id = null;
-        svc.new_car = { brand: quote.car.brand || "", model: quote.car.model || "", year: String(quote.car.year || ""), plate: quote.car.vin || "" };
+      svcList.forEach(svc => {
+        if (carOk) svc.car_id = quote.car_id;
+        else if (quote.car && quote.car.brand) {
+          svc.car_id = null;
+        }
+      });
+      if (!carOk && quote.car && quote.car.brand && svcList[0]) {
+        svcList[0].new_car = { brand: quote.car.brand || "", model: quote.car.model || "", year: String(quote.car.year || ""), plate: quote.car.vin || "" };
       }
     }
     setPrefillSlot(null);
-    setPrefillOrder({ customer, services: [svc], mobile: quote.customer_mobile, name: quote.customer_name || "", quoteId: quote.id });
+    setPrefillOrder({ customer, services: svcList, mobile: quote.customer_mobile, name: quote.customer_name || "", quoteId: quote.id });
     setShowNew(true);
   };
 
