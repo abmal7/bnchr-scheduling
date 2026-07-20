@@ -818,6 +818,71 @@ let TRUCK_CONFIG = {
 };
 let TRUCK_ORDER = ["T1", "T2", "T4"];
 const activeTrucks = () => TRUCK_ORDER.filter(t => TRUCK_CONFIG[t]);
+
+// ─── App settings (app_settings key/value) ───
+async function fetchAppSettings() {
+  try {
+    const rows = await sbAll("/app_settings?select=*");
+    const out = {};
+    (rows || []).forEach(r => { out[r.key] = r.value; });
+    return out;
+  } catch { return {}; }
+}
+async function saveAppSetting(key, value) {
+  try {
+    await sb("/app_settings?on_conflict=key", { method: "POST", prefer: "resolution=merge-duplicates,return=minimal", body: JSON.stringify({ key, value, updated_at: new Date().toISOString() }) });
+    return true;
+  } catch { return false; }
+}
+
+// ─── Technician incentive engine ───
+// Scheme: 0.250 KD/order/person · upsell-converted ×4 (=1.000) · order that GETS a
+// revisit → voided (and the revisit visit itself earns 0) · pot accrues from order #1
+// but UNLOCKS at the truck's monthly target (100 base · 150 if 2 trucks · 180 if 1;
+// = the company's break-even line) · four KWD 5 bonuses.
+const INCENT = { perOrder: 0.25, upsellRate: 1.0, bonusKD: 5, maxCapacity: 200 };
+const incentiveTarget = (nActive) => nActive >= 3 ? 100 : nActive === 2 ? 150 : 180;
+function computeIncentives(jobs, refDate) {
+  const y = refDate.getFullYear(), m = refDate.getMonth();
+  const inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
+  const doneAt = (j) => j.completed_at || j.scheduled_at || j.created_at;
+  const done = jobs.filter(j => jobSuccessful(j) && inMonth(doneAt(j)));
+  const revisitedParents = new Set(jobs.filter(j => j.link_type === "revisit" && j.parent_job_id).map(j => j.parent_job_id));
+  const byId = new Map(jobs.map(j => [j.id, j]));
+  const trucks = activeTrucks();
+  const target = incentiveTarget(trucks.length);
+  const rows = trucks.map(t => {
+    const tj = done.filter(j => j.assigned_truck === t);
+    let pot = 0, base = 0, ups = 0, voided = 0;
+    tj.forEach(j => {
+      if (j.link_type === "revisit" || revisitedParents.has(j.id)) { voided++; return; }
+      if (j.link_type === "upsell") { ups++; pot += INCENT.upsellRate; }
+      else { base++; pot += INCENT.perOrder; }
+    });
+    const revenue = tj.reduce((sm, j) => sm + (Number(j.total) || 0), 0);
+    const cost = tj.reduce((sm, j) => sm + (j.items || []).reduce((x, it) => x + (Number(it.cost) || 0) * (Number(it.qty) || 1), 0), 0);
+    const reviews = tj.map(j => Number(j.review_rating)).filter(r => r >= 1);
+    const revisitsCaused = jobs.filter(j => j.link_type === "revisit" && inMonth(j.created_at) && (byId.get(j.parent_job_id) || {}).assigned_truck === t).length;
+    return {
+      truck: t, orders: tj.length, base, ups, voided,
+      pot: Math.round(pot * 1000) / 1000,
+      unlocked: tj.length >= target,
+      revenue, profit: revenue - cost,
+      avgReview: reviews.length ? Math.round((reviews.reduce((a, b) => a + b, 0) / reviews.length) * 100) / 100 : null,
+      nReviews: reviews.length, revisitsCaused,
+    };
+  });
+  // KWD 5 bonus leaders (ties: everyone tied wins the flag; zero-revisit = all with 0)
+  const flag = (key, best) => rows.forEach(r => { r[key] = best != null && rows.length > 1 ? best(r) : false; });
+  const maxOrders = Math.max(...rows.map(r => r.orders), 0);
+  const maxProfit = Math.max(...rows.map(r => r.profit), 0);
+  const maxReview = Math.max(...rows.map(r => r.avgReview || 0), 0);
+  flag("bonusOrders", r => maxOrders > 0 && r.orders === maxOrders);
+  flag("bonusProfit", r => maxProfit > 0 && r.profit === maxProfit);
+  flag("bonusReview", r => maxReview > 0 && (r.avgReview || 0) === maxReview);
+  flag("bonusZeroRevisit", r => r.orders > 0 && r.revisitsCaused === 0);
+  return { target, rows, trucksActive: trucks.length };
+}
 async function fetchTruckConfig() {
   try {
     const rows = await sbAll("/truck_config?select=*&order=sort_order.asc");
@@ -1304,6 +1369,16 @@ const SUB_MODELS = {
   "Tesla|Model Y": ["RWD","Long Range","Performance"],
 };
 const subModelsFor = (brand, model) => SUB_MODELS[`${brand}|${model}`] || [];
+// Live shared car catalog (car_catalog table, owned by the Tire System).
+// Dropdown options = curated lists ∪ DB entries, so both systems stay in sync
+// and agent-registered trims/models appear here automatically.
+let CAR_CATALOG_DB = [];
+async function fetchCarCatalog() {
+  try { CAR_CATALOG_DB = (await sbAll("/car_catalog?select=brand,model,sub_model")) || []; } catch { CAR_CATALOG_DB = []; }
+}
+const carBrandOpts = () => [...new Set([...CAR_BRANDS, ...CAR_CATALOG_DB.map(r => r.brand)])].sort();
+const carModelOpts = (brand) => [...new Set([...modelsFor(brand), ...CAR_CATALOG_DB.filter(r => r.brand === brand && r.model).map(r => r.model)])].sort();
+const carSubModelOpts = (brand, model) => [...new Set([...subModelsFor(brand, model), ...CAR_CATALOG_DB.filter(r => r.brand === brand && r.model === model && r.sub_model).map(r => r.sub_model)])];
 const carYears = (() => { const y = []; const now = new Date().getFullYear() + 1; for (let v = now; v >= 1990; v--) y.push(String(v)); return y; })();
 
 // ─── Mock Data ───────────────────────────────────────────────────────────────
@@ -1410,7 +1485,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date","no_products_reason","paid_date"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date","no_products_reason","paid_date","review_rating"]);
 // Merge a refetched jobs list over local state: a fetched row wins only if
 // strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
 // → keep the local optimistic row (kills the check→uncheck→check flicker).
@@ -2579,9 +2654,9 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                 </select>
                 {svc.new_car && (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6, padding: 8, border: "1px dashed var(--border)", borderRadius: 8 }}>
-                    <ComboBox value={svc.new_car.brand} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, brand: v, model: "", sub_model: "" } })} options={CAR_BRANDS} placeholder="Brand" />
-                    <ComboBox value={svc.new_car.model} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, model: v, sub_model: "" } })} options={modelsFor(svc.new_car.brand)} placeholder="Model" />
-                    <ComboBox value={svc.new_car.sub_model || ""} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, sub_model: v } })} options={subModelsFor(svc.new_car.brand, svc.new_car.model)} placeholder="Sub-Model (optional)" />
+                    <ComboBox value={svc.new_car.brand} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, brand: v, model: "", sub_model: "" } })} options={carBrandOpts()} placeholder="Brand" />
+                    <ComboBox value={svc.new_car.model} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, model: v, sub_model: "" } })} options={carModelOpts(svc.new_car.brand)} placeholder="Model" />
+                    <ComboBox value={svc.new_car.sub_model || ""} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, sub_model: v } })} options={carSubModelOpts(svc.new_car.brand, svc.new_car.model)} placeholder="Sub-Model (optional)" />
                     <ComboBox value={svc.new_car.year} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, year: v } })} options={carYears} placeholder="Year" />
                     <input className="filter-input" value={svc.new_car.plate} onChange={e => upd(svc.id, { new_car: { ...svc.new_car, plate: e.target.value } })} placeholder="VIN" />
 
@@ -3523,7 +3598,7 @@ function CarRowsEditor({ rows, setRows }) {
       <label style={miniLabel}>Vehicles</label>
       {rows.map((r, i) => (
         <div key={r._tmp || r.id || i} style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr 1fr 32px", gap: 6, marginBottom: 6 }}>
-          <ComboBox value={r.brand} onChange={(v) => updBrand(i, v)} options={CAR_BRANDS} placeholder="Brand" />
+          <ComboBox value={r.brand} onChange={(v) => updBrand(i, v)} options={carBrandOpts()} placeholder="Brand" />
           <ComboBox value={r.year} onChange={(v) => upd(i, "year", v)} options={carYears} placeholder="Year" />
           <ComboBox value={r.model} onChange={(v) => upd(i, "model", v)} options={modelsFor(r.brand)} placeholder="Model" />
           <input className="filter-input" placeholder="VIN" value={r.plate} onChange={e => upd(i, "plate", e.target.value)} />
@@ -3933,6 +4008,133 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
   );
 }
 
+// ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
+function IncentiveReport({ jobs, enabled, onToggle }) {
+  const [mo, setMo] = useState(0); // 0 = this month, -1 = last…
+  const ref = new Date();
+  ref.setMonth(ref.getMonth() + mo);
+  const { target, rows, trucksActive } = computeIncentives(jobs, ref);
+  const monthName = ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-body" style={{ padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontSize: 15, fontWeight: 800 }}>🎯 Technician Incentive — {monthName}</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setMo(m => m - 1)}>‹</button>
+            <button className="btn btn-ghost btn-sm" disabled={mo >= 0} onClick={() => setMo(m => m + 1)}>›</button>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: enabled ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
+              <input type="checkbox" checked={enabled} onChange={e => onToggle(e.target.checked)} />
+              {enabled ? "LIVE — technicians see their dashboard" : "OFF — test mode (only you see this)"}
+            </label>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 10px" }}>
+          Target {target}/truck ({trucksActive} truck{trucksActive === 1 ? "" : "s"} active) · 0.250/order · upsell ×4 · revisited orders void · pot unlocks at target · KWD 5 bonuses per person
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="rep-table" style={{ width: "100%", fontSize: 12.5 }}>
+            <thead><tr>
+              <th style={{ textAlign: "left" }}>Truck</th><th>Orders</th><th>vs target</th><th>Upsells ×4</th><th>Voided</th>
+              <th>★ Review</th><th>Revisits caused</th><th>Profit</th><th>Bonuses</th><th style={{ textAlign: "right" }}>Payout / person</th>
+            </tr></thead>
+            <tbody>
+              {rows.map(r => {
+                const badges = [r.bonusOrders && "🥇 orders", r.bonusReview && "⭐ review", r.bonusProfit && "💰 profit", r.bonusZeroRevisit && "✨ zero-revisit"].filter(Boolean);
+                const bonusKD = badges.length * INCENT.bonusKD;
+                const payout = (r.unlocked ? r.pot : 0) + bonusKD;
+                return (
+                  <tr key={r.truck}>
+                    <td style={{ fontWeight: 800 }}>{r.truck}</td>
+                    <td style={{ textAlign: "center" }}>{r.orders}</td>
+                    <td style={{ textAlign: "center", fontWeight: 700, color: r.unlocked ? "var(--success)" : "#B45309" }}>{Math.round((r.orders / target) * 100)}%{r.unlocked ? " ✓" : ""}</td>
+                    <td style={{ textAlign: "center" }}>{r.ups}</td>
+                    <td style={{ textAlign: "center", color: r.voided ? "var(--danger)" : "var(--muted)" }}>{r.voided}</td>
+                    <td style={{ textAlign: "center" }}>{r.avgReview ? `${r.avgReview} (${r.nReviews})` : "—"}</td>
+                    <td style={{ textAlign: "center", color: r.revisitsCaused ? "var(--danger)" : "var(--success)" }}>{r.revisitsCaused}</td>
+                    <td style={{ textAlign: "center" }}>{kd(r.profit)}</td>
+                    <td style={{ fontSize: 11.5 }}>{badges.join(" · ") || "—"}</td>
+                    <td style={{ textAlign: "right", fontWeight: 800 }}>{kd(payout)}<div style={{ fontSize: 10.5, fontWeight: 500, color: "var(--muted)" }}>{r.unlocked ? "" : `pot ${kd(r.pot)} locked · `}bonuses {bonusKD}</div></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Payout = unlocked pot + KWD 5 per bonus (per person). Bonus winners are provisional until month end.</div>
+      </div>
+    </div>
+  );
+}
+
+// ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
+function TechTargetView({ jobs, truck }) {
+  const now = new Date();
+  const { target, rows } = computeIncentives(jobs, now);
+  const me = rows.find(r => r.truck === truck) || { orders: 0, base: 0, ups: 0, voided: 0, pot: 0, unlocked: false, avgReview: null, nReviews: 0, revisitsCaused: 0, profit: 0 };
+  const day = now.getDate();
+  const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const pace = day > 0 ? Math.round((me.orders / day) * daysIn) : 0;
+  const pct = Math.min(100, Math.round((me.orders / target) * 100));
+  const monthName = now.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  const bonuses = [
+    { label: "Most orders", won: me.bonusOrders, hint: `${me.orders} orders` },
+    { label: "Best reviews", won: me.bonusReview, hint: me.avgReview ? `★ ${me.avgReview} (${me.nReviews})` : "no reviews yet" },
+    { label: "Highest profit", won: me.bonusProfit, hint: `KWD ${(me.profit || 0).toFixed(0)}` },
+    { label: "Zero revisits", won: me.bonusZeroRevisit, hint: me.revisitsCaused === 0 ? "clean so far ✨" : `${me.revisitsCaused} caused` },
+  ];
+  return (
+    <div style={{ maxWidth: 560, margin: "0 auto" }}>
+      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
+          <div style={{ fontSize: 17, fontWeight: 800 }}>🎯 {truck} — {monthName}</div>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>target adjusts with active trucks</div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 12 }}>
+          <div style={{ fontSize: 34, fontWeight: 800 }}>{me.orders}<span style={{ fontSize: 15, color: "var(--muted)", fontWeight: 600 }}> / {target} orders</span></div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: pace >= target ? "var(--success)" : "#B45309" }}>pace: ~{pace} by month end</div>
+        </div>
+        <div style={{ background: "var(--border)", borderRadius: 99, height: 14, marginTop: 8, overflow: "hidden" }}>
+          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 99, background: me.unlocked ? "var(--success)" : "linear-gradient(90deg,#F59E0B,#FBBF24)", transition: "width .4s" }} />
+        </div>
+        <div style={{ marginTop: 14, background: me.unlocked ? "#E8F4EC" : "#FFFBEB", border: `1.5px solid ${me.unlocked ? "#BFDFC9" : "#FCD34D"}`, borderRadius: 12, padding: "12px 14px" }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: me.unlocked ? "#1D7A45" : "#92400E" }}>
+            {me.unlocked ? "✅ INCENTIVE UNLOCKED — every order keeps paying" : `🔒 ACCRUED — unlocks at ${target} orders (${target - me.orders} to go)`}
+          </div>
+          <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4, color: me.unlocked ? "#1D7A45" : "#92400E" }}>
+            KWD {(me.pot || 0).toFixed(3)} <span style={{ fontSize: 13, fontWeight: 600 }}>per technician</span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
+            {me.base}× orders @ 0.250 · {me.ups}× upsell orders @ 1.000{me.voided ? ` · ${me.voided} voided by revisit` : ""}
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>🏆 KWD 5 bonuses — live standings</div>
+        {bonuses.map(b => (
+          <div key={b.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--border)" }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>{b.won ? "🥇" : "▫️"} {b.label}</div>
+            <div style={{ fontSize: 12.5, color: b.won ? "var(--success)" : "var(--muted)", fontWeight: b.won ? 800 : 500 }}>{b.won ? "LEADING — " : ""}{b.hint}</div>
+          </div>
+        ))}
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Winners are decided at month end. Upsells pay ×4 — spot them, report them, win.</div>
+      </div>
+
+      <div className="card" style={{ padding: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Trucks this month</div>
+        {rows.map(r => (
+          <div key={r.truck} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 13, fontWeight: r.truck === truck ? 800 : 500 }}>
+            <span>{r.truck === truck ? "→ " : ""}{r.truck}</span>
+            <span>{r.orders} orders · {r.ups} upsells{r.avgReview ? ` · ★${r.avgReview}` : ""}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onRevisit, jobs, upsellLeads, onOpenJob, onCreateUpsell, onConvertLead, onDismissLead, role }) {
   const [j, setJ] = useState(job);
   useEffect(() => { setJ(job); }, [job]); // follow live updates (edits, realtime sync)
@@ -4076,6 +4278,24 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
               {jobDurationMin(j) != null && <>{" · "}⏱ Job time: <strong>{fmtDuration(jobDurationMin(j))}</strong></>}
               {Number(j.service_mileage) > 0 && <>{" · "}🧭 Mileage: <strong>{Number(j.service_mileage).toLocaleString()} {j.service_mileage_unit || "KM"}</strong></>}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ⭐ customer review — sales asks after completion; feeds the review bonus */}
+      {jobSuccessful(j) && !["technician", "distributor"].includes(role) && (
+        <div className="card">
+          <div className="card-body" style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700 }}>⭐ Customer review</span>
+            <span style={{ display: "flex", alignItems: "center" }}>
+              {[1, 2, 3, 4, 5].map(n => (
+                <span key={n} onClick={() => onUpdate(job.id, { review_rating: Number(j.review_rating) === n ? null : n })}
+                  style={{ cursor: "pointer", fontSize: 23, lineHeight: 1, color: (Number(j.review_rating) || 0) >= n ? "#F59E0B" : "var(--border)", padding: "0 2px" }}>★</span>
+              ))}
+              {Number(j.review_rating) > 0
+                ? <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginLeft: 6 }}>{j.review_rating}/5</span>
+                : <span style={{ fontSize: 11.5, color: "var(--muted)", marginLeft: 6 }}>ask the customer</span>}
+            </span>
           </div>
         </div>
       )}
@@ -6124,10 +6344,10 @@ function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
         </div>
         <div className="modal-body">
           <div className="form-grid">
-            <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "", sub_model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
+            <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "", sub_model: "" }))} options={carBrandOpts()} placeholder="Toyota" /></div>
             <div className="form-field"><label>Year</label><ComboBox value={f.year} onChange={(v) => setF(p => ({ ...p, year: v }))} options={carYears} placeholder="2023" /></div>
-            <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v, sub_model: "" }))} options={modelsFor(f.brand)} placeholder="Land Cruiser" /></div>
-            <div className="form-field"><label>Sub-Model</label><ComboBox value={f.sub_model} onChange={(v) => setF(p => ({ ...p, sub_model: v }))} options={subModelsFor(f.brand, f.model)} placeholder="Carrera / VXR / Denali…" /></div>
+            <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v, sub_model: "" }))} options={carModelOpts(f.brand)} placeholder="Land Cruiser" /></div>
+            <div className="form-field"><label>Sub-Model</label><ComboBox value={f.sub_model} onChange={(v) => setF(p => ({ ...p, sub_model: v }))} options={carSubModelOpts(f.brand, f.model)} placeholder="Carrera / VXR / Denali…" /></div>
             <div className="form-field"><label>VIN</label><input value={f.plate} onChange={set("plate")} placeholder="VIN" /></div>
           </div>
         </div>
@@ -7400,6 +7620,8 @@ export default function App() {
   useEffect(() => {
     if (!authed) return;
     setLoading(true);
+    fetchCarCatalog();
+    fetchAppSettings().then(setAppSettings);
     Promise.all([fetchTruckConfig(), fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes(), fetchCatalogItems(), fetchUpsellLeads()]).then(([tc, j, c, cr, ad, qs, cat, ul]) => {
       setUpsellLeads(ul || []);
       setTruckCfg(tc);
@@ -7706,6 +7928,12 @@ export default function App() {
     setShowEditCustomer(false);
   };
 
+  const [appSettings, setAppSettings] = useState({});
+  const incentiveOn = appSettings.incentive_enabled === true;
+  const setIncentiveEnabled = async (on) => {
+    setAppSettings(p => ({ ...p, incentive_enabled: on }));
+    await saveAppSetting("incentive_enabled", on);
+  };
   const allTabs = [
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
@@ -7716,12 +7944,15 @@ export default function App() {
     { key: "history",    label: "History",         icon: "🕘", roles: ["sales", "purchaser"] },
     { key: "customers",  label: "Customers",       icon: "👥", roles: ["sales", "purchaser"] },
     { key: "myjobs",     label: "My Jobs",         icon: "🔧", roles: ["technician"] },
+    { key: "target",     label: "Target",          icon: "🎯", roles: ["technician"] },
     { key: "myhistory",  label: "History",         icon: "🕘", roles: ["technician"] },
     { key: "distributor",label: "Collect",         icon: "📦", roles: ["distributor"] },
     { key: "disthistory",label: "History",         icon: "🕘", roles: ["distributor"] },
   ];
   // Master/owner access sees every page (incl. purchaser Costs, tech views, distributor)
-  const tabs = allTabs.filter(t => isOwner || t.roles.includes(role));
+  const tabs = allTabs
+    .filter(t => isOwner || t.roles.includes(role))
+    .filter(t => t.key !== "target" || incentiveOn || isOwner); // master switch gates the technician dashboard
 
   if (!authed) {
     return (
@@ -7847,7 +8078,10 @@ export default function App() {
             <UpsellsView upsellLeads={upsellLeads} jobs={jobs} role={role} onConvert={handleConvertLead} onDismiss={handleDismissLead} onSelectJob={setSelectedJob} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
-            <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
+            <>
+              <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
+              <IncentiveReport jobs={jobs} enabled={incentiveOn} onToggle={setIncentiveEnabled} />
+            </>
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "costs" && (
             <CostsView jobs={jobs} onUpdate={async (id, patch) => { const job = jobs.find(j => j.id === id); if (job) handleJobUpdate({ ...job, ...patch }); await updateJob(id, patch); }} />
@@ -7863,6 +8097,9 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "myjobs" && (
             <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} onCreateUpsell={handleCreateUpsell} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "target" && (
+            <TechTargetView jobs={jobs} truck={sessionTruck} />
           )}
           {tab === "myhistory" && !selectedJob && (
             <TechHistoryView jobs={jobs} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} />
