@@ -1247,6 +1247,62 @@ const CAR_DATA = {
 };
 const CAR_BRANDS = Object.keys(CAR_DATA).sort();
 const modelsFor = (brand) => CAR_DATA[brand] || [];
+// Optional sub-model (trim) per brand|model — ComboBox allows custom entries for gaps.
+const SUB_MODELS = {
+  "Porsche|911": ["Carrera","Carrera S","Carrera 4","Carrera 4S","Carrera GTS","Carrera 4 GTS","Targa 4","Targa 4S","Turbo","Turbo S","GT3","GT3 RS","GT3 Touring","Dakar","S/T"],
+  "Porsche|Cayenne": ["Base","S","E-Hybrid","GTS","Turbo","Turbo GT","Coupe","S Coupe","GTS Coupe","Turbo Coupe"],
+  "Porsche|Macan": ["Base","T","S","GTS","Turbo","4 Electric","Turbo Electric"],
+  "Porsche|Panamera": ["Base","4","4S","4 E-Hybrid","GTS","Turbo E-Hybrid","Turbo S"],
+  "Porsche|Taycan": ["Base","4S","GTS","Turbo","Turbo S","Cross Turismo"],
+  "Porsche|718 Cayman": ["Base","S","GTS 4.0","GT4","GT4 RS"],
+  "Porsche|718 Boxster": ["Base","S","GTS 4.0","Spyder","Spyder RS"],
+  "Mercedes-Benz|C-Class": ["C200","C300","C43 AMG","C63 AMG"],
+  "Mercedes-Benz|E-Class": ["E200","E300","E350","E450","E53 AMG","E63 S AMG"],
+  "Mercedes-Benz|S-Class": ["S450","S500","S580","S63 AMG","Maybach S580","Maybach S680"],
+  "Mercedes-Benz|G-Class": ["G500","G550","G63 AMG","G580 EQ"],
+  "Mercedes-Benz|GLE": ["GLE350","GLE450","GLE53 AMG","GLE63 S AMG","Coupe"],
+  "Mercedes-Benz|GLS": ["GLS450","GLS580","GLS63 AMG","Maybach GLS600"],
+  "Mercedes-Benz|GLC": ["GLC200","GLC300","GLC43 AMG","GLC63 AMG","Coupe"],
+  "BMW|3 Series": ["320i","330i","M340i"],
+  "BMW|5 Series": ["520i","530i","540i","M550i"],
+  "BMW|7 Series": ["730Li","735i","740Li","750Li","760Li","i7"],
+  "BMW|X5": ["xDrive40i","xDrive50i","M60i","X5 M"],
+  "BMW|X6": ["xDrive40i","M50i","M60i","X6 M"],
+  "BMW|X7": ["xDrive40i","M60i","Alpina XB7"],
+  "BMW|M3": ["Base","Competition","CS"],
+  "BMW|M5": ["Base","Competition","CS"],
+  "Land Rover|Range Rover": ["SE","HSE","Autobiography","SV","LWB"],
+  "Land Rover|Range Rover Sport": ["SE","Dynamic SE","Autobiography","SV","SVR"],
+  "Land Rover|Defender": ["90","110","130","X","V8","Octa"],
+  "Toyota|Land Cruiser": ["GX","GXR","VXR","VX","GR Sport","ZX"],
+  "Toyota|Prado": ["TXL","VXL","VXR","Adventure","GR Sport"],
+  "Toyota|Camry": ["LE","SE","XLE","XSE","Grande","GLE"],
+  "Nissan|Patrol": ["XE","SE","LE","Titanium","Platinum","Nismo"],
+  "Chevrolet|Tahoe": ["LS","LT","RST","Z71","Premier","High Country"],
+  "Chevrolet|Corvette": ["Stingray","Z06","E-Ray","ZR1"],
+  "GMC|Yukon": ["SLE","SLT","AT4","Denali","Denali Ultimate"],
+  "Cadillac|Escalade": ["Luxury","Premium Luxury","Sport","Sport Platinum","V"],
+  "Ford|Mustang": ["EcoBoost","GT","Dark Horse","Shelby GT500"],
+  "Ford|F-150": ["XL","XLT","Lariat","Platinum","Raptor","Raptor R"],
+  "Jeep|Wrangler": ["Sport","Sahara","Rubicon","Rubicon 392"],
+  "Jeep|Grand Cherokee": ["Laredo","Limited","Overland","Summit","SRT","Trackhawk"],
+  "Dodge|Charger": ["GT","R/T","Scat Pack","Hellcat","Hellcat Redeye"],
+  "Dodge|Challenger": ["GT","R/T","Scat Pack","Hellcat","Hellcat Redeye","Demon"],
+  "Ferrari|296": ["GTB","GTS"],
+  "Ferrari|812": ["Superfast","GTS","Competizione"],
+  "Lamborghini|Urus": ["Base","S","Performante","SE"],
+  "Lamborghini|Huracan": ["EVO","Tecnica","STO","Sterrato"],
+  "Bentley|Bentayga": ["V8","S","Azure","Speed","EWB"],
+  "Bentley|Continental GT": ["V8","S","Azure","Speed"],
+  "Audi|Q8": ["55 TFSI","SQ8","RS Q8"],
+  "Audi|A6": ["45 TFSI","55 TFSI","S6","RS6"],
+  "Audi|A8": ["55 TFSI","60 TFSI","S8"],
+  "Tesla|Model S": ["Long Range","Plaid"],
+  "Tesla|Model X": ["Long Range","Plaid"],
+  "Tesla|Model 3": ["RWD","Long Range","Performance"],
+  "Tesla|Model Y": ["RWD","Long Range","Performance"],
+};
+const subModelsFor = (brand, model) => SUB_MODELS[`${brand}|${model}`] || [];
 const carYears = (() => { const y = []; const now = new Date().getFullYear() + 1; for (let v = now; v >= 1990; v--) y.push(String(v)); return y; })();
 
 // ─── Mock Data ───────────────────────────────────────────────────────────────
@@ -2517,13 +2573,14 @@ function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalo
                     }
                   }}>
                   <option value="">— select car —</option>
-                  {(customerCars || []).map(c => <option key={c.id} value={c.id}>{c.brand} {c.model} {c.year} {c.plate ? `· ${c.plate}` : ""}</option>)}
+                  {(customerCars || []).map(c => <option key={c.id} value={c.id}>{c.brand} {c.model}{c.sub_model ? ` ${c.sub_model}` : ""} {c.year} {c.plate ? `· ${c.plate}` : ""}</option>)}
                   <option value="__new__">+ Link a new car…</option>
                 </select>
                 {svc.new_car && (
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6, padding: 8, border: "1px dashed var(--border)", borderRadius: 8 }}>
-                    <ComboBox value={svc.new_car.brand} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, brand: v, model: "" } })} options={CAR_BRANDS} placeholder="Brand" />
-                    <ComboBox value={svc.new_car.model} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, model: v } })} options={modelsFor(svc.new_car.brand)} placeholder="Model" />
+                    <ComboBox value={svc.new_car.brand} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, brand: v, model: "", sub_model: "" } })} options={CAR_BRANDS} placeholder="Brand" />
+                    <ComboBox value={svc.new_car.model} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, model: v, sub_model: "" } })} options={modelsFor(svc.new_car.brand)} placeholder="Model" />
+                    <ComboBox value={svc.new_car.sub_model || ""} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, sub_model: v } })} options={subModelsFor(svc.new_car.brand, svc.new_car.model)} placeholder="Sub-Model (optional)" />
                     <ComboBox value={svc.new_car.year} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, year: v } })} options={carYears} placeholder="Year" />
                     <input className="filter-input" value={svc.new_car.plate} onChange={e => upd(svc.id, { new_car: { ...svc.new_car, plate: e.target.value } })} placeholder="VIN" />
                     <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, alignItems: "center" }}>
@@ -6037,8 +6094,8 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
 // ─── Add Car Modal ────────────────────────────────────────────────────────────
 function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
   const [f, setF] = useState(editCar
-    ? { brand: editCar.brand || "", model: editCar.model || "", year: editCar.year || "", plate: editCar.plate || "" }
-    : { brand: "", model: "", year: "", plate: "" });
+    ? { brand: editCar.brand || "", model: editCar.model || "", sub_model: editCar.sub_model || "", year: editCar.year || "", plate: editCar.plate || "" }
+    : { brand: "", model: "", sub_model: "", year: "", plate: "" });
   const [saving, setSaving] = useState(false);
   const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
 
@@ -6065,9 +6122,10 @@ function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
         </div>
         <div className="modal-body">
           <div className="form-grid">
-            <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
+            <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "", sub_model: "" }))} options={CAR_BRANDS} placeholder="Toyota" /></div>
             <div className="form-field"><label>Year</label><ComboBox value={f.year} onChange={(v) => setF(p => ({ ...p, year: v }))} options={carYears} placeholder="2023" /></div>
-            <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v }))} options={modelsFor(f.brand)} placeholder="Land Cruiser" /></div>
+            <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v, sub_model: "" }))} options={modelsFor(f.brand)} placeholder="Land Cruiser" /></div>
+            <div className="form-field"><label>Sub-Model</label><ComboBox value={f.sub_model} onChange={(v) => setF(p => ({ ...p, sub_model: v }))} options={subModelsFor(f.brand, f.model)} placeholder="Carrera / VXR / Denali…" /></div>
             <div className="form-field"><label>VIN</label><input value={f.plate} onChange={set("plate")} placeholder="VIN" /></div>
           </div>
         </div>
@@ -7561,7 +7619,7 @@ export default function App() {
         }
       });
       if (!carOk && quote.car && quote.car.brand && svcList[0]) {
-        svcList[0].new_car = { brand: quote.car.brand || "", model: quote.car.model || "", year: String(quote.car.year || ""), plate: quote.car.vin || "" };
+        svcList[0].new_car = { brand: quote.car.brand || "", model: quote.car.model || "", sub_model: quote.car.sub_model || "", year: String(quote.car.year || ""), plate: quote.car.vin || "" };
       }
     }
     setPrefillSlot(null);
