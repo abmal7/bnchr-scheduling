@@ -366,6 +366,7 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
 
   const jobAt = (hour) => jobs.find(j => {
     if (j.id === excludeId) return false;
+    if (j.status === "cancelled") return false; // a cancelled order must never shadow the live booking in its old slot
     if (j.assigned_truck !== truck) return false;
     const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
     if (d !== dateStr) return false;
@@ -2717,6 +2718,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
     hour >= selectedHour && hour < selectedHour + duration;
   const jobAt = (truck, hour) => jobs.find(j => {
     if (j.id === excludeId) return false;
+    if (j.status === "cancelled") return false; // a cancelled order must never shadow the live booking in its old slot
     if (j.assigned_truck !== truck) return false;
     const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
     if (d !== dateStr) return false;
