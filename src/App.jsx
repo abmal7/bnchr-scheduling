@@ -4011,9 +4011,11 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
 // ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
 function IncentiveReport({ jobs, enabled, onToggle }) {
   const [mo, setMo] = useState(0); // 0 = this month, -1 = last…
+  const [truckFilter, setTruckFilter] = useState("all");
   const ref = new Date();
   ref.setMonth(ref.getMonth() + mo);
-  const { target, rows, trucksActive } = computeIncentives(jobs, ref);
+  const { target, rows: allRows, trucksActive } = computeIncentives(jobs, ref);
+  const rows = truckFilter === "all" ? allRows : allRows.filter(r => r.truck === truckFilter);
   const monthName = ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
   return (
@@ -4032,6 +4034,14 @@ function IncentiveReport({ jobs, enabled, onToggle }) {
         </div>
         <div style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 10px" }}>
           Target {target}/truck ({trucksActive} truck{trucksActive === 1 ? "" : "s"} active) · 0.250/order · upsell ×4 · revisited orders void · pot unlocks at target · KWD 5 bonuses per person
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {["all", ...allRows.map(r => r.truck)].map(t => (
+            <button key={t} className="btn btn-sm" onClick={() => setTruckFilter(t)}
+              style={{ fontWeight: 700, background: truckFilter === t ? "var(--ink)" : "var(--card)", color: truckFilter === t ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>
+              {t === "all" ? "All trucks" : t}
+            </button>
+          ))}
         </div>
         <div style={{ overflowX: "auto" }}>
           <table className="rep-table" style={{ width: "100%", fontSize: 12.5 }}>
@@ -4069,10 +4079,13 @@ function IncentiveReport({ jobs, enabled, onToggle }) {
 }
 
 // ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
-function TechTargetView({ jobs, truck }) {
+function TechTargetView({ jobs, truck, owner }) {
+  const trucksAll = activeTrucks();
+  const [viewTruck, setViewTruck] = useState(truck || trucksAll[0] || "");
   const now = new Date();
   const { target, rows } = computeIncentives(jobs, now);
-  const me = rows.find(r => r.truck === truck) || { orders: 0, base: 0, ups: 0, voided: 0, pot: 0, unlocked: false, avgReview: null, nReviews: 0, revisitsCaused: 0, profit: 0 };
+  const activeTruckKey = owner ? viewTruck : truck;
+  const me = rows.find(r => r.truck === activeTruckKey) || { orders: 0, base: 0, ups: 0, voided: 0, pot: 0, unlocked: false, avgReview: null, nReviews: 0, revisitsCaused: 0, profit: 0 };
   const day = now.getDate();
   const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const pace = day > 0 ? Math.round((me.orders / day) * daysIn) : 0;
@@ -4086,9 +4099,20 @@ function TechTargetView({ jobs, truck }) {
   ];
   return (
     <div style={{ maxWidth: 560, margin: "0 auto" }}>
+      {owner && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+          {trucksAll.map(t => (
+            <button key={t} className="btn btn-sm" onClick={() => setViewTruck(t)}
+              style={{ fontWeight: 700, background: viewTruck === t ? "var(--ink)" : "var(--card)", color: viewTruck === t ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>
+              {t}
+            </button>
+          ))}
+          <span style={{ fontSize: 11.5, color: "var(--muted)", alignSelf: "center" }}>viewing as this truck's technicians</span>
+        </div>
+      )}
       <div className="card" style={{ padding: 16, marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
-          <div style={{ fontSize: 17, fontWeight: 800 }}>🎯 {truck} — {monthName}</div>
+          <div style={{ fontSize: 17, fontWeight: 800 }}>🎯 {activeTruckKey} — {monthName}</div>
           <div style={{ fontSize: 12, color: "var(--muted)" }}>target adjusts with active trucks</div>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 12 }}>
@@ -4125,8 +4149,8 @@ function TechTargetView({ jobs, truck }) {
       <div className="card" style={{ padding: 16 }}>
         <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Trucks this month</div>
         {rows.map(r => (
-          <div key={r.truck} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 13, fontWeight: r.truck === truck ? 800 : 500 }}>
-            <span>{r.truck === truck ? "→ " : ""}{r.truck}</span>
+          <div key={r.truck} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 13, fontWeight: r.truck === activeTruckKey ? 800 : 500 }}>
+            <span>{r.truck === activeTruckKey ? "→ " : ""}{r.truck}</span>
             <span>{r.orders} orders · {r.ups} upsells{r.avgReview ? ` · ★${r.avgReview}` : ""}</span>
           </div>
         ))}
@@ -8099,7 +8123,7 @@ export default function App() {
             <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} onCreateUpsell={handleCreateUpsell} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "target" && (
-            <TechTargetView jobs={jobs} truck={sessionTruck} />
+            <TechTargetView jobs={jobs} truck={sessionTruck} owner={isOwner} />
           )}
           {tab === "myhistory" && !selectedJob && (
             <TechHistoryView jobs={jobs} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} />
