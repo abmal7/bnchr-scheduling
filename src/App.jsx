@@ -1394,13 +1394,40 @@ const subModelsFor = (brand, model) => SUB_MODELS[`${brand}|${model}`] || [];
 // and agent-registered trims/models appear here automatically.
 let CAR_CATALOG_DB = [];
 async function fetchCarCatalog() {
-  try { CAR_CATALOG_DB = (await sbAll("/car_catalog?select=brand,model,sub_model,verified,source")) || []; } catch { CAR_CATALOG_DB = []; }
+  try { CAR_CATALOG_DB = (await sbAll("/car_catalog?select=brand,model,sub_model,verified,source,year_from,year_to,engine,front_tire,rear_tire")) || []; } catch { CAR_CATALOG_DB = []; }
 }
 const carCatalogTrusted = () => CAR_CATALOG_DB.filter(r =>
-  (r.verified || r.source === "agent") && /^[A-Za-z]/.test(String(r.brand || "")) && !/^\d+$/.test(String(r.model || "").trim()));
+  (r.verified || r.source === "agent") && /^[A-Za-z]/.test(String(r.brand || "")) && !/^(19|20)\d{2}$/.test(String(r.model || "").trim()));
 const carBrandOpts = () => [...new Set([...CAR_BRANDS, ...carCatalogTrusted().map(r => r.brand)])].sort();
 const carModelOpts = (brand) => [...new Set([...modelsFor(brand), ...carCatalogTrusted().filter(r => r.brand === brand && r.model).map(r => r.model)])].sort();
 const carSubModelOpts = (brand, model) => [...new Set([...subModelsFor(brand, model), ...carCatalogTrusted().filter(r => r.brand === brand && r.model === model && r.sub_model).map(r => r.sub_model)])];
+// ── garage tire intelligence: what does this car wear? ──
+// OE sizes come from car_catalog (wheel-size-fed generation rows); "last fitted"
+// comes from the car's own completed orders (sizes parsed from item names).
+const oeTiresFor = (car) => {
+  const yr = Number(car.year) || null;
+  const from = (r) => Number(r.year_from) || 0;
+  const to = (r) => Number(r.year_to) || 9999;
+  const inGen = (r) => yr ? (from(r) <= yr && yr <= to(r)) : true;
+  const rows = CAR_CATALOG_DB.filter(r => r.brand === car.brand && r.model === car.model && (r.front_tire || r.rear_tire) && inGen(r));
+  if (!rows.length) return null;
+  const exact = rows.filter(r => r.sub_model && car.sub_model && r.sub_model === car.sub_model);
+  const pool = exact.length ? exact : rows;
+  pool.sort((a, b) => from(b) - from(a));
+  const r = pool[0];
+  return { front: r.front_tire, rear: r.rear_tire, trim: r.sub_model };
+};
+const TIRE_SIZE_RX = /\b\d{3}\/\d{2}\s?Z?R\s?\d{2}\b/gi;
+const lastFittedTires = (carId, jobList) => {
+  const done = (jobList || []).filter(j => j.car_id === carId && jobSuccessful(j))
+    .sort((a, b) => new Date(b.completed_at || b.scheduled_at || 0) - new Date(a.completed_at || a.scheduled_at || 0));
+  for (const j of done) {
+    const text = (j.items || []).map(it => String(it.name || "")).join(" ");
+    const sizes = [...new Set((text.match(TIRE_SIZE_RX) || []).map(x => x.replace(/\s+/g, "").toUpperCase()))];
+    if (sizes.length) return { sizes, invoice: j.invoice_no };
+  }
+  return null;
+};
 const carYears = (() => { const y = []; const now = new Date().getFullYear() + 1; for (let v = now; v >= 1990; v--) y.push(String(v)); return y; })();
 
 // ─── Mock Data ───────────────────────────────────────────────────────────────
@@ -6227,6 +6254,17 @@ function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSele
                 <div className="car-card-info">{car.brand} {car.model} {car.year}</div>
                 <div className="car-card-plate">{car.plate}</div>
                 {latest ? <div style={{ fontSize: 12, fontWeight: 700, color: "#15803D", marginTop: 3 }}>🧭 {Number(latest).toLocaleString()} {unit} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· last recorded</span></div> : null}
+                {(() => {
+                  const oe = oeTiresFor(car);
+                  const lf = lastFittedTires(car.id, customerJobs);
+                  if (!oe && !lf) return null;
+                  return (
+                    <div style={{ fontSize: 12, marginTop: 3, display: "flex", flexDirection: "column", gap: 2 }}>
+                      {oe && <div style={{ fontWeight: 700, color: "#0E7490" }}>🛞 OE: {oe.front}{oe.rear && oe.rear !== oe.front ? ` / ${oe.rear}` : ""}{oe.trim ? <span style={{ fontWeight: 500, color: "var(--muted)" }}> · {oe.trim}</span> : null}</div>}
+                      {lf && <div style={{ fontWeight: 700, color: "#15803D" }}>🔧 Last fitted: {lf.sizes.join(" / ")} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· {lf.invoice}</span></div>}
+                    </div>
+                  );
+                })()}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                 <span style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.filter(j => j.car_id === car.id).length} jobs</span>
