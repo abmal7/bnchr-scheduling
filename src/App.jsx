@@ -1,1279 +1,4444 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { Search, Plus, Share2, Edit3, Clock, X, Check, Trash2, Car, Tag, ChevronDown, ChevronRight, Copy, Filter, History, Package, Download } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 
-// ─── Supabase ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// BNCHR+ Tire Purchase System
+// Single-file React app, now backed by Supabase (Postgres) for persistence.
+// Data lives in the `tires` table; the in-memory SEED below is kept only as a
+// fallback if the database is unreachable.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Supabase backend ─────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://itpghtviyotueqpspxun.supabase.co";
 const SUPABASE_KEY = "sb_publishable_OhL-LX-sjKOo97uFoN7oMQ_G3j579PE";
-// Realtime client — used ONLY for live push notifications; all reads/writes stay on the REST layer below.
-const sbRealtime = createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-async function sb(path, opts = {}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: opts.prefer || "return=representation",
-    },
-    ...opts,
-  });
-  if (!res.ok) { const err = await res.text(); throw new Error(err); }
-  return res.status === 204 ? null : res.json();
+// Shared team password (light gate for internal use)
+const APP_PASSWORD = "bnchr901";
+
+// Map a database row → the app's in-memory tire shape
+function rowToTire(r) {
+  const now = new Date().toISOString();
+  return {
+    id: r.id,
+    brand: r.brand,
+    pattern: r.pattern || "",
+    type: r.type || "Normal",
+    width: r.width, aspect: r.aspect, structure: r.structure || "R", rim: r.rim,
+    loadIndex: r.load_index || "", speedRating: r.speed_rating || "",
+    country: r.country || "", year: r.year || "", supplier: r.supplier || "",
+    sku: r.sku || "",
+    cost: round3(Number(r.cost) || 0), price: round3(Number(r.price) || 0),
+    category: detectCategory(r.brand),
+    notes: r.notes || "",
+    inStock: !!r.in_stock,
+    _availableAt: r.in_stock ? (r.availability_checked_at || null) : null,
+    history: [{ ts: r.created_at || now, cost: round3(Number(r.cost) || 0), price: round3(Number(r.price) || 0), note: "Loaded" }],
+  };
 }
 
-// Fetch ALL rows past PostgREST's 1000-row page cap (loops in pages of 1000).
-async function sbAll(path) {
-  const sep = path.includes("?") ? "&" : "?";
+// Map an in-memory tire → database columns (only real columns; strips app-only fields)
+function tireToRow(t) {
+  return {
+    brand: t.brand, pattern: t.pattern || null, type: t.type || "Normal",
+    width: t.width || null, aspect: t.aspect || null, structure: t.structure || "R", rim: t.rim || null,
+    load_index: t.loadIndex || null, speed_rating: t.speedRating || null,
+    country: t.country || null, year: t.year || null, supplier: t.supplier || null,
+    sku: t.sku || null,
+    cost: (t.cost === "" || t.cost == null) ? null : Number(t.cost),
+    price: (t.price === "" || t.price == null) ? null : Number(t.price),
+    notes: t.notes || null,
+    in_stock: !!t.inStock,
+  };
+}
+
+// Is this id a database UUID (already persisted) vs a local temp id ("t_xxxx")?
+function isDbId(id) {
+  return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}/i.test(id);
+}
+
+// ── Brand → Category mapping (auto-detect) ───────────────────────────────────
+const CATEGORY = {
+  TP: { key: "TP", en: "Top Performance", ar: "أعلى أداء", margin: 0.35, color: "#C9A84C", soft: "#FBF4DF" },
+  PC: { key: "PC", en: "Premium Comfort", ar: "جودة وسعر", margin: 0.30, color: "#1D5C3A", soft: "#E7F2EB" },
+  SV: { key: "SV", en: "Smart Value", ar: "جودة وسعر", margin: 0.28, color: "#1A4F8A", soft: "#E7EFFA" },
+  SE: { key: "SE", en: "Safe Economy", ar: "اقتصادي آمن", margin: 0.25, color: "#6B6B6B", soft: "#F0F0EC" },
+};
+const CATEGORY_ORDER = ["TP", "PC", "SV", "SE"];
+
+const BRAND_CATEGORY = {
+  // Top Performance
+  michelin: "TP", pirelli: "TP", continental: "TP", "bf goodrich": "TP", bfgoodrich: "TP", bfg: "TP", goodyear: "TP",
+  // Premium Comfort
+  bridgestone: "PC", yokohama: "PC", dunlop: "PC", hankook: "PC", cooper: "PC", toyo: "PC", sumitomo: "PC", firestone: "PC", firestones: "PC",
+  // Smart Value
+  kumho: "SV", marshal: "SV", marshall: "SV", nexen: "SV", falken: "SV", roadstone: "SV", nankang: "SV",
+  maxxis: "SV", matrax: "SV", armstrong: "SV", accelera: "SV", laufenn: "SV", landspider: "SV", giti: "SV",
+  // Safe Economy — Chinese / unknown (default fallback handled in code)
+  wideway: "SE", roadx: "SE", rovelo: "SE", habilead: "SE", sailun: "SE",
+  blackhawk: "SE", roadcruzza: "SE", zmax: "SE", antares: "SE", maxtrek: "SE",
+  kapsen: "SE", farroad: "SE", annaite: "SE", luxxon: "SE", fullrun: "SE",
+  roadking: "SE", kinforest: "SE", powerway: "SE", marvelous: "SE",
+  triangle: "SE", doublestar: "SE", linglong: "SE", aoteli: "SE", goform: "SE",
+  comforser: "SE", haida: "SE", joyroad: "SE",
+};
+
+function detectCategory(brand) {
+  if (!brand) return "SE";
+  const b = brand.trim().toLowerCase();
+  if (BRAND_CATEGORY[b]) return BRAND_CATEGORY[b];
+  // partial match
+  for (const key of Object.keys(BRAND_CATEGORY)) {
+    if (b.includes(key) || key.includes(b)) return BRAND_CATEGORY[key];
+  }
+  return "SE"; // unknown brands default to Safe Economy (Chinese)
+}
+
+// ── Country flags ─────────────────────────────────────────────────────────────
+const COUNTRIES = {
+  Germany: "🇩🇪", Japan: "🇯🇵", France: "🇫🇷", "USA": "🇺🇸", Italy: "🇮🇹",
+  "South Korea": "🇰🇷", China: "🇨🇳", Thailand: "🇹🇭", Spain: "🇪🇸",
+  Indonesia: "🇮🇩", Turkey: "🇹🇷", Taiwan: "🇹🇼", Vietnam: "🇻🇳", India: "🇮🇳",
+  Brazil: "🇧🇷", Poland: "🇵🇱", "Czech Republic": "🇨🇿", Hungary: "🇭🇺",
+  Romania: "🇷🇴", UK: "🇬🇧", Mexico: "🇲🇽",
+};
+
+// Arabic country names (for the Arabic quote)
+const COUNTRIES_AR = {
+  Germany: "ألمانيا", Japan: "اليابان", France: "فرنسا", "USA": "أمريكا", Italy: "إيطاليا",
+  "South Korea": "كوريا", China: "الصين", Thailand: "تايلاند", Spain: "إسبانيا",
+  Indonesia: "إندونيسيا", Turkey: "تركيا", Taiwan: "تايوان", Vietnam: "فيتنام", India: "الهند",
+  Brazil: "البرازيل", Poland: "بولندا", "Czech Republic": "التشيك", Hungary: "المجر",
+  Romania: "رومانيا", UK: "بريطانيا", Mexico: "المكسيك",
+};
+
+// Brand → home/primary manufacturing country (default origin; editable per tire).
+// Note: a brand may produce in several plants — this is the brand's primary origin,
+// not a guarantee of where a specific tire was made. Verify via DOT code for premium quotes.
+const BRAND_COUNTRY = {
+  michelin: "France", pirelli: "Italy", continental: "Germany",
+  "bf goodrich": "USA", bfgoodrich: "USA", bfg: "USA", goodyear: "USA",
+  bridgestone: "Japan", yokohama: "Japan", dunlop: "Japan", hankook: "South Korea",
+  cooper: "USA", toyo: "Japan", sumitomo: "Japan", firestone: "USA", firestones: "USA",
+  kumho: "South Korea", marshal: "South Korea", marshall: "South Korea", nexen: "South Korea",
+  falken: "Japan", roadstone: "South Korea", nankang: "Taiwan", maxxis: "Taiwan",
+  matrax: "Spain", armstrong: "Thailand", accelera: "Indonesia", laufenn: "South Korea",
+  landspider: "China", giti: "China",
+};
+function countryForBrand(brand) {
+  if (!brand) return "";
+  const b = brand.trim().toLowerCase();
+  if (BRAND_COUNTRY[b]) return BRAND_COUNTRY[b];
+  for (const key of Object.keys(BRAND_COUNTRY)) {
+    if (b.includes(key) || key.includes(b)) return BRAND_COUNTRY[key];
+  }
+  // Unknown brand → defaults to Safe Economy (Chinese) per category rules
+  return detectCategory(brand) === "SE" ? "China" : "";
+}
+
+// ── Supplier inference (from BNCHR+ purchase history) ─────────────────────────
+// brand (lowercase) → ordered list of suppliers, most-frequent first
+const BRAND_SUPPLIER = {
+  yokohama: ["Abbas Ghuloom"], dunlop: ["Abbas Ghuloom"],
+  kumho: ["Abulhassan", "Abbas Ghuloom"], roadx: ["Abbas Ghuloom", "Abulhassan"],
+  habilead: ["Abbas Ghuloom", "Al-Ghannam"], farroad: ["Abbas Ghuloom"],
+  rockblade: ["Abbas Ghuloom"], rovelo: ["Abbas Ghuloom"], mayrun: ["Abbas Ghuloom"],
+  general: ["Abbas Ghuloom"], maxtrek: ["Abulhassan"],
+  nexen: ["Al-Ghannam"], falken: ["Al-Ghannam"], frienza: ["Al-Ghannam"],
+  blackhawk: ["Al-Ghannam"], goodride: ["Al-Ghannam"],
+  kinforest: ["Alghanim"], wideway: ["JMTC", "Alghanim"],
+  toyo: ["Almailem"], goodyear: ["Almailem"], continental: ["Almailem"],
+  hankook: ["Almailem"], giti: ["Almailem"],
+  pirelli: ["Behbehani (Pirelli)"], bridgestone: ["Bridgestone Dealer"],
+  blackbear: ["Formula Tyres"], rydanz: ["Formula Tyres"], matrax: ["Formula Tyres"],
+  marshal: ["JMTC"], nankang: ["JMTC"], annaite: ["JMTC"], roadcruzza: ["JMTC"],
+  lanvigator: ["JMTC"], armstrong: ["JMTC"],
+  bfgoodrich: ["Kuwait Automotive", "Formula Tyres"], michelin: ["Kuwait Automotive"],
+};
+function supplierForBrand(brand) {
+  if (!brand) return "";
+  const b = brand.trim().toLowerCase();
+  if (BRAND_SUPPLIER[b]) return BRAND_SUPPLIER[b][0];
+  for (const key of Object.keys(BRAND_SUPPLIER)) {
+    if (b.includes(key) || key.includes(b)) return BRAND_SUPPLIER[key][0];
+  }
+  return "";
+}
+
+// ── Pattern → brand prediction ────────────────────────────────────────────────
+// Known signature patterns that identify a brand even if the brand name is absent.
+const PATTERN_BRAND = {
+  "pzero": "Pirelli", "p zero": "Pirelli", "pz4": "Pirelli", "cinturato": "Pirelli", "scorpion": "Pirelli",
+  "ko2": "BFGoodrich", "ko3": "BFGoodrich", "t/a": "BFGoodrich", "trail terrain": "BFGoodrich", "all terrain": "BFGoodrich",
+  "at52": "Kumho", "crugen": "Kumho", "ecsta": "Kumho", "solus": "Kumho", "hp71": "Kumho", "ht51": "Marshal",
+  "pilot sport": "Michelin", "ps4": "Michelin", "ps5": "Michelin", "primacy": "Michelin", "latitude": "Michelin", "crossclimate": "Michelin", "ltx": "Michelin", "defender": "Michelin",
+  "potenza": "Bridgestone", "turanza": "Bridgestone", "dueler": "Bridgestone", "alenza": "Bridgestone", "blizzak": "Bridgestone",
+  "advan": "Yokohama", "geolandar": "Yokohama", "bluearth": "Yokohama", "parada": "Yokohama",
+  "sp sport": "Dunlop", "grandtrek": "Dunlop", "sport maxx": "Dunlop",
+  "ventus": "Hankook", "dynapro": "Hankook", "kinergy": "Hankook",
+  "contisport": "Continental", "premiumcontact": "Continental", "crosscontact": "Continental", "ecocontact": "Continental",
+  "proxes": "Toyo", "open country": "Toyo", "celsius": "Toyo",
+  "azenis": "Falken", "wildpeak": "Falken", "ziex": "Falken",
+  "roadian": "Nexen", "nfera": "Nexen", "n'fera": "Nexen", "cp672": "Nexen",
+  "eagle": "Goodyear", "wrangler": "Goodyear", "efficientgrip": "Goodyear",
+};
+function brandFromPattern(text) {
+  if (!text) return "";
+  const t = text.toLowerCase();
+  for (const key of Object.keys(PATTERN_BRAND)) {
+    if (t.includes(key)) return PATTERN_BRAND[key];
+  }
+  return "";
+}
+
+// ── Tire OE / special markings knowledge base ─────────────────────────────────
+// code → { meaning, note }. Used to auto-annotate tires from supplier text and
+// to power the markings reference shown during search.
+const TIRE_MARKINGS = {
+  // Mercedes-Benz
+  "MO": { meaning: "Mercedes-Benz OE", brands: "Michelin, Continental, Pirelli, Bridgestone, Dunlop, Hankook" },
+  "MO1": { meaning: "Mercedes-Benz (specific OE)", brands: "Michelin" },
+  "MOE": { meaning: "Mercedes-Benz Extended (runflat)", brands: "Continental, Michelin, Pirelli" },
+  "MO-S": { meaning: "Mercedes-Benz Sport / AMG OE", brands: "various" },
+  // BMW
+  "★": { meaning: "BMW / MINI OE", brands: "Michelin, Pirelli, Bridgestone, Continental, Dunlop, Hankook, Goodyear" },
+  "*": { meaning: "BMW / MINI OE", brands: "various" },
+  // Porsche (N-spec)
+  "N0": { meaning: "Porsche OE approved (spec 0)", brands: "Michelin, Pirelli, Continental, Bridgestone" },
+  "N1": { meaning: "Porsche OE approved (spec 1)", brands: "various" },
+  "N2": { meaning: "Porsche OE approved (spec 2)", brands: "various" },
+  "N3": { meaning: "Porsche OE approved (spec 3)", brands: "various" },
+  "N4": { meaning: "Porsche OE approved (spec 4)", brands: "various" },
+  "N5": { meaning: "Porsche OE approved (spec 5)", brands: "various" },
+  "N6": { meaning: "Porsche OE approved (spec 6)", brands: "various" },
+  // Audi
+  "AO": { meaning: "Audi OE", brands: "Michelin, Continental, Pirelli, Bridgestone, Dunlop, Hankook" },
+  "AO1": { meaning: "Audi (specific OE)", brands: "various" },
+  "RO1": { meaning: "Audi Quattro / RS OE", brands: "various" },
+  // Other OEMs
+  "AR": { meaning: "Alfa Romeo OE", brands: "Pirelli" },
+  "J": { meaning: "Jaguar OE", brands: "Pirelli, Dunlop" },
+  "JLR": { meaning: "Jaguar Land Rover OE", brands: "various" },
+  "LR": { meaning: "Land Rover OE", brands: "various" },
+  "L": { meaning: "Lamborghini OE", brands: "Pirelli" },
+  "F": { meaning: "Ferrari OE", brands: "Michelin, Pirelli, Bridgestone" },
+  "VO": { meaning: "Volkswagen / electric OE", brands: "various" },
+  "B": { meaning: "Bentley OE", brands: "Pirelli, Michelin" },
+  "GOE": { meaning: "General Motors OE", brands: "various" },
+  // Runflat technologies
+  "ZP": { meaning: "Michelin Zero Pressure (runflat)", brands: "Michelin" },
+  "ZPS": { meaning: "Michelin Zero Pressure System (runflat)", brands: "Michelin" },
+  "RFT": { meaning: "Run-Flat Tire", brands: "Bridgestone, others" },
+  "ROF": { meaning: "Run On Flat (runflat)", brands: "Dunlop, Goodyear, Bridgestone" },
+  "RF": { meaning: "Run-Flat", brands: "various" },
+  "SSR": { meaning: "Self-Supporting Runflat", brands: "Continental" },
+  "DSST": { meaning: "Dunlop Self-Supporting Technology (runflat)", brands: "Dunlop" },
+  "HRS": { meaning: "Hankook Runflat System", brands: "Hankook" },
+  "EMT": { meaning: "Extended Mobility Technology (runflat)", brands: "Goodyear" },
+  "RSC": { meaning: "RunFlat System Component (BMW)", brands: "Bridgestone, Pirelli, Dunlop" },
+  "NO": { meaning: "No marking / non-OE (supplier shorthand)", brands: "various" },
+  // Construction / sidewall
+  "OWL": { meaning: "Outlined White Letters (sidewall lettering)", brands: "BFGoodrich, others" },
+  "RWL": { meaning: "Raised White Letters", brands: "various" },
+  "BSW": { meaning: "Black Sidewall", brands: "various" },
+  "XL": { meaning: "Extra Load (reinforced)", brands: "all" },
+  "RF-XL": { meaning: "Reinforced Extra Load", brands: "all" },
+  "C": { meaning: "Commercial / reinforced ply", brands: "all" },
+  "LT": { meaning: "Light Truck", brands: "all" },
+  // Weather
+  "M+S": { meaning: "Mud & Snow", brands: "all" },
+  "3PMSF": { meaning: "3-Peak Mountain Snowflake (severe snow)", brands: "all" },
+};
+// Scan supplier text for markings → return array of {code, meaning}
+function detectMarkings(text) {
+  if (!text) return [];
+  const found = [];
+  const seen = new Set();
+  const upper = " " + text.toUpperCase().replace(/\*/g, " ★ ") + " ";
+  for (const code of Object.keys(TIRE_MARKINGS)) {
+    if (code === "NO" || code === "*") continue; // skip noisy shorthands
+    const c = code.toUpperCase();
+    // word-boundary-ish match
+    const re = new RegExp(`(?:^|[\\s\\-\\(])${c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[\\s\\-\\)])`);
+    if (re.test(upper) && !seen.has(code)) { found.push({ code, ...TIRE_MARKINGS[code] }); seen.add(code); }
+  }
+  return found;
+}
+function markingsNote(text) {
+  const m = detectMarkings(text);
+  if (!m.length) return "";
+  return m.map(x => `${x.code} — ${x.meaning}`).join(" · ");
+}
+
+
+// Country names suppliers use → our country keys
+const COUNTRY_ALIASES = {
+  korea: "South Korea", "south korea": "South Korea", japan: "Japan", vietnam: "Vietnam",
+  china: "China", thailand: "Thailand", indonesia: "Indonesia", taiwan: "Taiwan",
+  france: "France", germany: "Germany", italy: "Italy", usa: "USA", us: "USA",
+  spain: "Spain", turkey: "Turkey", india: "India",
+};
+
+// Known brand tokens for parsing (longest first so multi-word matches win)
+const KNOWN_BRANDS = ["BFGoodrich","BF Goodrich","Bridgestone","Continental","Goodyear","Michelin","Pirelli","Yokohama","Hankook","Sumitomo","Dunlop","Falken","Nexen","Kumho","Marshal","Roadstone","Nankang","Maxxis","Matrax","Armstrong","Accelera","Laufenn","Landspider","Cooper","Toyo","Giti","Wideway","RoadX","Roadx","Rovelo","Habilead","Sailun","Blackhawk","Blackbear","Roadcruzza","ZMAX","Antares","Maxtrek","Kapsen","Farroad","Annaite","Luxxon","Fullrun","Roadking","Kinforest","Triangle","Frienza","Rockblade","Mayrun","Lanvigator","General","Goodride","Rydanz","Winrun"];
+
+const KNOWN_SUPPLIERS = ["Abbas Ghuloom","Abulhassan","Al-Ghannam","Alghanim","Almailem","Behbehani (Pirelli)","Bridgestone Dealer","Formula Tyres","JMTC","Kuwait Automotive"];
+
+// Canonical brand spellings (deduped, official capitalization)
+const CANON_BRANDS = ["BFGoodrich","Bridgestone","Continental","Goodyear","Michelin","Pirelli","Yokohama","Hankook","Sumitomo","Dunlop","Falken","Nexen","Kumho","Marshal","Roadstone","Nankang","Maxxis","Matrax","Armstrong","Accelera","Laufenn","Landspider","Cooper","Toyo","Giti","Wideway","RoadX","Rovelo","Habilead","Sailun","Blackhawk","Blackbear","Roadcruzza","ZMAX","Antares","Maxtrek","Kapsen","Farroad","Annaite","Luxxon","Fullrun","Roadking","Kinforest","Triangle","Frienza","Rockblade","Mayrun","Lanvigator","General","Goodride","Rydanz","Winrun"];
+
+// Levenshtein distance (small, for conservative typo matching)
+function levenshtein(a, b) {
+  a = a.toLowerCase(); b = b.toLowerCase();
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > 2) return 99; // early out — too different
+  const dp = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+  return dp[m][n];
+}
+
+// Normalize a typed pattern against existing catalog patterns FOR THAT BRAND.
+// Returns { value, original, corrected, suggestions }
+const CORE_PATTERNS = {
+  pirelli: ["P ZERO", "P ZERO PZ4", "P ZERO PZ5", "P ZERO AS", "P ZERO AS Plus 3", "P ZERO Corsa", "P ZERO Corsa PZC4", "P ZERO E", "P ZERO R", "P ZERO Rosso", "P ZERO Trofeo R", "P ZERO Trofeo RS", "Cinturato P1", "Cinturato P7", "Cinturato P7 C2", "Cinturato All Season SF2", "Cinturato All Season SF3", "Scorpion", "Scorpion Verde", "Scorpion Summer 3", "Scorpion ATR", "Scorpion Verde All Season", "Scorpion Zero All Season", "Scorpion All Season SF2", "Scorpion XTM AT", "Powergy", "Powergy 2", "P7 AS Plus 3"],
+  michelin: ["Pilot Sport 4", "Pilot Sport 4 S", "Pilot Sport 4 SUV", "Pilot Sport 5", "Pilot Sport Cup 2", "Pilot Sport Cup 2 R", "Pilot Super Sport", "Pilot Sport A/S 3+", "Pilot Sport All Season 4", "Pilot Sport EV", "Pilot Alpin 5", "Primacy 4", "Primacy 5", "Primacy Tour A/S", "Primacy All Season", "e.Primacy", "Latitude Sport 3", "Latitude Tour HP", "CrossClimate 2", "CrossClimate SUV", "Defender2", "Defender LTX M/S 2", "Defender T + H", "LTX A/T2", "LTX M/S2"],
+  bfgoodrich: ["All-Terrain T/A KO2", "All-Terrain T/A KO3", "Trail-Terrain T/A", "Mud-Terrain T/A KM3", "HD-Terrain T/A KT", "g-Force COMP-2 A/S", "Advantage Control", "Advantage T/A Sport"],
+  kumho: ["Ecsta PS91", "Ecsta PS71", "Ecsta PS31", "Ecsta V720", "Ecsta HS51", "Ecsta X3", "Ecsta PA51", "Ecsta PA31", "Solus TA71", "Solus TA31", "Solus TA11", "Solus KL21 eco", "Sense KR26", "ecowing ES31", "ecowing ES01", "Crugen HP71", "Crugen HT51", "Crugen HP91", "Road Venture AT52", "Road Venture AT51", "Road Venture MT51", "Road Venture MT71", "Road Venture APT KL51", "Portran KC53", "WinterCraft WP72", "WinterCraft WP71"],
+  bridgestone: ["Potenza Sport", "Potenza S007", "Potenza S005", "Potenza S001", "Potenza RE003 Adrenalin", "Potenza RE050A", "Potenza RE71RS", "Potenza Race", "Turanza 6", "Turanza T005", "Turanza T001", "Turanza ER300", "Turanza EverDrive", "Alenza 001", "Alenza Sport A/S", "Alenza A/S 02", "Dueler H/P Sport", "Dueler H/T 684", "Dueler H/T 840", "Dueler A/T 001", "Dueler A/T 002", "Dueler M/T 674", "Ecopia EP150", "Ecopia EP300"],
+  dunlop: ["SP Sport Maxx", "SP Sport Maxx GT", "SP Sport Maxx RT2", "SP Sport Maxx TT", "SP Sport Maxx 050", "SP Sport Maxx 060", "Direzza DZ102", "Sport Maxx RT2 SUV", "SP Sport FM800", "SP Sport LM705", "Grandtrek AT5", "Grandtrek AT25", "Grandtrek PT3", "Grandtrek PT30", "Grandtrek MT2", "SP Sport 01", "SP QuattroMaxx"],
+  yokohama: ["Advan Sport V107", "Advan Sport V105", "Advan Sport V103", "Advan Sport A/S+", "Advan Neova AD09", "Advan Neova AD08R", "Advan Fleva V701", "Advan A052", "Geolandar A/T G015", "Geolandar A/T4 G018", "Geolandar X-AT", "Geolandar M/T G003", "Geolandar H/T G056", "Geolandar H/T4 G062", "Geolandar X-CV G057", "Geolandar CV G058", "Parada Spec-X", "BluEarth-GT AE51", "BluEarth-XT AE61", "BluEarth-4S AW21", "Avid Ascend LX"],
+  nexen: ["N'Fera Sport", "N'Fera Sport R", "N'Fera SU1", "N'Fera AU7", "N'Fera SUR4G", "N'Priz S", "N'Priz AH5", "N'Priz AH8", "N'Priz RH7", "N5000 Platinum", "N'Blue 4 Season 2", "Roadian GTX", "Roadian HP", "Roadian HTX2", "Roadian HTX RH5", "Roadian ATX", "Roadian AT Pro RA8", "Roadian MT", "Roadian MTX", "Roadian CT8 HL"],
+  falken: ["Azenis FK510", "Azenis FK460 A/S", "Azenis RT660+", "Azenis RT615K+", "Ziex ZE960 A/S", "Ziex CT60 A/S", "Sincera SN250 A/S", "Wildpeak A/T4W", "Wildpeak A/T3W", "Wildpeak A/T Trail", "Wildpeak H/T02", "Wildpeak M/T", "Wildpeak R/T"],
+  goodyear: ["Eagle F1 Asymmetric 6", "Eagle F1 Asymmetric 5", "Eagle F1 Asymmetric 3", "Eagle F1 Asymmetric 3 SUV", "Eagle F1 Asymmetric All-Season", "Eagle F1 SuperSport", "Eagle F1 All Season", "Eagle Sport All-Season", "Eagle Exhilarate", "EfficientGrip Performance 2", "EfficientGrip 2 SUV", "Assurance WeatherReady 2", "Assurance MaxLife", "Assurance ComfortDrive", "Wrangler All-Terrain Adventure", "Wrangler DuraTrac RT", "Wrangler Workhorse AT", "Wrangler Territory AT", "Wrangler MT/R", "Vector 4Seasons Gen-3"],
+  continental: ["ExtremeContact DWS06 Plus", "ExtremeContact Sport 02", "SportContact 7", "SportContact 6", "PremiumContact 7", "PremiumContact 6", "ProContact TX", "ProContact GX", "ProContact RX", "PureContact LS", "TrueContact Tour 54", "CrossContact LX25", "CrossContact RX", "CrossContact LX Sport", "TerrainContact A/T", "TerrainContact H/T", "EcoContact 6", "UltraContact UC7", "VikingContact 7"],
+  toyo: ["Proxes Sport", "Proxes Sport 2", "Proxes Sport A/S+", "Proxes Sport SUV", "Proxes R888R", "Proxes R1R", "Proxes 4 Plus", "Proxes ST III", "Proxes A40", "Open Country A/T III", "Open Country R/T Trail", "Open Country R/T", "Open Country M/T", "Open Country H/T II", "Open Country Q/T", "Open Country U/T", "Celsius II", "Celsius Sport", "Extensa A/S II", "Extensa HP II"],
+  marshal: ["MU12", "MU19", "Matrac MU11", "KR21", "KR201", "Crugen HP91", "Crugen KL51", "Road Venture APT KL51", "Road Venture AT51", "Road Venture MT51", "Steel Radial 857"],
+  nankang: ["NS-2", "NS-20", "NS-25", "NS-2R", "AS-1", "AS-2+", "Sportnex AR-1", "Sportnex CR-S", "CR-S V2", "SP-9 Cross Sport", "SP-7", "SP-5", "N-607+", "CX668", "N889 Mudstar M/T", "FT-7 A/T", "Toursport NS"],
+  roadstone: ["Eurovis Sport 04", "Eurovis HP02", "N'Fera SU1", "N'Fera RU1", "N'Fera RU5", "N'Fera AU7", "N'Priz AH5", "N'Priz AH8", "N'Priz 4S", "N5000 Plus", "N8000", "NBlue HD Plus", "Roadian HP", "Roadian HTX RH5", "Roadian AT Pro RA8", "Roadian CT8", "Roadian MTX", "Classe Premiere CP672"],
+  kinforest: ["KF550", "KF660", "KF880", "KF717 SUV H/T", "KF7", "Pentium", "Sky-X", "Wildclaw A/T", "Wellington Highlander WLK A/T", "Wellington XTR A/T", "Snow Force"],
+  hankook: ["Ventus S1 evo3", "Ventus S1 evo3 SUV", "Ventus S1 AS", "Ventus S1 noble2", "Ventus evo", "Ventus Prime4", "Ventus RS4", "Kinergy GT", "Kinergy XP", "Kinergy 4S2", "Kinergy PT", "Dynapro HP2", "Dynapro HPX", "Dynapro HT2", "Dynapro evo AS", "Dynapro AT2", "Dynapro AT2 Xtreme", "Dynapro MT2", "iON evo", "iON evo AS SUV"],
+  cooper: ["Zeon RS3-G1", "Zeon RS3-A", "CS5 Ultra Touring", "Endeavor", "Endeavor Plus", "ProControl", "Evolution Tour", "Discoverer AT3 4S", "Discoverer AT3 LT", "Discoverer AT3 XLT", "Discoverer Road+Trail AT", "Discoverer Rugged Trek", "Discoverer SRX", "Discoverer HT3", "Discoverer STT Pro", "Discoverer S/T Maxx", "Discoverer Enduramax"],
+  general: ["G-MAX AS-07", "G-MAX AS-05", "G-MAX RS", "AltiMAX RT45", "AltiMAX RT43", "AltiMAX 365AW", "Grabber APT", "Grabber AT2", "Grabber ATX", "Grabber X3", "Grabber HTS60", "Grabber UHP"],
+  wideway: ["Sportsway", "Sportway", "Superway", "Ecoway", "Maxway", "Autograceway HP", "Heroway"],
+  roadx: ["RXMotion MX440", "RXMotion U11", "RXMotion 4S1", "RXMotion UHP AS", "RXMotion SUV UX01", "RXQuest AT QX12", "RXQuest HT HX01", "RXQuest RT", "RXFrost FX11"],
+  matrax: ["Urcola+", "Urcola+ SUV", "Camarga", "Romero", "Miurra", "Domec", "Colmenar", "Veragua SV", "Veragua A/T", "Veragua ATX", "Veragua M/T", "Navarra R/T"],
+};
+
+// Manufacturer spec reference: brand → pattern → size → { load, speed, xl }
+// Used to auto-fill load index & speed rating during entry. Sourced from manufacturer sites.
+// Extend by adding more patterns/brands.
+const TIRE_SPECS = {
+  Kumho: {
+  "Ecsta PA51": {
+    "255/35R18": { load: "94", speed: "W", xl: true },
+    "265/35R18": { load: "97", speed: "W", xl: true },
+    "275/35R18": { load: "95", speed: "W" },
+    "245/35R19": { load: "93", speed: "W", xl: true },
+    "255/35R19": { load: "96", speed: "W", xl: true },
+    "275/35R19": { load: "100", speed: "W", xl: true },
+    "285/35R19": { load: "99", speed: "W" },
+    "245/35R20": { load: "95", speed: "W", xl: true },
+    "255/35R20": { load: "97", speed: "W", xl: true },
+    "205/40R17": { load: "84", speed: "W", xl: true },
+    "245/40R17": { load: "91", speed: "W" },
+    "255/40R17": { load: "94", speed: "W" },
+    "275/40R17": { load: "98", speed: "W" },
+    "215/40R18": { load: "89", speed: "W", xl: true },
+    "225/40R18": { load: "92", speed: "W", xl: true },
+    "235/40R18": { load: "95", speed: "W", xl: true },
+    "245/40R18": { load: "97", speed: "W", xl: true },
+    "255/40R18": { load: "99", speed: "W", xl: true },
+    "275/40R18": { load: "99", speed: "W" },
+    "225/40R19": { load: "93", speed: "W", xl: true },
+    "245/40R19": { load: "98", speed: "W", xl: true },
+    "255/40R19": { load: "100", speed: "W", xl: true },
+    "275/40R19": { load: "105", speed: "W", xl: true },
+    "245/40R20": { load: "99", speed: "W", xl: true },
+    "205/45R17": { load: "88", speed: "V", xl: true },
+    "215/45R17": { load: "91", speed: "W", xl: true },
+    "225/45R17": { load: "94", speed: "W", xl: true },
+    "235/45R17": { load: "97", speed: "W", xl: true },
+    "245/45R17": { load: "95", speed: "W" },
+    "215/45R18": { load: "93", speed: "W", xl: true },
+    "225/45R18": { load: "95", speed: "W", xl: true },
+    "235/45R18": { load: "98", speed: "W", xl: true },
+    "245/45R18": { load: "100", speed: "W", xl: true },
+    "255/45R18": { load: "103", speed: "W", xl: true },
+    "225/45R19": { load: "92", speed: "W" },
+    "245/45R19": { load: "102", speed: "W", xl: true },
+    "245/45R20": { load: "99", speed: "W" },
+    "255/45R20": { load: "105", speed: "W", xl: true },
+    "195/50R16": { load: "84", speed: "V" },
+    "205/50R16": { load: "87", speed: "V" },
+    "225/50R16": { load: "92", speed: "W" },
+    "205/50R17": { load: "93", speed: "W", xl: true },
+    "215/50R17": { load: "95", speed: "W", xl: true },
+    "225/50R17": { load: "98", speed: "W", xl: true },
+    "235/50R17": { load: "96", speed: "W" },
+    "245/50R17": { load: "99", speed: "W" },
+    "235/50R18": { load: "97", speed: "W" },
+    "245/50R18": { load: "100", speed: "W" },
+    "245/50R19": { load: "105", speed: "W", xl: true },
+    "185/55R16": { load: "83", speed: "V" },
+    "195/55R16": { load: "87", speed: "V" },
+    "205/55R16": { load: "91", speed: "W" },
+    "215/55R16": { load: "93", speed: "V" },
+    "215/55R17": { load: "94", speed: "W" },
+    "225/55R17": { load: "97", speed: "W" },
+    "235/55R17": { load: "99", speed: "W" },
+    "235/55R18": { load: "100", speed: "W" },
+    "215/60R16": { load: "95", speed: "V" }
+  },
+  "Solus TA71": {
+    "245/40R17": { load: "91", speed: "W" },
+    "255/40R17": { load: "94", speed: "W" },
+    "225/40R18": { load: "92", speed: "V", xl: true },
+    "235/40R18": { load: "95", speed: "W", xl: true },
+    "245/40R18": { load: "97", speed: "W", xl: true },
+    "245/40R19": { load: "98", speed: "W", xl: true },
+    "255/40R19": { load: "100", speed: "W", xl: true },
+    "225/45R17": { load: "91", speed: "W" },
+    "235/45R17": { load: "97", speed: "W", xl: true },
+    "245/45R17": { load: "99", speed: "W", xl: true },
+    "225/45R18": { load: "95", speed: "W", xl: true },
+    "235/45R18": { load: "98", speed: "V", xl: true },
+    "245/45R18": { load: "100", speed: "W", xl: true },
+    "255/45R18": { load: "99", speed: "W" },
+    "245/45R19": { load: "102", speed: "W", xl: true },
+    "205/50R17": { load: "93", speed: "V", xl: true },
+    "215/50R17": { load: "95", speed: "V", xl: true },
+    "225/50R17": { load: "98", speed: "W", xl: true },
+    "235/50R17": { load: "96", speed: "V" },
+    "245/50R17": { load: "99", speed: "V" },
+    "225/50R18": { load: "95", speed: "W" },
+    "235/50R18": { load: "97", speed: "W" },
+    "245/50R18": { load: "104", speed: "V", xl: true },
+    "205/55R16": { load: "91", speed: "V" },
+    "215/55R16": { load: "97", speed: "V", xl: true },
+    "225/55R16": { load: "95", speed: "V" },
+    "215/55R17": { load: "94", speed: "V" },
+    "225/55R17": { load: "101", speed: "V", xl: true },
+    "235/55R17": { load: "103", speed: "W", xl: true },
+    "235/55R18": { load: "100", speed: "V" },
+    "195/60R15": { load: "88", speed: "V" },
+    "205/60R16": { load: "96", speed: "V", xl: true },
+    "215/60R16": { load: "95", speed: "V" },
+    "225/60R16": { load: "98", speed: "V" },
+    "225/60R18": { load: "100", speed: "V" },
+    "195/65R15": { load: "91", speed: "V" },
+    "205/65R15": { load: "94", speed: "V" },
+    "205/65R16": { load: "95", speed: "V" }
+  },
+  "Solus TA31": {
+    "215/40R18": { load: "89", speed: "V", xl: true },
+    "225/40R18": { load: "88", speed: "V" },
+    "245/40R18": { load: "97", speed: "V", xl: true },
+    "215/45R17": { load: "91", speed: "V", xl: true },
+    "225/45R17": { load: "94", speed: "V", xl: true },
+    "245/45R17": { load: "99", speed: "V", xl: true },
+    "225/45R18": { load: "95", speed: "V", xl: true },
+    "235/45R18": { load: "94", speed: "V" },
+    "245/45R18": { load: "100", speed: "V", xl: true },
+    "175/50R15": { load: "75", speed: "H" },
+    "205/50R17": { load: "93", speed: "V", xl: true },
+    "215/50R17": { load: "95", speed: "V", xl: true },
+    "225/50R17": { load: "98", speed: "V", xl: true },
+    "235/50R18": { load: "101", speed: "V", xl: true },
+    "245/50R18": { load: "104", speed: "V", xl: true },
+    "185/55R15": { load: "82", speed: "H" },
+    "195/55R15": { load: "85", speed: "H" },
+    "205/55R16": { load: "91", speed: "H" },
+    "215/55R16": { load: "97", speed: "H", xl: true },
+    "225/55R16": { load: "99", speed: "H", xl: true },
+    "235/55R16": { load: "98", speed: "H" },
+    "215/55R17": { load: "94", speed: "V" },
+    "225/55R17": { load: "97", speed: "V" },
+    "235/55R17": { load: "103", speed: "V", xl: true },
+    "165/60R14": { load: "75", speed: "H" },
+    "195/60R14": { load: "86", speed: "H" },
+    "165/60R15": { load: "77", speed: "H" },
+    "185/60R15": { load: "84", speed: "H" },
+    "195/60R15": { load: "88", speed: "H" },
+    "205/60R15": { load: "91", speed: "H" },
+    "205/60R16": { load: "92", speed: "H" },
+    "215/60R16": { load: "95", speed: "H" },
+    "225/60R16": { load: "98", speed: "H" },
+    "235/60R16": { load: "100", speed: "H" },
+    "225/60R17": { load: "99", speed: "H" },
+    "185/65R14": { load: "86", speed: "H" },
+    "185/65R15": { load: "88", speed: "H" },
+    "195/65R15": { load: "91", speed: "H" },
+    "205/65R15": { load: "94", speed: "H" },
+    "215/65R15": { load: "96", speed: "H" },
+    "205/65R16": { load: "95", speed: "H" },
+    "215/65R16": { load: "98", speed: "H" },
+    "225/65R16": { load: "100", speed: "T" },
+    "155/70R14": { load: "77", speed: "H" },
+    "195/70R14": { load: "91", speed: "H" }
+  },
+  "Solus TA11": {
+    "205/55R16": { load: "91", speed: "T" },
+    "185/60R15": { load: "84", speed: "T" },
+    "195/60R15": { load: "88", speed: "T" },
+    "205/60R15": { load: "91", speed: "T" },
+    "215/60R15": { load: "94", speed: "T" },
+    "205/60R16": { load: "92", speed: "T" },
+    "215/60R16": { load: "95", speed: "T" },
+    "225/60R16": { load: "98", speed: "T" },
+    "235/60R16": { load: "100", speed: "T" },
+    "215/60R17": { load: "96", speed: "T" },
+    "225/60R17": { load: "99", speed: "T" },
+    "235/60R17": { load: "102", speed: "T" },
+    "175/65R14": { load: "82", speed: "T" },
+    "185/65R14": { load: "86", speed: "T" },
+    "185/65R15": { load: "88", speed: "T" },
+    "195/65R15": { load: "91", speed: "T" },
+    "205/65R15": { load: "94", speed: "T" },
+    "215/65R15": { load: "96", speed: "T" },
+    "215/65R16": { load: "98", speed: "T" },
+    "225/65R16": { load: "100", speed: "T" },
+    "235/65R16": { load: "103", speed: "T" },
+    "215/65R17": { load: "99", speed: "T" },
+    "225/65R17": { load: "102", speed: "T" },
+    "235/65R17": { load: "104", speed: "T" },
+    "235/65R18": { load: "106", speed: "T" },
+    "175/70R13": { load: "82", speed: "T" },
+    "185/70R13": { load: "86", speed: "T" },
+    "185/70R14": { load: "88", speed: "T" },
+    "195/70R14": { load: "91", speed: "T" },
+    "215/70R14": { load: "96", speed: "T" },
+    "205/70R15": { load: "96", speed: "T" },
+    "215/70R15": { load: "98", speed: "T" },
+    "225/70R15": { load: "100", speed: "T" },
+    "235/70R15": { load: "103", speed: "T" },
+    "215/70R16": { load: "100", speed: "T" },
+    "225/70R16": { load: "103", speed: "T" },
+    "235/70R16": { load: "106", speed: "T" },
+    "195/75R14": { load: "92", speed: "T" },
+    "205/75R14": { load: "95", speed: "T" },
+    "205/75R15": { load: "97", speed: "T" },
+    "215/75R15": { load: "100", speed: "T" },
+    "225/75R15": { load: "102", speed: "T" },
+    "235/75R15": { load: "105", speed: "T" },
+    "155/80R13": { load: "79", speed: "T" }
+  },
+  "Sense KR26": {
+    "175/50R15": { load: "75", speed: "H" },
+    "225/50R17": { load: "94", speed: "H" },
+    "195/55R15": { load: "85", speed: "H" },
+    "205/55R16": { load: "91", speed: "H" },
+    "215/55R16": { load: "93", speed: "H" },
+    "225/55R16": { load: "95", speed: "H" },
+    "215/55R17": { load: "94", speed: "H" },
+    "225/55R17": { load: "97", speed: "H" },
+    "235/55R17": { load: "99", speed: "H" },
+    "175/60R13": { load: "77", speed: "H" },
+    "165/60R14": { load: "75", speed: "H" },
+    "185/60R14": { load: "82", speed: "H" },
+    "195/60R14": { load: "86", speed: "H" },
+    "185/60R15": { load: "84", speed: "H" },
+    "195/60R15": { load: "88", speed: "H" },
+    "205/60R15": { load: "91", speed: "H" },
+    "195/60R16": { load: "89", speed: "H" },
+    "205/60R16": { load: "92", speed: "H" },
+    "215/60R16": { load: "95", speed: "H" },
+    "225/60R16": { load: "98", speed: "H" },
+    "155/65R13": { load: "73", speed: "H" },
+    "165/65R13": { load: "77", speed: "H" },
+    "155/65R14": { load: "75", speed: "H" },
+    "175/65R14": { load: "82", speed: "H" },
+    "185/65R14": { load: "86", speed: "H" },
+    "175/65R15": { load: "84", speed: "H" },
+    "185/65R15": { load: "88", speed: "H" },
+    "195/65R15": { load: "91", speed: "H" },
+    "205/65R15": { load: "94", speed: "H" },
+    "215/65R15": { load: "96", speed: "H" },
+    "205/65R16": { load: "95", speed: "H" },
+    "215/65R16": { load: "98", speed: "H" },
+    "225/65R16": { load: "100", speed: "H" },
+    "225/65R17": { load: "102", speed: "H" },
+    "155/70R13": { load: "75", speed: "H" },
+    "165/70R13": { load: "79", speed: "T" },
+    "175/70R13": { load: "82", speed: "H" },
+    "165/70R14": { load: "81", speed: "T" },
+    "175/70R14": { load: "84", speed: "T" },
+    "185/70R14": { load: "88", speed: "T" },
+    "195/70R14": { load: "91", speed: "H" },
+    "205/70R15": { load: "96", speed: "T" },
+    "215/70R15": { load: "98", speed: "T" },
+    "205/75R15": { load: "97", speed: "T" },
+    "145/80R13": { load: "75", speed: "T" },
+    "155/80R13": { load: "79", speed: "T" }
+  },
+  "Ecsta PS91": {
+    "255/30R19": { load: "91", speed: "Y", xl: true },
+    "265/30R19": { load: "93", speed: "Y", xl: true },
+    "275/30R19": { load: "96", speed: "Y", xl: true },
+    "285/30R19": { load: "98", speed: "Y", xl: true },
+    "295/30R19": { load: "100", speed: "Y", xl: true },
+    "305/30R19": { load: "102", speed: "Y", xl: true },
+    "295/30R20": { load: "101", speed: "Y", xl: true },
+    "245/35R18": { load: "92", speed: "Y", xl: true },
+    "255/35R18": { load: "94", speed: "Y", xl: true },
+    "265/35R18": { load: "97", speed: "Y", xl: true },
+    "275/35R18": { load: "99", speed: "Y", xl: true },
+    "225/35R19": { load: "88", speed: "Y", xl: true },
+    "235/35R19": { load: "91", speed: "Y", xl: true },
+    "245/35R19": { load: "93", speed: "Y", xl: true },
+    "255/35R19": { load: "96", speed: "Y", xl: true },
+    "265/35R19": { load: "98", speed: "Y", xl: true },
+    "275/35R19": { load: "100", speed: "Y", xl: true },
+    "285/35R19": { load: "103", speed: "Y", xl: true },
+    "245/35R20": { load: "95", speed: "Y", xl: true },
+    "255/35R20": { load: "97", speed: "Y", xl: true },
+    "265/35R20": { load: "99", speed: "Y", xl: true },
+    "275/35R20": { load: "102", speed: "Y", xl: true },
+    "285/35R20": { load: "104", speed: "Y", xl: true },
+    "295/35R20": { load: "105", speed: "Y", xl: true },
+    "225/40R18": { load: "92", speed: "Y", xl: true },
+    "235/40R18": { load: "95", speed: "Y", xl: true },
+    "245/40R18": { load: "97", speed: "Y", xl: true },
+    "255/40R18": { load: "99", speed: "Y", xl: true },
+    "265/40R18": { load: "101", speed: "Y", xl: true },
+    "275/40R18": { load: "103", speed: "Y", xl: true },
+    "225/40R19": { load: "93", speed: "Y", xl: true },
+    "245/40R19": { load: "98", speed: "Y", xl: true },
+    "255/40R19": { load: "100", speed: "Y", xl: true },
+    "275/40R19": { load: "105", speed: "Y", xl: true },
+    "285/40R19": { load: "107", speed: "Y", xl: true },
+    "255/40R20": { load: "101", speed: "Y", xl: true },
+    "275/40R20": { load: "106", speed: "Y", xl: true },
+    "225/45R18": { load: "95", speed: "Y", xl: true },
+    "245/45R18": { load: "100", speed: "Y", xl: true },
+    "245/45R19": { load: "102", speed: "Y", xl: true },
+    "255/45R19": { load: "104", speed: "Y", xl: true },
+    "245/45R20": { load: "103", speed: "Y", xl: true }
+  },
+  "Road Venture AT52": {
+    "215/75R15": { load: "106", speed: "R" },
+    "235/75R15": { load: "109", speed: "T" },
+    "225/75R16": { load: "115", speed: "S" },
+    "235/70R16": { load: "106", speed: "T" },
+    "235/85R16": { load: "120", speed: "S" },
+    "245/70R16": { load: "111", speed: "T" },
+    "245/75R16": { load: "120", speed: "S" },
+    "255/70R16": { load: "111", speed: "T" },
+    "265/70R16": { load: "112", speed: "T" },
+    "265/75R16": { load: "123", speed: "R" },
+    "285/75R16": { load: "126", speed: "R" },
+    "225/70R17": { load: "108", speed: "S" },
+    "235/65R17": { load: "108", speed: "T" },
+    "235/80R17": { load: "120", speed: "R" },
+    "245/70R17": { load: "119", speed: "S" },
+    "245/75R17": { load: "121", speed: "S" },
+    "265/65R17": { load: "112", speed: "T" },
+    "265/70R17": { load: "121", speed: "S" },
+    "275/70R17": { load: "121", speed: "R" },
+    "285/70R17": { load: "121", speed: "R" },
+    "315/70R17": { load: "121", speed: "S" },
+    "255/60R18": { load: "112", speed: "T" },
+    "265/60R18": { load: "110", speed: "T" },
+    "265/65R18": { load: "114", speed: "T" },
+    "265/70R18": { load: "124", speed: "S" },
+    "275/65R18": { load: "123", speed: "S" },
+    "275/70R18": { load: "125", speed: "S" },
+    "285/60R18": { load: "118", speed: "S" },
+    "285/65R18": { load: "125", speed: "S" },
+    "295/70R18": { load: "129", speed: "S" },
+    "275/55R20": { load: "120", speed: "S" },
+    "275/60R20": { load: "115", speed: "T" },
+    "275/65R20": { load: "126", speed: "S" },
+    "285/55R20": { load: "122", speed: "R" },
+    "285/60R20": { load: "125", speed: "S" },
+    "305/55R20": { load: "121", speed: "S" }
+  },
+  "Solus KL21 eco": {
+    "275/45R19": { load: "108", speed: "V", xl: true },
+    "285/45R19": { load: "107", speed: "V" },
+    "235/50R19": { load: "99", speed: "H" },
+    "255/50R19": { load: "107", speed: "V", xl: true },
+    "245/50R20": { load: "102", speed: "V" },
+    "255/50R20": { load: "109", speed: "V", xl: true },
+    "265/50R20": { load: "107", speed: "V" },
+    "225/55R18": { load: "98", speed: "H" },
+    "235/55R18": { load: "104", speed: "V", xl: true },
+    "255/55R18": { load: "109", speed: "V", xl: true },
+    "235/55R19": { load: "105", speed: "V", xl: true },
+    "245/55R19": { load: "103", speed: "H" },
+    "255/55R19": { load: "111", speed: "V", xl: true },
+    "275/55R19": { load: "111", speed: "V" },
+    "215/60R17": { load: "96", speed: "H" },
+    "225/60R17": { load: "99", speed: "H" },
+    "235/60R17": { load: "102", speed: "T" },
+    "255/60R17": { load: "106", speed: "V" },
+    "235/60R18": { load: "103", speed: "H" },
+    "245/60R18": { load: "105", speed: "H" },
+    "265/60R18": { load: "110", speed: "V" },
+    "275/60R18": { load: "113", speed: "V" },
+    "255/60R19": { load: "108", speed: "H" },
+    "215/65R16": { load: "98", speed: "H" },
+    "235/65R16": { load: "103", speed: "T" },
+    "225/65R17": { load: "102", speed: "H" },
+    "235/65R17": { load: "103", speed: "T" },
+    "245/65R17": { load: "107", speed: "H" },
+    "235/65R18": { load: "106", speed: "T" },
+    "245/65R18": { load: "110", speed: "H" },
+    "255/65R18": { load: "109", speed: "H" },
+    "275/65R18": { load: "114", speed: "T" },
+    "215/70R16": { load: "100", speed: "H" },
+    "235/70R16": { load: "104", speed: "T" },
+    "265/70R18": { load: "114", speed: "T" }
+  },
+  "Ecsta X3": {
+    "255/30R22": { load: "95", speed: "W", xl: true },
+    "315/35R20": { load: "106", speed: "W" },
+    "285/35R22": { load: "106", speed: "W", xl: true },
+    "275/40R20": { load: "106", speed: "Y", xl: true },
+    "275/45R19": { load: "108", speed: "Y", xl: true },
+    "285/45R19": { load: "107", speed: "W" },
+    "275/45R20": { load: "110", speed: "Y", xl: true },
+    "235/50R18": { load: "97", speed: "V" },
+    "255/50R19": { load: "103", speed: "W" },
+    "225/55R17": { load: "97", speed: "W" },
+    "255/55R18": { load: "109", speed: "W", xl: true },
+    "285/55R18": { load: "113", speed: "V" },
+    "255/55R19": { load: "111", speed: "V", xl: true },
+    "235/60R16": { load: "100", speed: "H" },
+    "255/60R17": { load: "106", speed: "H" },
+    "255/60R18": { load: "108", speed: "V" },
+    "265/60R18": { load: "100", speed: "V" },
+    "255/65R16": { load: "109", speed: "V" },
+    "255/65R17": { load: "110", speed: "V" },
+    "235/70R16": { load: "106", speed: "H" },
+    "245/70R16": { load: "107", speed: "H" },
+    "265/70R16": { load: "112", speed: "V" }
+  },
+  "Road Venture AT51": {
+    "275/55R20": { load: "111", speed: "T" },
+    "285/55R20": { load: "122", speed: "R" },
+    "275/60R20": { load: "114", speed: "T" },
+    "235/65R17": { load: "104", speed: "T" },
+    "245/65R17": { load: "105", speed: "T" },
+    "265/65R17": { load: "110", speed: "T" },
+    "275/65R18": { load: "114", speed: "T" },
+    "285/65R18": { load: "125", speed: "R" },
+    "275/65R20": { load: "126", speed: "R" },
+    "235/70R16": { load: "104", speed: "T" },
+    "245/70R16": { load: "106", speed: "T" },
+    "265/70R16": { load: "111", speed: "T" },
+    "305/70R16": { load: "124", speed: "R" },
+    "245/70R17": { load: "108", speed: "T" },
+    "255/70R17": { load: "110", speed: "T" },
+    "265/70R17": { load: "113", speed: "T" },
+    "275/70R17": { load: "114", speed: "R" },
+    "285/70R17": { load: "121", speed: "R" },
+    "315/70R17": { load: "121", speed: "R" },
+    "265/70R18": { load: "114", speed: "T" },
+    "275/70R18": { load: "125", speed: "R" },
+    "215/75R15": { load: "106", speed: "R" },
+    "235/75R15": { load: "108", speed: "T", xl: true },
+    "225/75R16": { load: "115", speed: "R" },
+    "245/75R16": { load: "109", speed: "T" },
+    "265/75R16": { load: "114", speed: "T" },
+    "285/75R16": { load: "126", speed: "R" },
+    "315/75R16": { load: "121", speed: "R" },
+    "245/75R17": { load: "121", speed: "R" },
+    "235/80R17": { load: "120", speed: "R" },
+    "215/85R16": { load: "115", speed: "R" },
+    "235/85R16": { load: "120", speed: "R" }
+  },
+  "Crugen HP91": {
+    "315/35R20": { load: "110", speed: "Y", xl: true },
+    "295/35R21": { load: "107", speed: "Y", xl: true },
+    "275/40R20": { load: "106", speed: "Y", xl: true },
+    "235/45R19": { load: "95", speed: "W" },
+    "275/45R19": { load: "108", speed: "Y", xl: true },
+    "285/45R19": { load: "107", speed: "W" },
+    "255/45R20": { load: "105", speed: "W", xl: true },
+    "275/45R20": { load: "110", speed: "Y", xl: true },
+    "235/50R18": { load: "97", speed: "W" },
+    "255/50R19": { load: "103", speed: "W" },
+    "265/50R19": { load: "110", speed: "Y", xl: true },
+    "265/50R20": { load: "111", speed: "V", xl: true },
+    "225/55R17": { load: "97", speed: "W" },
+    "235/55R17": { load: "99", speed: "V" },
+    "225/55R18": { load: "98", speed: "V" },
+    "255/55R18": { load: "109", speed: "W", xl: true },
+    "285/55R18": { load: "113", speed: "V" },
+    "235/55R19": { load: "101", speed: "V" },
+    "255/55R19": { load: "111", speed: "V", xl: true },
+    "255/60R17": { load: "106", speed: "V" },
+    "235/60R18": { load: "107", speed: "V", xl: true },
+    "265/60R18": { load: "110", speed: "V" },
+    "285/60R18": { load: "116", speed: "V" },
+    "235/65R17": { load: "104", speed: "V" },
+    "255/65R17": { load: "110", speed: "V" },
+    "265/65R17": { load: "112", speed: "V" },
+    "285/65R17": { load: "116", speed: "H" },
+    "265/70R16": { load: "112", speed: "V" }
+  },
+  "Road Venture MT51": {
+    "195/70R15": { load: "100", speed: "R" },
+    "205/70R15": { load: "104", speed: "S" },
+    "245/70R16": { load: "117", speed: "Q" },
+    "255/70R16": { load: "115", speed: "Q" },
+    "265/70R16": { load: "117", speed: "Q" },
+    "225/70R17": { load: "110", speed: "Q" },
+    "245/70R17": { load: "119", speed: "Q" },
+    "265/70R17": { load: "121", speed: "Q" },
+    "235/75R15": { load: "104", speed: "Q" },
+    "225/75R16": { load: "115", speed: "Q" },
+    "245/75R16": { load: "120", speed: "N" },
+    "265/75R16": { load: "123", speed: "Q" },
+    "285/75R16": { load: "126", speed: "Q" },
+    "195/80R15": { load: "107", speed: "R" },
+    "32X11.5R15": { load: "113", speed: "Q" },
+    "33X12.5R15": { load: "108", speed: "Q" }
+  },
+  "Portran KC53": {
+    "195/65R16": { load: "104", speed: "T" },
+    "215/65R16": { load: "109", speed: "T" },
+    "195/70R15": { load: "104", speed: "R" },
+    "205/70R15": { load: "106", speed: "R" },
+    "215/70R15": { load: "109", speed: "T" },
+    "225/70R15": { load: "112", speed: "R" },
+    "215/70R16": { load: "108", speed: "T" },
+    "195/75R16": { load: "107", speed: "T" },
+    "215/75R16": { load: "116", speed: "R" },
+    "195/80R15": { load: "107", speed: "R" }
+  },
+  "Crugen HP71": {
+    "255/60R15": { load: "102", speed: "V" },
+    "275/60R15": { load: "107", speed: "V" },
+    "295/50R15": { load: "108", speed: "H" },
+    "215/70R16": { load: "100", speed: "H" },
+    "225/70R16": { load: "103", speed: "H" },
+    "235/60R16": { load: "100", speed: "V" },
+    "235/70R16": { load: "109", speed: "H", xl: true },
+    "255/65R16": { load: "109", speed: "V" },
+    "225/60R17": { load: "99", speed: "V" },
+    "225/65R17": { load: "102", speed: "V" },
+    "235/55R17": { load: "103", speed: "V", xl: true },
+    "235/60R17": { load: "102", speed: "V" },
+    "235/65R17": { load: "104", speed: "V" },
+    "265/65R17": { load: "112", speed: "H" },
+    "225/55R18": { load: "98", speed: "V" },
+    "225/60R18": { load: "104", speed: "V", xl: true },
+    "235/55R18": { load: "104", speed: "V", xl: true },
+    "235/60R18": { load: "107", speed: "V", xl: true },
+    "235/65R18": { load: "110", speed: "V", xl: true },
+    "245/60R18": { load: "105", speed: "V" },
+    "255/55R18": { load: "109", speed: "V", xl: true },
+    "255/60R18": { load: "108", speed: "V" },
+    "265/60R18": { load: "110", speed: "V" },
+    "225/55R19": { load: "99", speed: "V" },
+    "235/45R19": { load: "95", speed: "H" },
+    "235/50R19": { load: "99", speed: "H" },
+    "235/55R19": { load: "101", speed: "V" },
+    "245/45R19": { load: "98", speed: "H" },
+    "245/50R19": { load: "105", speed: "V", xl: true },
+    "245/55R19": { load: "103", speed: "H" },
+    "255/50R19": { load: "107", speed: "V", xl: true },
+    "255/55R19": { load: "111", speed: "V", xl: true },
+    "255/60R19": { load: "113", speed: "V", xl: true },
+    "265/50R19": { load: "110", speed: "V", xl: true },
+    "265/55R19": { load: "109", speed: "V" },
+    "275/55R19": { load: "111", speed: "H" },
+    "235/55R20": { load: "102", speed: "H" },
+    "245/45R20": { load: "103", speed: "V", xl: true },
+    "245/50R20": { load: "102", speed: "V" },
+    "255/45R20": { load: "105", speed: "V", xl: true },
+    "255/50R20": { load: "109", speed: "V", xl: true },
+    "255/55R20": { load: "110", speed: "H", xl: true },
+    "265/45R20": { load: "108", speed: "W", xl: true },
+    "265/50R20": { load: "111", speed: "V", xl: true },
+    "275/40R20": { load: "106", speed: "W", xl: true },
+    "275/45R20": { load: "110", speed: "V", xl: true },
+    "275/50R20": { load: "109", speed: "H" },
+    "285/50R20": { load: "116", speed: "V", xl: true },
+    "295/40R21": { load: "111", speed: "W", xl: true },
+    "265/35R22": { load: "102", speed: "W", xl: true },
+    "265/40R22": { load: "106", speed: "W", xl: true },
+    "285/45R22": { load: "114", speed: "H", xl: true }
+  },
+  "Crugen HT51": {
+    "215/70R15": { load: "98", speed: "T" },
+    "225/70R15": { load: "100", speed: "T" },
+    "235/75R15": { load: "109", speed: "T", xl: true },
+    "215/65R16": { load: "102", speed: "T", xl: true },
+    "215/70R16": { load: "99", speed: "T" },
+    "225/70R16": { load: "103", speed: "T" },
+    "225/75R16": { load: "104", speed: "T" },
+    "235/60R16": { load: "104", speed: "T", xl: true },
+    "235/70R16": { load: "106", speed: "T" },
+    "235/75R16": { load: "106", speed: "T" },
+    "235/85R16": { load: "120", speed: "R" },
+    "245/70R16": { load: "111", speed: "T", xl: true },
+    "245/75R16": { load: "120", speed: "Q" },
+    "255/70R16": { load: "111", speed: "T" },
+    "265/70R16": { load: "117", speed: "Q" },
+    "265/75R16": { load: "123", speed: "R" },
+    "275/70R16": { load: "114", speed: "T" },
+    "225/65R17": { load: "102", speed: "T" },
+    "235/60R17": { load: "102", speed: "T" },
+    "235/65R17": { load: "104", speed: "T" },
+    "245/65R17": { load: "111", speed: "T", xl: true },
+    "245/70R17": { load: "119", speed: "S" },
+    "255/65R17": { load: "110", speed: "T" },
+    "255/70R17": { load: "112", speed: "T" },
+    "265/65R17": { load: "112", speed: "T" },
+    "265/70R17": { load: "121", speed: "S" },
+    "235/60R18": { load: "103", speed: "H" },
+    "245/60R18": { load: "105", speed: "T" },
+    "255/60R18": { load: "112", speed: "H" },
+    "265/60R18": { load: "110", speed: "T" },
+    "265/65R18": { load: "112", speed: "T" },
+    "245/55R19": { load: "103", speed: "T" },
+    "265/50R20": { load: "111", speed: "T" },
+    "275/60R20": { load: "114", speed: "T" },
+    "275/65R20": { load: "126", speed: "R" }
+  }
+  },
+};
+
+// Look up official load/speed for a brand+pattern+size. Returns { load, speed, xl } or null.
+function lookupSpec(brand, pattern, width, aspect, rim) {
+  if (!brand || !width || !aspect || !rim) return null;
+  const bKey = Object.keys(TIRE_SPECS).find(b => b.toLowerCase() === brand.toLowerCase());
+  if (!bKey) return null;
+  const patterns = TIRE_SPECS[bKey];
+  const pKey = Object.keys(patterns).find(p => p.toLowerCase() === (pattern || "").toLowerCase());
+  if (!pKey) return null;
+  const sizeKey = `${width}/${aspect}R${rim}`;
+  return patterns[pKey][sizeKey] || null;
+}
+
+// All known patterns for a brand: catalog (from SEED) + core list, deduped (case-insensitive)
+function patternsForBrand(brand) {
+  const key = (brand || "").toLowerCase();
+  const fromCatalog = (typeof SEED_PATTERNS_BY_BRAND !== "undefined" && SEED_PATTERNS_BY_BRAND[key]) || [];
+  const fromCore = CORE_PATTERNS[key] || [];
+  const seen = new Set();
   const out = [];
-  const seen = new Set();                            // dedupe guard across pages
-  for (let page = 0; page < 50; page++) {           // safety ceiling: 50k rows
-    const batch = await sb(`${path}${sep}limit=1000&offset=${page * 1000}`);
-    (batch || []).forEach(r => {
-      const k = r.id != null ? String(r.id) : JSON.stringify(r);
-      if (!seen.has(k)) { seen.add(k); out.push(r); }
-    });
-    if (!batch || batch.length < 1000) break;
+  for (const p of [...fromCatalog, ...fromCore]) {
+    const k = p.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k); out.push(p);
   }
-  return out;
+  return out.sort();
 }
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-const PASSWORD = "b7vk392";              // master — Ali only
-const DIST_PASSWORD = "dst5926";         // distributor
-const PURCH_PASSWORD = "prc4183";        // purchaser
-// Per-truck technician logins — each truck has its own password.
-// Edit these codes as needed; only activeTrucks() are offered at login.
-let TRUCK_PASSWORDS = { T1: "t1x482", T2: "t2m945", T4: "t4k736" }; // fallback; hydrated from truck_config
-// Per-agent sales logins — the agent is locked to the session and auto-fills
-// on every new order. The shared PASSWORD still works for sales (no agent lock).
-const SALES_AGENT_PASSWORDS = {
-  Alaa: "alz7264",
-  Hussain: "hsn8317",
-  Ali: "ali2947",     // owner — unlocks profitability views
-};
-const OWNER_AGENTS = ["Ali"]; // never shown on the team's login pills
-const TRUCKS = ["T1", "T2", "T4", "T5", "T6"];
+function normalizePattern(input, brand, catalogPatterns) {
+  const raw = (input || "").trim();
+  if (!raw) return { value: "", original: raw, corrected: false, suggestions: [] };
+  const pats = (catalogPatterns && catalogPatterns.length) ? catalogPatterns : (CORE_PATTERNS[(brand || "").toLowerCase()] || []);
+  if (!pats.length) return { value: raw, original: raw, corrected: false, suggestions: [] };
+  const lc = raw.toLowerCase();
+  const rawNoSpace = lc.replace(/[\s\-]/g, "");
 
-const STATUS_FLOW = [
-  { key: "draft",      label: "Draft",       color: "#94A3B8" },
-  { key: "booked",     label: "Booked",      color: "#64748B" },
-  { key: "part_ready", label: "Part Ready",  color: "#7C3AED" },
-  { key: "assigned",   label: "Assigned",    color: "#2563EB" },
-  { key: "en_route",   label: "En Route",    color: "#D97706" },
-  { key: "on_site",    label: "On Site",     color: "#EA580C" },
-  { key: "done",       label: "Done",        color: "#15803D" },
-  { key: "invoiced",   label: "Invoiced",    color: "#0891B2" },
-  { key: "paid",       label: "Paid",        color: "#059669" },
-];
-
-const DONE_STATUSES = ["done", "invoiced", "paid"];
-// Operational stage of an order, the way the sales team thinks about it:
-// Booked (sales placed it) → Started (technician working) → Successful (done & completed)
-const jobStarted = (j) => j.truck_status === "processing" || ["en_route", "on_site"].includes(j.status);
-const jobSuccessful = (j) => DONE_STATUSES.includes(j.status) || j.truck_status === "completed";
-const jobBookedStage = (j) => j.status !== "cancelled" && j.status !== "incomplete" && !jobStarted(j) && !jobSuccessful(j);
-// "Most recent action" timestamp for history sorting: last save wins,
-// falling back to schedule/creation time for rows that predate updated_at.
-// Elapsed on-site time: Start Job → Complete Job
-const jobDurationMin = (j) => {
-  if (!j.started_at || !j.completed_at) return null;
-  const mins = Math.round((new Date(j.completed_at) - new Date(j.started_at)) / 60000);
-  return mins >= 0 ? mins : null;
-};
-const fmtDuration = (mins) => {
-  if (mins == null) return "";
-  if (mins < 60) return `${mins} min`;
-  const h = Math.floor(mins / 60), m = mins % 60;
-  return m ? `${h}h ${m}m` : `${h}h`;
-};
-const lastAction = (j) => new Date(j.updated_at || j.items_edited_at || j.cancelled_at || j.incomplete_at || j.scheduled_at || j.created_at || 0).getTime();
-// Verification timestamps: keep/assign a time when a check completes, clear when it un-completes
-const verStamp = (job, key, done) => {
-  const vt = { ...(job.ver_times || {}) };
-  if (done) { if (!vt[key]) vt[key] = new Date().toISOString(); } else vt[key] = null;
-  return vt;
-};
-
-const CHECK_LABELS = [
-  "Sales — confirmed tires/products match the car (at order)",
-  "Distributor — verified tires before loading",
-  "Track team — verified parts match the order details",
-  "Track team — verified parts match the customer's car",
-];
-// Derive the 4 verification checks from real actions (read-only audit trail).
-function deriveChecks(job) {
-  const items = (job.items || []);
-  const itemCk = job.item_checks || {};
-  const ordCk = job.tech_checks_order || {};
-  const carCk = { ...(job.tech_checks || {}), ...(job.tech_checks_car || {}) };
-  // Each checkpoint judges exactly the items its screen shows:
-  // distributor collects physical goods; technicians verify everything on their checklist.
-  // Labor-only lines belong to neither — a checkpoint with nothing to check passes.
-  const collectable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
-  const verifiable  = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
-  // #1 sales confirmed match at order submission (nothing to match on labor-only orders → auto-pass)
-  const c1 = !!job.sales_match_confirmed || verifiable.length === 0;
-  // #2 distributor confirmed every collectable item matches (before loading)
-  const c2 = collectable.length === 0 ? true : collectable.every(it => itemCk[it.id]);
-  // #3 technicians verified every part matches the ORDER details
-  const c3 = !!job.tech_arrival_match || (verifiable.length === 0 ? true : verifiable.every(it => ordCk[it.id]));
-  // #4 technicians verified every part matches the CUSTOMER'S CAR (office-approved mismatch counts, flagged as override)
-  const mm = job.tech_mismatch || {};
-  const c4 = verifiable.length === 0 ? true : verifiable.every(it => carCk[it.id] || (mm[it.id] && (mm[it.id].resolution === "approved" || mm[it.id].resolution === "dont_fit")));
-  return [c1, c2, c3, c4];
-}
-
-const SERVICE_TYPES = [
-  "Tire Change & Balancing","Oil & Filter","Battery Change",
-  "Brake Change","Programming","Mechanical Check","Wheel Repair","Rotation","Other",
-];
-
-// ─── BNCHR+ Service Catalog (official price table — single source of truth) ────
-// kind "tire"  → uses tire formula (catalog search, qty 4 default, labor from tire table)
-// kind "other" → uses other-services formula (description, qty 1 default, labor from variant)
-// Each service defines its variant axes. Labor auto-fills from the selected variant.
-const SERVICE_CATALOG = {
-  "Tire Change & Balancing": {
-    kind: "tire",
-    variants: { mount: ["Normal", "Center-lock"] }, // labor from LABOR table by qty
-  },
-  "Tire Patch": {
-    kind: "other",
-    flatLabor: 10, // 10 KD
-  },
-  "Spare Tire Change": {
-    kind: "other",
-    flatLabor: 10, // 10 KD
-  },
-  "Valve Sensor Replacement": {
-    kind: "other",
-    flatLabor: 20, // 20 KD
-  },
-  "Tire Rotation": {
-    kind: "other",
-    flatLabor: 20, // 20 KD
-  },
-  "Oil & Filter": {
-    kind: "other",
-    variants: { tier: ["Normal", "Premium"] },
-    labor: { Normal: 10, Premium: 15 },
-  },
-  "Battery": {
-    kind: "other",
-    variants: { tier: ["Normal", "Complex"] },
-    labor: { Normal: 10, Complex: 15 },
-  },
-  "Battery Check": {
-    kind: "other",
-    flatLabor: 10, // 10 KD
-  },
-  "Brake Pads": {
-    kind: "other",
-    variants: { tier: ["Normal", "Premium"], sides: ["One side", "Two sides"] },
-    labor: { "Normal|One side": 15, "Normal|Two sides": 25, "Premium|One side": 20, "Premium|Two sides": 35 },
-  },
-  "Brake Disc": {
-    kind: "other",
-    variants: { tier: ["Normal", "Premium"], sides: ["One side", "Two sides"] },
-    labor: { "Normal|One side": 15, "Normal|Two sides": 25, "Premium|One side": 20, "Premium|Two sides": 35 },
-  },
-  "Disc Skimming": {
-    kind: "other",
-    variants: { sides: ["One side", "Two sides"] },
-    labor: { "One side": 10, "Two sides": 20 }, // 10 KD per side
-  },
-  "Major Service": {
-    kind: "other",
-    variants: { tier: ["Economy", "Normal", "Premium", "Top"] },
-    labor: { Economy: 40, Normal: 50, Premium: 60, Top: 80 },
-  },
-  "AC Gas Refill": {
-    kind: "other",
-    flatLabor: 20, // 20 KD
-  },
-  "Car Computer Check": {
-    kind: "other",
-    flatLabor: 20, // 20 KD
-  },
-  "Distance Charges": {
-    kind: "other",
-    flatLabor: 5, // 5 KD
-  },
-  "Part Replacement": {
-    kind: "other", // labor entered manually per order
-  },
-  "Tire Check": {
-    kind: "other",
-    flatLabor: 0, // inspection — no default labor charge
-  },
-  "Wheel Repair": {
-    kind: "other", // rim taken, repaired, returned fitted + balanced; labor entered per order
-  },
-  "Mechanical Check": {
-    kind: "other",
-    flatLabor: 0, // inspection — no default labor charge
-  },
-};
-const SERVICE_NAMES = Object.keys(SERVICE_CATALOG);
-
-// ─── Labor-line detection ──────────────────────────────────────────────────────
-// Pure labor/service lines are never purchased from a supplier, so they must never
-// ask for a supplier or cost (Costs page) nor count as "missing costs" (Reports).
-// Catches every shape: labor_only flags, labor/service/other kinds, SV service SKUs,
-// and legacy imported items stored as kind "part" but named after a labor service.
-const LABOR_LINE_NAMES = new Set([
-  ...SERVICE_NAMES, ...SERVICE_TYPES,
-  "Tire Patch", "Patch", "Puncture Repair", "Tire Check", "Tire Rotation", "Rotation",
-  "Tire Change", "Tire Change & Balancing", "Balancing", "Wheel Balancing",
-  "Wheel Alignment", "Alignment", "Disc Skimming", "AC Gas Refill",
-  "Car Computer Check", "Computer Check", "Mechanical Check", "Programming",
-  "Wheel Repair", "Inspection", "6 Points Check", "Labor", "Labour", "Service Charge", "Delivery",
-  "Spare Tire Change", "Distance Charges", "Distance Charge", "Valve Sensor Replacement", "Valve Change", "Valve Check", "Battery Check",
-].map(s => s.toLowerCase()));
-function isLaborLine(it) {
-  if (it.labor_only || ["labor", "service", "other"].includes(it.kind)) return true;
-  if (/^SV/i.test(String(it.sku || ""))) return true; // service SKUs are labor
-  const nm = String(it.name || "").toLowerCase().replace(/\(labor only\)/g, "").trim();
-  return LABOR_LINE_NAMES.has(nm) || /\blabou?r\b/.test(nm);
-}
-
-// Tire mount labor table (by qty; standard vs center-lock)
-const LABOR = {
-  standard: { 1: 15, 2: 15, 3: 20, 4: 20, 5: 25 },
-  centerlock: { 1: 25, 2: 25, 3: 40, 4: 40, 5: 40 },
-};
-function laborFor(qty, centerlock) {
-  const table = centerlock ? LABOR.centerlock : LABOR.standard;
-  const q = Number(qty) || 0;
-  return table[q] ?? table[4];
-}
-
-// Resolve labor for a service given its variant + qty (for tires).
-function catalogLabor(serviceName, variant, qty) {
-  const svc = SERVICE_CATALOG[serviceName];
-  if (!svc) return 0;
-  // Tire formula: labor from qty + mount type (Normal/Center-lock)
-  if (svc.kind === "tire") {
-    const centerlock = (variant && variant.mount) === "Center-lock";
-    return laborFor(qty != null ? qty : 4, centerlock);
+  // 1) exact case-insensitive match → snap to catalog's spelling
+  const exact = pats.find(p => p.toLowerCase() === lc);
+  if (exact) {
+    const fam = pats.filter(p => p !== exact && p.toLowerCase().startsWith(exact.toLowerCase() + " "));
+    return { value: exact, original: raw, corrected: false, suggestions: fam.slice(0, 6) };
   }
-  if (svc.flatLabor != null) return svc.flatLabor;
-  if (svc.labor) {
-    const axes = Object.keys(svc.variants || {});
-    const key = axes.map(a => variant[a]).filter(Boolean).join("|");
-    if (svc.labor[key] != null) return svc.labor[key];
+  // 2) space-insensitive exact (e.g. "pzero" === "P ZERO" without spaces)
+  const noSpaceExact = pats.find(p => p.toLowerCase().replace(/[\s\-]/g, "") === rawNoSpace);
+  if (noSpaceExact) {
+    const fam = pats.filter(p => p !== noSpaceExact && p.toLowerCase().startsWith(noSpaceExact.toLowerCase() + " "));
+    return { value: noSpaceExact, original: raw, corrected: true, suggestions: fam.slice(0, 6) };
   }
-  return 0;
-}
-
-const LEAD_SOURCES = ["WhatsApp", "Signal", "Shopify", "Instagram", "Other"];
-// Active sales agents (edit here to add/remove)
-const SALES_AGENTS = ["Alaa", "Hussain", "Ali"];
-// Suppliers for "other services" parts (editable; agent can also type a custom one)
-const OTHER_SUPPLIERS = [
-  "Alamdar", "Hitish", "Korean Store", "Ahlia", "Porsche Dealer", "Al Babtain Group",
-  "Istiqlal", "Motul", "Mercedes Benz Dealer", "Super Shine", "BMW Dealer", "BNCHR+ Inventory",
-  "Grip Autos", "Safeena", "Customer",
-];
-const ROLES = [
-  { key: "sales", label: "Sales" },
-  { key: "purchaser", label: "Purchaser" },
-  { key: "technician", label: "Technician" },
-  { key: "distributor", label: "Distributor" },
-];
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-const today = () => new Date().toISOString().split("T")[0];
-// Revenue is recognized on the SALE DATE (day the order was placed).
-// Falls back to the scheduled/created day for pre-sale_date historical orders.
-const saleDateOf = (j) => {
-  if (j.sale_date) return j.sale_date;
-  const s = j.scheduled_at || j.created_at;
-  if (!s) return "";
-  const d = new Date(s);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" }) : "—";
-const fmtTime = (d) => d ? new Date(d).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "—";
-const fmtDateTime = (d) => d ? `${fmtDate(d)} ${fmtTime(d)}` : "—";
-// Display vocabulary is deliberately simple — Booked / Started / Successful —
-// while the internal status keys keep driving the workflow underneath
-// (part_ready for the distributor, invoiced/paid for accounting, etc.).
-const STATUS_DISPLAY = {
-  draft:      { label: "Booked",     color: "#64748B" },
-  booked:     { label: "Booked",     color: "#64748B" },
-  part_ready: { label: "Booked",     color: "#64748B" },
-  assigned:   { label: "Booked",     color: "#64748B" },
-  en_route:   { label: "Started",    color: "#EA580C" },
-  on_site:    { label: "Started",    color: "#EA580C" },
-  done:       { label: "Successful", color: "#15803D" },
-  invoiced:   { label: "Successful", color: "#15803D" },
-  paid:       { label: "Successful", color: "#15803D" },
-};
-const statusMeta = (key) => key === "cancelled"
-  ? { key: "cancelled", label: "Cancelled", color: "#DC2626" }
-  : key === "incomplete"
-  ? { key: "incomplete", label: "Incomplete", color: "#B45309" }
-  : { key: key || "booked", ...(STATUS_DISPLAY[key] || STATUS_DISPLAY.booked) };
-const nextStatus = (key) => {
-  const idx = STATUS_FLOW.findIndex((s) => s.key === key);
-  return idx < STATUS_FLOW.length - 1 ? STATUS_FLOW[idx + 1] : null;
-};
-
-// ─── Tire Catalog (READ-ONLY from shared tires table) ─────────────────────────
-const MOCK_TIRES = [
-  { id: "mt-1", brand: "Michelin", pattern: "Pilot Sport 4", width: 215, aspect: 60, rim: 16, year: "2025", price: 38, cost: 28, supplier: "Kuwait Automotive", country: "Japan", in_stock: true },
-  { id: "mt-2", brand: "Pirelli", pattern: "P Zero", width: 295, aspect: 40, rim: 21, year: "2025", price: 95, cost: 70, supplier: "Behbehani (Pirelli)", country: "Germany", in_stock: true },
-  { id: "mt-3", brand: "Michelin", pattern: "Primacy", width: 275, aspect: 55, rim: 20, year: "2024", price: 55, cost: 42, supplier: "Kuwait Automotive", country: "USA", in_stock: false },
-  { id: "mt-4", brand: "RoadX", pattern: "RXMotion", width: 225, aspect: 55, rim: 18, year: "2026", price: 32, cost: 20, supplier: "Abbas Ghuloom", country: "China", in_stock: true },
-];
-const tireSize = (t) => {
-  // Prefer an explicit size string if the catalog provides one (handles flotation
-  // sizes like "33x12.50R17" that don't fit the metric width/aspect/rim model).
-  if (t.size && String(t.size).trim()) return String(t.size).trim();
-  // Flotation stored numerically (diameter present, no aspect): "33x12.50R17"
-  if (t.diameter && t.section && t.rim) return `${t.diameter}x${t.section}R${t.rim}`;
-  // Standard metric fallback
-  return `${t.width}/${t.aspect}R${t.rim}`;
-};
-// Full tire spec string from an item/record: "275/35R21 103Y · 2024 · Germany"
-const liSr = (li, sr) => (li || sr) ? ` ${li || ""}${sr || ""}` : "";
-const itemSpec = (it) => [`${it.size || ""}${liSr(it.load_index, it.speed_rating)}`.trim(), it.oem, it.year, it.country, it.tire_note].filter(Boolean).join(" · ");
-const uid = () => `it-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-const itemsTotal = (items) => (items || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
-
-// shared inline style objects (defined early — const is not hoisted)
-const miniLabel = { fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", display: "block", marginBottom: 5 };
-const slotCellBase = { border: "1px solid var(--border)", padding: "8px 6px", textAlign: "center" };
-
-// ─── Truck Day View: single-column timeline for ONE truck on a date ───────────
-// Pick truck + date → see that truck's working hours, booked slots filled,
-// free slots tappable. A job spans `duration` consecutive hours from the start.
-function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, excludeId, onJobClick, overtime }) {
-  if (!truck || !TRUCK_CONFIG[truck]) {
-    return <div style={{ fontSize: 13, color: "var(--muted)", padding: "12px 0" }}>Select a truck to see its schedule.</div>;
+  // 3) prefix family (typed a base that starts several patterns, e.g. "Scorpion")
+  const prefixFam = pats.filter(p => p.toLowerCase().startsWith(lc + " "));
+  if (prefixFam.length > 0) {
+    const titledBase = raw.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    return { value: titledBase, original: raw, corrected: titledBase !== raw, suggestions: prefixFam.slice(0, 6) };
   }
-  const hours = overtime ? truckHoursWithOT(truck) : truckHours(truck);
 
-  const canFit = (hour) => {
-    for (let h = hour; h < hour + duration; h++) {
-      if (!hours.includes(h)) return false;
-      if (slotTaken(jobs, truck, dateStr, h, excludeId)) return false;
+  // 4) Score every pattern by the BEST match among: whole, space-stripped whole, and each word.
+  //    This catches typed tokens that appear *inside* a longer pattern (e.g. "at52" in "Road Venture AT52").
+  let best = null, bestScore = 99, bestExactWord = false;
+  for (const p of pats) {
+    const pl = p.toLowerCase();
+    const candidates = [pl, pl.replace(/[\s\-]/g, "")];
+    let wordHit = false;
+    for (const w of pl.split(/[\s\-\/]+/)) {
+      candidates.push(w);
+      if (w === lc || w.replace(/[\s\-]/g, "") === rawNoSpace) wordHit = true;
     }
-    return true;
-  };
-  const inSelection = (hour) => selectedHour != null && hour >= selectedHour && hour < selectedHour + duration;
-
-  const jobAt = (hour) => jobs.find(j => {
-    if (j.id === excludeId) return false;
-    if (j.status === "cancelled") return false; // a cancelled order must never shadow the live booking in its old slot
-    if (j.assigned_truck !== truck) return false;
-    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
-    if (d !== dateStr) return false;
-    return jobHours(j).includes(hour);
-  });
-
-  const c = TRUCK_CONFIG[truck];
-  let dividerDrawn = { early: false, late: false };
-
-  return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ fontWeight: 700, fontFamily: "var(--font-head)", display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(truck).solid, display: "inline-block" }} />
-          {truck} <span style={{ fontSize: 12, fontWeight: 500, color: "var(--muted)" }}>· {hourLabel(TRUCK_CONFIG[truck].start)}–{hourLabel(TRUCK_CONFIG[truck].end)}</span>
-        </div>
-        <span style={{ fontSize: 11, color: "var(--muted)" }}>Selecting {duration}h</span>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        {hours.map(hour => {
-          const ot = isOTHour(truck, hour);
-          // Divider labels before the first early-OT row and before the first late-OT row
-          let dividerLabel = null;
-          if (ot && hour < c.start && !dividerDrawn.early) { dividerDrawn.early = true; dividerLabel = "⏱ Overtime — early"; }
-          if (ot && hour >= c.end && !dividerDrawn.late) { dividerDrawn.late = true; dividerLabel = "⏱ Overtime — late"; }
-
-          const taken = slotTaken(jobs, truck, dateStr, hour, excludeId);
-          const sel = inSelection(hour);
-          const fits = canFit(hour);
-          const occ = taken ? jobAt(hour) : null;
-          const tc = truckColor(truck);
-          let bg = "#fff", color = "var(--text)", cursor = "pointer", border = "1px solid var(--border)", borderLeft = null, shadow = "none";
-          let right = "Free", rightColor = "var(--muted)";
-          if (taken) { bg = tc.bg; color = tc.text; cursor = onJobClick ? "pointer" : "not-allowed"; border = "1px solid transparent"; borderLeft = `3px solid ${tc.solid}`; right = occ ? slotLabel(occ, " · ") : "Booked"; rightColor = tc.text; }
-          else if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; right = "Selected ✓"; rightColor = "rgba(255,255,255,.9)"; shadow = "0 2px 8px rgba(0,0,0,.15)"; }
-          else if (!fits) { bg = ot ? "#FFFBEB" : "#FAFAF8"; color = "#B49A6A"; cursor = "not-allowed"; border = "1px dashed #E8D9B5"; right = "—"; rightColor = "#C9B687"; }
-          else if (ot) { bg = "#FFFBEB"; color = "#92400E"; border = "1px dashed #F59E0B"; right = "Free"; rightColor = "#B45309"; }
-          return (
-            <div key={hour}>
-              {dividerLabel && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 0 4px" }}>
-                  <div style={{ height: 1, flex: 1, background: "#FDE68A" }} />
-                  <span style={{ fontSize: 10, fontWeight: 700, color: "#B45309", textTransform: "uppercase", letterSpacing: ".5px" }}>{dividerLabel}</span>
-                  <div style={{ height: 1, flex: 1, background: "#FDE68A" }} />
-                </div>
-              )}
-              <div
-                onClick={() => { if (taken) { if (occ && onJobClick) onJobClick(occ); } else if (fits) onPick(truck, hour); }}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 14px", borderRadius: 10, background: bg, color, cursor, border, borderLeft, boxShadow: shadow, fontSize: 13, fontWeight: sel ? 700 : 500 }}>
-                <span style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
-                  {hourLabel(hour)}
-                  {ot && <span style={{ fontSize: 8, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: ".3px" }}>OT</span>}
-                </span>
-                <span style={{ fontSize: 12, color: rightColor, fontWeight: taken ? 600 : 500 }}>{right}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
-        Tap a green slot to start a {duration}h job. {overtime ? "Amber = overtime hours (outside normal). " : ""}Red = booked, faded = not enough consecutive free hours.
-      </div>
-    </div>
-  );
-}
-
-// ─── Truck selector pills ─────────────────────────────────────────────────────
-function TruckPills({ value, onChange }) {
-  // pick black/white text for best contrast on a given hex bg
-  const readableOn = (hex) => {
-    const h = hex.replace("#", "");
-    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
-    const L = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return L > 0.6 ? "#1A1A1A" : "#FFFFFF";
-  };
-  return (
-    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-      {activeTrucks().map(t => {
-        const c = truckColor(t);
-        const active = value === t;
-        return (
-          <button key={t} type="button" onClick={() => onChange(t)}
-            className="btn btn-sm"
-            style={{
-              minWidth: 96,
-              background: active ? c.solid : c.bg,
-              color: active ? readableOn(c.solid) : c.text,
-              border: `2px solid ${c.solid}`,
-              boxShadow: active ? "0 2px 6px rgba(0,0,0,.18)" : "none",
-              transform: active ? "translateY(-1px)" : "none",
-              fontWeight: active ? 700 : 600,
-            }}>
-            {active ? "✓ " : ""}{t} <span style={{ fontSize: 10, opacity: active ? .9 : .85, marginLeft: 4 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00","")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00","")}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── Reschedule Modal ─────────────────────────────────────────────────────────
-function RescheduleModal({ job, jobs, onClose, onSaved }) {
-  const [truck, setTruck] = useState(job.assigned_truck || activeTrucks()[0]);
-  const [dateStr, setDateStr] = useState(job.scheduled_date || (job.scheduled_at ? new Date(job.scheduled_at).toISOString().split("T")[0] : today()));
-  const [duration, setDuration] = useState(Number(job.duration) || 1);
-  const [startHour, setStartHour] = useState(null);
-  const [overtime, setOvertime] = useState(!!job.is_overtime);
-  const [saving, setSaving] = useState(false);
-
-  const midJob = job.truck_status === "processing" || job.truck_status === "completed";
-
-  const pick = (tk, hour) => { setTruck(tk); setStartHour(hour); };
-
-  const save = async () => {
-    if (startHour == null) return;
-    setSaving(true);
-    const scheduledAt = new Date(`${dateStr}T${String(startHour).padStart(2, "0")}:00:00`);
-    const patch = {
-      assigned_truck: truck, start_hour: startHour, duration,
-      scheduled_date: dateStr, scheduled_at: scheduledAt.toISOString(),
-      is_overtime: isOTHour(truck, startHour),
-    };
-    await updateJob(job.id, patch);
-    onSaved({ ...job, ...patch });
-    setSaving(false);
-    onClose();
-  };
-
-  return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 460 }}>
-        <div className="modal-header">
-          <h3>Reschedule — {job.customer_name}</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
-        <div className="modal-body">
-          {midJob && (
-            <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#92400E", marginBottom: 12 }}>
-              ⚠ This job is already <strong>{job.truck_status}</strong>. Rescheduling now is unusual — proceed only if you're sure.
-            </div>
-          )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div>
-              <label style={miniLabel}>Truck</label>
-              <TruckPills value={truck} onChange={(t) => { setTruck(t); setStartHour(null); }} />
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <div style={{ flex: 1 }}>
-                <label style={miniLabel}>Date</label>
-                <input type="date" className="filter-input" style={{ width: "100%" }} value={dateStr} onChange={e => { setDateStr(e.target.value); setStartHour(null); }} />
-              </div>
-              <div style={{ width: 120 }}>
-                <label style={miniLabel}>Duration</label>
-                <select className="filter-input" style={{ width: "100%" }} value={duration} onChange={e => { setDuration(Number(e.target.value)); setStartHour(null); }}>
-                  {[1, 2, 3].map(d => <option key={d} value={d}>{d} hour{d > 1 ? "s" : ""}</option>)}
-                </select>
-              </div>
-            </div>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: overtime ? "#B45309" : "var(--text)" }}>
-              <input type="checkbox" checked={overtime} onChange={e => { setOvertime(e.target.checked); setStartHour(null); }} />
-              ⏱ Overtime — unlock early/late slots
-            </label>
-            <TruckDayView jobs={jobs} truck={truck} dateStr={dateStr} duration={duration} selectedHour={startHour} onPick={pick} excludeId={job.id} overtime={overtime} />
-            {startHour != null && (
-              <div style={{ fontSize: 13, fontWeight: 600, color: isOTHour(truck, startHour) ? "#B45309" : "var(--success)" }}>
-                ✓ New: {truck} · {hourLabel(startHour)}–{hourLabel(startHour + duration)} on {dateStr}
-                {isOTHour(truck, startHour) && <span style={{ fontSize: 11, background: "#F59E0B", color: "#fff", padding: "1px 6px", borderRadius: 4, marginLeft: 6 }}>OVERTIME</span>}
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={startHour == null || saving}>{saving ? "Saving…" : "Save New Time"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-async function fetchQuotes(mobile) {
-  const raw = (mobile || "").trim();
-  if (raw.length < 4) return [];
-  const digits = raw.replace(/\D/g, "");
-  // Real mobiles match on their last 8 digits; alphanumeric entries
-  // (test data, odd formats) fall back to a raw case-insensitive contains.
-  const pattern = digits.length >= 6 ? `*${digits.slice(-8)}*` : `*${raw}*`;
-  try {
-    const d = await sb(`/quotes?customer_mobile=ilike.${encodeURIComponent(pattern)}&order=created_at.desc&limit=10&select=*`);
-    return d || [];
-  } catch { return []; }
-}
-// ─── Quotes dashboard helpers (shared quotes table from the Tire System) ──────
-const last8 = (m) => (m || "").replace(/\D/g, "").slice(-8);
-// Per-customer conversion: several quotes to one customer count once.
-// A customer converts if ANY of their quotes succeeded.
-const customerConv = (list, isSuccess) => {
-  const by = {};
-  list.forEach(q => {
-    const k = last8(q.customer_mobile) || q.id;
-    by[k] = by[k] || false;
-    if (isSuccess(q)) by[k] = true;
-  });
-  const keys = Object.keys(by);
-  const won = keys.filter(k => by[k]).length;
-  return { customers: keys.length, won, pct: keys.length ? Math.round((won / keys.length) * 100) : 0 };
-};
-const quoteAge = (d) => {
-  const h = (Date.now() - new Date(d).getTime()) / 36e5;
-  if (h < 1) return "just now";
-  if (h < 24) return `${Math.floor(h)}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-};
-// Estimated tires-only value of a quote (cheapest option × qty; staggered = F+R pairs)
-function quoteValue(q) {
-  if (q.kind === "service") {
-    const labor = Number(q.labor) || 0, disc = Number(q.discount) || 0;
-    if (Array.isArray(q.services) && q.services.length) {
-      const batteryOnly = q.services.length === 1 && q.services[0].type === "Battery" && (q.services[0].lines || []).length > 1;
-      if (batteryOnly) {
-        const b = q.services[0];
-        return Math.max(...b.lines.map(l => (Number(l.qty) || 1) * (Number(l.unit_price) || 0))) + (Number(b.labor) || 0) - disc;
-      }
-      return q.services.reduce((s, b) =>
-        s + (b.lines || []).reduce((x, l) => x + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0) + (Number(b.labor) || 0), 0) - disc;
+    let d = 99;
+    for (const c of candidates) {
+      d = Math.min(d, levenshtein(rawNoSpace, c.replace(/[\s\-]/g, "")), levenshtein(lc, c));
     }
-    if (q.service_type === "Battery" && (q.lines || []).length > 1) {
-      // batteries are ALTERNATIVES: pipeline value = the best single option (battery + labor)
-      return Math.max(...q.lines.map(l => (Number(l.qty) || 1) * (Number(l.unit_price) || 0))) + labor - disc;
-    }
-    const prods = (q.lines || []).reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0);
-    return prods + labor - disc;
+    // prefer an exact word hit strongly
+    const score = wordHit ? -1 : d;
+    if (score < bestScore) { bestScore = score; best = p; bestExactWord = wordHit; }
   }
-  if (q.staggered) {
-    const opts = staggeredOptions(q);
-    const cheapest = opts.reduce((a, b) => (b.price < a.price ? b : a), opts[0] || { price: 0 });
-    const f = cheapest.front;
-    const r = cheapest.rear;
-    return (Number(f?.price) || 0) * 2 + (Number(r?.price) || 0) * 2;
-  }
-  const prices = (q.lines || []).map(l => Number(l.price) || 0).filter(p => p > 0);
-  return (prices.length ? Math.min(...prices) : 0) * (Number(q.qty) || 4);
-}
-// Find the order that converted a quote: same mobile, created after the quote
-// (1h grace). Strongest match = an order containing one of the quoted tires.
-function quoteBookingMatch(quote, jobs) {
-  const qm = last8(quote.customer_mobile);
-  if (!qm) return null;
-  const after = new Date(quote.created_at).getTime() - 3600000;
-  const qTireIds = new Set((quote.lines || []).map(l => String(l.tire_id)).filter(Boolean));
-  const candidates = jobs.filter(j =>
-    j.status !== "cancelled" &&
-    last8(j.customer_mobile) === qm &&
-    new Date(j.created_at || j.scheduled_at || 0).getTime() >= after
-  );
-  const strong = candidates.find(j => (j.items || []).some(it => it.tire_id && qTireIds.has(String(it.tire_id))));
-  return strong || candidates[0] || null;
-}
-// Pair a staggered quote's lines into options: fronts[i] + rears[i].
-// (Tire System stores fronts then rears in option order; no explicit pairing field.)
-function staggeredOptions(q) {
-  const fronts = (q.lines || []).filter(l => l.position === "front");
-  const rears = (q.lines || []).filter(l => l.position === "rear");
-  const n = Math.max(fronts.length, rears.length, 1);
-  const opts = [];
-  for (let i = 0; i < n; i++) {
-    const f = fronts[i] || fronts[0], r = rears[i] || rears[0];
-    opts.push({ front: f, rear: r, price: (Number(f?.price) || 0) + (Number(r?.price) || 0) });
-  }
-  return opts;
-}
-// Build an order service block from a quote line (line optional; staggered uses F+R)
-function quoteToService(q, line) {
-  // Service quotes (from the Tire System's Service Quote page).
-  // Multi-service quotes (q.services array) return an ARRAY of service blocks.
-  if (q.kind === "service") {
-    const buildBlock = (type, variant, blines, labor, discount) => {
-      let svcType = type && SERVICE_CATALOG[type] ? type : null;
-      if (!svcType) {
-        const catCount = {};
-        blines.forEach(l => { catCount[l.category] = (catCount[l.category] || 0) + 1; });
-        const domCat = Object.keys(catCount).sort((a, b) => catCount[b] - catCount[a])[0] || "other";
-        const brakeType = String((blines.find(l => l.category === "brake") || {}).name || "").toLowerCase();
-        const typeMap = {
-          battery: "Battery",
-          engine_oil: "Oil & Filter", filter: "Oil & Filter",
-          brake: brakeType.includes("disc") ? "Brake Disc" : "Brake Pads",
-          spark_plug: "Spark Plugs",
-          fluid: "Part Replacement", other: "Part Replacement",
-        };
-        svcType = SERVICE_CATALOG[typeMap[domCat]] ? typeMap[domCat] : "Part Replacement";
-      }
-      const svc = newService(svcType);
-      if (variant) Object.entries(variant).forEach(([axis, val]) => {
-        // quote sides use Front/Rear/Front & Rear; the order form's brake variants use One/Two sides
-        let v = val;
-        if (axis === "sides" && (svcType === "Brake Pads" || svcType === "Brake Disc")) {
-          v = val === "Front & Rear" ? "Two sides" : (val === "Front" || val === "Rear") ? "One side" : val;
-        }
-        if ((SERVICE_CATALOG[svcType]?.variants || {})[axis]?.includes(v)) svc.variant[axis] = v;
-      });
-      svc.parts = blines.map(l => ({ id: uid(), name: l.name || l.sku || "", supplier: "", qty: Number(l.qty) || 1, price: Number(l.unit_price) || 0, cost: 0, sku: l.sku || "", product_id: l.product_id || null }));
-      svc.labor = Number(labor) || catalogLabor(svcType, svc.variant, 1);
-      if (Number(discount) > 0) svc.price_disc = { type: "amt", value: Number(discount) };
-      return svc;
-    };
-    if (Array.isArray(q.services) && q.services.length) {
-      const batteryOnly = q.services.length === 1 && q.services[0].type === "Battery";
-      return q.services.map((b, i) => buildBlock(
-        b.type, b.variant,
-        (batteryOnly && line) ? [line] : (b.lines || []), // chosen battery option carries only that battery
-        b.labor,
-        i === 0 ? q.discount : 0, // quote-level discount applied once
-      ));
-    }
-    // legacy flat single-service quotes
-    const lines = (q.service_type === "Battery" && line) ? [line] : (q.lines || []);
-    return buildBlock(q.service_type, q.variant, lines, q.labor, q.discount);
-  }
-  const svc = newService("Tire Change & Balancing");
-  const fillFront = (ln) => ln && Object.assign(svc, { tire_id: ln.tire_id, brand: ln.brand, pattern: ln.pattern, size: ln.size, year: ln.year || "", unit_price: Number(ln.price) || 0 });
-  if (q.staggered) {
-    // line may be a chosen {front, rear} option; else default to the first pair
-    const opt = (line && line.front) ? line : staggeredOptions(q)[0];
-    const front = opt.front, rear = opt.rear;
-    svc.staggered = true; fillFront(front);
-    svc.qty = 2; svc.rear_qty = 2;
-    if (rear) Object.assign(svc, { rear_tire_id: rear.tire_id, rear_brand: rear.brand, rear_pattern: rear.pattern, rear_size: rear.size, rear_year: rear.year || "", rear_unit_price: Number(rear.price) || 0 });
-    svc.labor = catalogLabor(svc.service_type, svc.variant, 4);
-  } else {
-    fillFront(line || (q.lines || [])[0]);
-    svc.qty = Number(q.qty) || 4;
-    svc.labor = catalogLabor(svc.service_type, svc.variant, svc.qty);
-  }
-  return svc;
-}
-const MOCK_QUOTES = [
-  { id: "mq-1", customer_mobile: "99001234", agent: "Hussain", qty: 4, staggered: false, cash_pct: 0,
-    created_at: new Date(Date.now() - 3600000 * 5).toISOString(),
-    lines: [
-      { tire_id: "mt-1", brand: "Michelin", pattern: "Pilot Sport 4", size: "215/60R16", year: "2025", price: 38 },
-      { tire_id: "mt-4", brand: "RoadX", pattern: "RXMotion", size: "225/55R18", year: "2026", price: 32 },
-    ] },
-  { id: "mq-2", customer_mobile: "55112233", agent: "Alaa", qty: 4, staggered: false, cash_pct: 2,
-    created_at: new Date(Date.now() - 3600000 * 30).toISOString(),
-    lines: [ { tire_id: "mt-3", brand: "Michelin", pattern: "Primacy", size: "275/55R20", year: "2024", price: 55 } ] },
-  { id: "mq-3", customer_mobile: "51234567", agent: "Alaa", qty: 2, staggered: true, cash_pct: 0,
-    created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-    lines: [
-      { position: "front", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "295/40R21", year: "2025", price: 95 },
-      { position: "rear", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "305/35R21", year: "2025", price: 98 },
-    ] },
-  { id: "mq-4", customer_mobile: "60998877", agent: "Hussain", qty: 4, staggered: false, cash_pct: 0,
-    status: "lost", lost_reason: "RR1-High Price", lost_at: new Date(Date.now() - 3600000 * 20).toISOString(),
-    created_at: new Date(Date.now() - 3600000 * 60).toISOString(),
-    lines: [ { tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "295/40R21", year: "2025", price: 95 } ] },
-];
-// ─── Quote lifecycle: status, follow-up cadence, lost reasons ─────────────────
-// Lost reasons — RR labels mirror Trengo; used for the "why we lose" breakdown.
-const LOST_REASONS = [
-  "RR1-High Price",
-  "RR2-Time",
-  "RR3-Brand NA or Old",
-  "RR4-Postpone - Inquiry only",
-  "Bought elsewhere",
-  "No answer",
-  "Changed mind",
-];
-async function updateQuote(id, patch) {
-  try { await sb(`/quotes?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
-}
-// Effective status of a quote. Stamped status wins; legacy quotes without a
-// stamp fall back to the derived order match (same mobile + after quote).
-function quoteStatus(q, jobs) {
-  const st = q.status || "open";
-  if (st === "success" || st === "booked") {
-    const job = (jobs || []).find(j => j.id === q.booked_job_id) || quoteBookingMatch(q, jobs || []);
-    return { status: "success", job };
-  }
-  if (st === "lost") return { status: "lost", job: null };
-  const job = quoteBookingMatch(q, jobs || []);
-  return job ? { status: "success", job } : { status: "open", job: null };
-}
-// Follow-up cadence: 24h after quote → 3d after 1st contact → 7d after 2nd/3rd.
-// Manual snooze (followup_at) overrides the ladder. suggestLost after 3 touches.
-const FOLLOWUP_STEPS_H = [24, 72, 168];
-function followupState(q, status) {
-  if ((status || q.status || "open") !== "open") return { due: false, suggestLost: false, snoozed: false };
-  const n = Number(q.followup_count) || 0;
-  if (q.followup_at) {
-    const due = Date.now() >= new Date(q.followup_at).getTime();
-    return { due, suggestLost: due && n >= 3, snoozed: !due };
-  }
-  const anchor = q.last_contact_at || q.created_at;
-  const stepH = FOLLOWUP_STEPS_H[Math.min(n, FOLLOWUP_STEPS_H.length - 1)];
-  const due = Date.now() >= new Date(anchor).getTime() + stepH * 3600000;
-  return { due, suggestLost: due && n >= 3, snoozed: false };
-}
-async function fetchAllQuotes() {
-  try { const d = await sbAll("/quotes?select=*&order=created_at.desc,id.asc"); return d || []; }
-  catch { return MOCK_QUOTES; }
-}
-async function fetchTireById(id) {
-  const SELECTS = [
-    // matches the real Tire System table exactly (verified 2026-07-06)
-    "id,brand,pattern,type,width,aspect,structure,rim,load_index,speed_rating,country,year,cost,price,sku,supplier,notes,in_stock",
-    "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,in_stock",
-  ];
-  for (const sel of SELECTS) {
-    try { const d = await sb(`/tires?id=eq.${encodeURIComponent(id)}&select=${sel}&limit=1`); if (d && d[0]) return d[0]; } catch {}
-  }
-  return MOCK_TIRES.find(t => String(t.id) === String(id)) || null;
-}
-async function searchTires(q) {
-  const term = (q || "").trim();
-  if (term.length < 2) return [];
-  try {
-    const m = term.match(/(\d{3})\s*\/?\s*(\d{2})?\s*r?\s*(\d{2})?/i);
-    const SELECTS = [
-      // matches the real Tire System table exactly (verified 2026-07-06)
-      "id,brand,pattern,type,width,aspect,structure,rim,load_index,speed_rating,country,year,cost,price,sku,supplier,notes,in_stock",
-      "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,load_index,speed_rating,in_stock",
-      "id,brand,pattern,width,aspect,rim,year,price,cost,supplier,country,in_stock",
-    ];
-    let path = `/tires?select=${SELECTS[0]}&limit=40`;
-    if (m && m[1]) {
-      path += `&width=eq.${m[1]}`;
-      if (m[2]) path += `&aspect=eq.${m[2]}`;
-      if (m[3]) path += `&rim=eq.${m[3]}`;
+  if (best && (bestExactWord || bestScore <= 2)) {
+    // family suggestions: patterns that share the matched root word
+    const rootWord = best.split(/[\s\-\/]+/).find(w => w.toLowerCase() === lc || w.toLowerCase().replace(/[\s\-]/g, "") === rawNoSpace);
+    let fam = [];
+    if (rootWord) {
+      fam = pats.filter(p => p !== best && new RegExp(`\\b${rootWord}\\b`, "i").test(p));
     } else {
-      path += `&or=(brand.ilike.*${term}*,pattern.ilike.*${term}*)`;
+      const baseTwo = best.split(" ").slice(0, 2).join(" ");
+      fam = pats.filter(p => p !== best && p.toLowerCase().startsWith(baseTwo.toLowerCase()));
     }
-    path += "&order=price.asc";
-    let d = null;
-    for (const sel of SELECTS) { // live table may not have every spec column — degrade gracefully
-      try { d = await sb(path.replace(SELECTS[0], sel)); break; } catch {}
-    }
-    return d && d.length ? d : MOCK_TIRES.filter(x => (`${x.brand} ${x.pattern} ${tireSize(x)}`).toLowerCase().includes(term.toLowerCase()));
-  } catch {
-    const t = term.toLowerCase();
-    return MOCK_TIRES.filter(x => (`${x.brand} ${x.pattern} ${tireSize(x)}`).toLowerCase().includes(t));
+    return { value: best, original: raw, corrected: best.toLowerCase() !== lc, suggestions: fam.slice(0, 6) };
   }
+  // 4) no match → keep as typed
+  return { value: raw, original: raw, corrected: false, suggestions: [] };
 }
 
-// ─── Truck config (active trucks + working hours, 24h) ────────────────────────
-let TRUCK_CONFIG = {
-  T1: { start: 11, end: 19 },
-  T2: { start: 12, end: 20 },
-  T4: { start: 13, end: 21 },
-};
-let TRUCK_ORDER = ["T1", "T2", "T4"];
-const activeTrucks = () => TRUCK_ORDER.filter(t => TRUCK_CONFIG[t]);
-
-// ─── App settings (app_settings key/value) ───
-async function fetchAppSettings() {
-  try {
-    const rows = await sbAll("/app_settings?select=*");
-    const out = {};
-    (rows || []).forEach(r => { out[r.key] = r.value; });
-    return out;
-  } catch { return {}; }
+// Normalize a typed brand → { value, original, corrected }
+// 1) exact (case-insensitive) match → snap to official spelling, silent
+// 2) conservative typo (edit distance ≤2, and length ≥4) → suggest correction (flagged)
+// 3) otherwise → keep as typed (Title Case), treated as new brand
+function normalizeBrand(input) {
+  const raw = (input || "").trim();
+  if (!raw) return { value: "", original: raw, corrected: false };
+  // exact case-insensitive match
+  const exact = CANON_BRANDS.find(b => b.toLowerCase() === raw.toLowerCase());
+  if (exact) return { value: exact, original: raw, corrected: false };
+  // also handle the "BF Goodrich" alias
+  if (raw.toLowerCase().replace(/\s/g, "") === "bfgoodrich") return { value: "BFGoodrich", original: raw, corrected: false };
+  // conservative typo match (only for inputs of decent length)
+  if (raw.length >= 4) {
+    let best = null, bestD = 3;
+    for (const b of CANON_BRANDS) {
+      const d = levenshtein(raw, b);
+      if (d < bestD) { bestD = d; best = b; }
+    }
+    if (best && bestD <= 2) return { value: best, original: raw, corrected: true };
+  }
+  // unknown → keep as typed, Title Case
+  const titled = raw.charAt(0).toUpperCase() + raw.slice(1);
+  return { value: titled, original: raw, corrected: false };
 }
-async function saveAppSetting(key, value) {
-  try {
-    await sb("/app_settings?on_conflict=key", { method: "POST", prefer: "resolution=merge-duplicates,return=minimal", body: JSON.stringify({ key, value, updated_at: new Date().toISOString() }) });
-    return true;
-  } catch { return false; }
-}
 
-// ─── Technician incentive engine ───
-// Scheme: 0.250 KD/order/person · upsell-converted ×4 (=1.000) · order that GETS a
-// revisit → voided (and the revisit visit itself earns 0) · pot accrues from order #1
-// but UNLOCKS at the truck's monthly target (100 base · 150 if 2 trucks · 180 if 1;
-// = the company's break-even line) · four KWD 5 bonuses.
-const INCENT = { perOrder: 0.25, upsellRate: 1.0, bonusKD: 5, maxCapacity: 200 };
-const incentiveTarget = (nActive) => nActive >= 3 ? 100 : nActive === 2 ? 150 : 180;
-function computeIncentives(jobs, refDate) {
-  const y = refDate.getFullYear(), m = refDate.getMonth();
-  const inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
-  const doneAt = (j) => j.completed_at || j.scheduled_at || j.created_at;
-  const done = jobs.filter(j => jobSuccessful(j) && inMonth(doneAt(j)));
-  const revisitedParents = new Set(jobs.filter(j => j.link_type === "revisit" && j.parent_job_id).map(j => j.parent_job_id));
-  const byId = new Map(jobs.map(j => [j.id, j]));
-  const trucks = activeTrucks();
-  const target = incentiveTarget(trucks.length);
-  const rows = trucks.map(t => {
-    const tj = done.filter(j => j.assigned_truck === t);
-    let pot = 0, base = 0, ups = 0, voided = 0;
-    tj.forEach(j => {
-      if (j.link_type === "revisit" || revisitedParents.has(j.id)) { voided++; return; }
-      if (j.link_type === "upsell") { ups++; pot += INCENT.upsellRate; }
-      else { base++; pot += INCENT.perOrder; }
+// current year + last 2
+const YEAR_OPTIONS = (() => { const y = new Date().getFullYear(); return [String(y), String(y - 1), String(y - 2)]; })();
+
+// Parse a supplier quote (free text) into tire draft rows.
+function parseSupplierQuote(text) {
+  const lines = text.split(/\n+/).map(l => l.trim()).filter(Boolean);
+  const drafts = [];
+  let currentSize = null;       // last seen size on its own / in F:/R: header
+  let position = "";            // 'front' | 'rear' | ''
+
+  for (let raw of lines) {
+    let line = raw.replace(/\*/g, " ").trim();
+    if (!line) continue;
+
+    // Position + size headers: "F: 245/35R20", "R: 305/30R20"
+    const posMatch = line.match(/^([FR])\s*:/i);
+    if (posMatch) position = /f/i.test(posMatch[1]) ? "front" : "rear";
+
+    // any size in the line
+    const sz = parseSize(line);
+    if (sz) currentSize = sz;
+
+    // brand detection
+    let brand = "";
+    for (const b of KNOWN_BRANDS) {
+      if (new RegExp(`\\b${b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(line)) { brand = b; break; }
+    }
+    // fallback: predict brand from pattern/keywords if not found
+    if (!brand) brand = brandFromPattern(line);
+    // normalize a couple
+    if (/^roadx$/i.test(brand)) brand = "RoadX";
+    if (/^bf goodrich$/i.test(brand)) brand = "BFGoodrich";
+
+    // skip pure header lines with no brand and no price
+    const priceNums = (line.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+
+    // cost/price number: look for a number near 'kd' or a standalone price-like number
+    let amount = null;
+    const kdMatch = line.match(/(\d+(?:\.\d+)?)\s*(?:kd|د\.?ك)/i);
+    if (kdMatch) amount = Number(kdMatch[1]);
+    else {
+      // a number that isn't a year, load index, or size component
+      const candidates = priceNums.filter(n => n >= 20 && n <= 900 && !(n >= 2018 && n <= 2030));
+      if (candidates.length) amount = candidates[0];
+    }
+
+    // year
+    const yearMatch = line.match(/\b(20[12]\d)\b/);
+    const year = yearMatch ? yearMatch[1] : "";
+
+    // country
+    let country = "";
+    for (const k of Object.keys(COUNTRY_ALIASES)) {
+      if (new RegExp(`\\b${k}\\b`, "i").test(line)) { country = COUNTRY_ALIASES[k]; break; }
+    }
+
+    // speed rating like 91Y, 103Y
+    const srMatch = line.match(/\b\d{2,3}([A-Z])\b/);
+    const speedRating = srMatch ? srMatch[1] : "";
+
+    // pattern: leftover capital tokens (best-effort) e.g. HT51, AT52, KO3, Pzero
+    let pattern = "";
+    const patMatch = line.match(/\b([A-Z]{2,}\d{1,3}[A-Z]?|[A-Z][a-z]+zero|AL\s?\w+|KO\d|AT\d{2}|HP\d{2}|HT\d{2})\b/);
+    if (patMatch) pattern = patMatch[1];
+
+    // Need at least a brand or a size+amount to make a row
+    if (!brand && !(currentSize && amount)) continue;
+    if (!brand && !amount) continue;
+
+    drafts.push({
+      brand: brand || "",
+      size: currentSize,
+      position,
+      amountRaw: amount,        // as sent by supplier (cost OR list price)
+      year, country, speedRating, pattern,
+      markings: markingsNote(raw),
+      sourceLine: raw,
     });
-    const revenue = tj.reduce((sm, j) => sm + (Number(j.total) || 0), 0);
-    const cost = tj.reduce((sm, j) => sm + (j.items || []).reduce((x, it) => x + (Number(it.cost) || 0) * (Number(it.qty) || 1), 0), 0);
-    const reviews = tj.map(j => Number(j.review_rating)).filter(r => r >= 1);
-    const revisitsCaused = jobs.filter(j => j.link_type === "revisit" && inMonth(j.created_at) && (byId.get(j.parent_job_id) || {}).assigned_truck === t).length;
-    return {
-      truck: t, orders: tj.length, base, ups, voided,
-      pot: Math.round(pot * 1000) / 1000,
-      unlocked: tj.length >= target,
-      revenue, profit: revenue - cost,
-      avgReview: reviews.length ? Math.round((reviews.reduce((a, b) => a + b, 0) / reviews.length) * 100) / 100 : null,
-      nReviews: reviews.length, revisitsCaused,
-    };
-  });
-  // KWD 5 bonus leaders (ties: everyone tied wins the flag; zero-revisit = all with 0)
-  const flag = (key, best) => rows.forEach(r => { r[key] = best != null && rows.length > 1 ? best(r) : false; });
-  const maxOrders = Math.max(...rows.map(r => r.orders), 0);
-  const maxProfit = Math.max(...rows.map(r => r.profit), 0);
-  const maxReview = Math.max(...rows.map(r => r.avgReview || 0), 0);
-  flag("bonusOrders", r => maxOrders > 0 && r.orders === maxOrders);
-  flag("bonusProfit", r => maxProfit > 0 && r.profit === maxProfit);
-  flag("bonusReview", r => maxReview > 0 && (r.avgReview || 0) === maxReview);
-  flag("bonusZeroRevisit", r => r.orders > 0 && r.revisitsCaused === 0);
-  return { target, rows, trucksActive: trucks.length };
-}
-async function fetchTruckConfig() {
-  try {
-    const rows = await sbAll("/truck_config?select=*&order=sort_order.asc");
-    if (rows && rows.length) {
-      const cfg = {}, order = [];
-      rows.forEach(r => { order.push(r.truck); if (r.active) cfg[r.truck] = { start: Number(r.start_hour), end: Number(r.end_hour) }; });
-      TRUCK_CONFIG = cfg; TRUCK_ORDER = order;
-      const pw = {};
-      rows.forEach(r => { if (r.password) pw[r.truck] = r.password; });
-      if (Object.keys(pw).length) TRUCK_PASSWORDS = { ...TRUCK_PASSWORDS, ...pw };
-    }
-    return rows || [];
-  } catch { return []; }
-}
-async function saveTruckConfig(truck, patch) {
-  try { await sb(`/truck_config?truck=eq.${truck}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }) }); return true; }
-  catch (e) { alert("Could not save truck settings: " + (e.message || e)); return false; }
-}
-async function addTruckConfig(row) {
-  try { await sb("/truck_config", { method: "POST", prefer: "return=minimal", body: JSON.stringify(row) }); return true; }
-  catch (e) { alert("Could not add truck: " + (e.message || e)); return false; }
-}
-
-// Truck colors (all 6 defined; only active trucks render). { solid, bg, text }
-const TRUCK_COLORS = {
-  T1: { solid: "#C9A227", bg: "#FAF6E9", text: "#7A6212" }, // yellow (muted gold)
-  T2: { solid: "#D98A4E", bg: "#FBF0E8", text: "#8A4F25" }, // orange (muted terracotta)
-  T3: { solid: "#5B9A6E", bg: "#EDF5EF", text: "#3A6249" }, // green (muted sage)
-  T4: { solid: "#5B7FB0", bg: "#EDF1F7", text: "#3A5378" }, // blue (muted slate-blue)
-  T5: { solid: "#8E7BB0", bg: "#F2EFF7", text: "#5C4D78" }, // purple (muted lavender)
-  T6: { solid: "#C06C6C", bg: "#F8EDED", text: "#8A4444" }, // red (muted clay)
-};
-const truckColor = (t) => TRUCK_COLORS[t] || { solid: "#64748B", bg: "#F1F5F9", text: "#334155" };
-
-// Hour label e.g. 13 -> "1:00 PM"
-const hourLabel = (h) => {
-  const am = h < 12 || h === 24;
-  const hr = h % 12 === 0 ? 12 : h % 12;
-  return `${hr}:00 ${am ? "AM" : "PM"}`;
-};
-// All hours a truck works (array of integers)
-const truckHours = (truck) => {
-  const c = TRUCK_CONFIG[truck];
-  if (!c) return [];
-  const out = [];
-  for (let h = c.start; h < c.end; h++) out.push(h);
-  return out;
-};
-
-// Overtime window: up to 3h before normal start, up to 4h after normal end.
-const OT_BEFORE = 3, OT_AFTER = 4;
-const truckOTHours = (truck) => {
-  const c = TRUCK_CONFIG[truck];
-  if (!c) return { early: [], late: [] };
-  const early = [];
-  for (let h = Math.max(0, c.start - OT_BEFORE); h < c.start; h++) early.push(h);
-  const late = [];
-  for (let h = c.end; h < Math.min(24, c.end + OT_AFTER); h++) late.push(h);
-  return { early, late };
-};
-// Full bookable hours when overtime is enabled.
-const truckHoursWithOT = (truck) => {
-  const ot = truckOTHours(truck);
-  return [...ot.early, ...truckHours(truck), ...ot.late];
-};
-// Is a given hour outside the truck's normal hours?
-const isOTHour = (truck, hour) => {
-  const c = TRUCK_CONFIG[truck];
-  if (!c) return false;
-  return hour < c.start || hour >= c.end;
-};
-
-// ─── Labor (mirror of Tire System — keep in sync via shared contract) ─────────
-// Standard wheels vs center-lock (Porsche GT3 etc., torque wrench).
-// ─── Slot helpers ─────────────────────────────────────────────────────────────
-// A job occupies `duration` consecutive hours on its truck starting at start_hour.
-// Returns the set of hours a job covers.
-const jobHours = (job) => {
-  const start = Number(job.start_hour);
-  const dur = Number(job.duration) || 1;
-  if (!start && start !== 0) return [];
-  const out = [];
-  for (let h = start; h < start + dur; h++) out.push(h);
-  return out;
-};
-// Is a given truck+hour taken on a given date by any existing job (excluding one id)?
-const slotTaken = (jobs, truck, dateStr, hour, excludeId) => {
-  return jobs.some(j => {
-    if (j.id === excludeId) return false;
-    if (j.status === "cancelled") return false;
-    if (j.assigned_truck !== truck) return false;
-    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
-    if (d !== dateStr) return false;
-    return jobHours(j).includes(hour);
-  });
-};
-// Short service label for tight slot cells
-const shortService = (s) => {
-  if (!s) return "Service";
-  if (/patch/i.test(s)) return "Patch";
-  if (/rotation/i.test(s)) return "Rotation";
-  if (/tire/i.test(s)) return "Tires";
-  if (/oil/i.test(s)) return "Oil";
-  if (/battery/i.test(s)) return "Battery";
-  if (/brake/i.test(s)) return "Brakes";
-  if (/disc skim/i.test(s)) return "Skim";
-  if (/disc/i.test(s)) return "Disc";
-  if (/align/i.test(s)) return "Align";
-  if (/major/i.test(s)) return "Major";
-  if (/ac gas/i.test(s)) return "AC Gas";
-  if (/computer/i.test(s)) return "Computer";
-  if (/tune/i.test(s)) return "Tune-up";
-  return s.length > 10 ? s.slice(0, 10) + "…" : s;
-};
-// Booked-slot label: service · mobile · area
-const slotLabel = (j, sep) => [shortService(j.service_type), j.customer_mobile || "", j.area || ""].filter(Boolean).join(sep);
-// Compact items summary for list rows: "4× Michelin Pilot Sport 4 · Oil & Filter"
-const itemsSummary = (job) => {
-  const items = job.items || [];
-  if (!items.length) return job.service_details || "";
-  return items.map(it => {
-    const qty = Number(it.qty) || 1;
-    const name = it.kind === "tire" ? `${it.brand}${it.pattern ? " " + it.pattern : ""}` : (it.name || "Item");
-    return `${qty}× ${name}`;
-  }).join(" · ");
-};
-
-// ─── Address → Google Maps link ──────────────────────────────────────────────
-// Build a Maps search URL from Kuwait address parts. Used to auto-fill map_link.
-function buildMapsLink(addr) {
-  if (!addr) return "";
-  const isNum = (v) => /^\s*\d+\s*$/.test(String(v || ""));
-  // Kuwait geocodes best by Area + Block (real units Maps knows). Lead with those,
-  // include the governorate + Kuwait for region lock. Named streets help; numbered
-  // streets ("Street 33") and house numbers don't resolve, so we omit/de-emphasize them.
-  const parts = [];
-  if (addr.area) parts.push(addr.area);
-  if (addr.block) parts.push(`Block ${addr.block}`);
-  // include the street only if it's a NAME (not a bare number Maps can't use)
-  if (addr.street && !isNum(addr.street)) parts.push(addr.street);
-  if (addr.governorate) parts.push(addr.governorate);
-  parts.push("Kuwait");
-  // Need at least an area or block to be useful (more than just governorate + Kuwait)
-  const hasLocator = addr.area || addr.block;
-  if (!hasLocator) return "";
-  return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(parts.join(", "));
-}
-// Is a map link a manually-pasted pin (coordinates / shortened link), not our generated search?
-function isManualPin(link) {
-  if (!link) return false;
-  if (link.includes("/maps/search/?api=1&query=")) return false; // our generated format
-  return /maps\.app\.goo\.gl|goo\.gl\/maps|\/maps\/place\/|[?&]q=-?\d|@-?\d/.test(link);
-}
-
-// PACI (Kuwait Finder) coordinates → exact Google Maps pin.
-// PACI shows X,Y = longitude,latitude; users may paste in either order, so we
-// detect: Kuwait latitude ≈ 28–31, longitude ≈ 46–49. Returns a pin URL or null.
-function paciToMapsLink(raw) {
-  const nums = (String(raw || "").match(/-?\d+\.?\d*/g) || []).map(parseFloat);
-  if (nums.length < 2) return null;
-  // find a valid Kuwait lat/long PAIR among all numbers (ignores Parcel/PACI ids).
-  // Prefer decimals (real coordinates), and require lat≈29, lng≈48.
-  const cand = nums.filter(n => !Number.isInteger(n)); // coordinates have decimals
-  const pool = cand.length >= 2 ? cand : nums;
-  for (let i = 0; i < pool.length; i++) {
-    for (let j = 0; j < pool.length; j++) {
-      if (i === j) continue;
-      const lat = pool[i], lng = pool[j];
-      if (lat >= 28 && lat <= 31 && lng >= 46 && lng <= 49) return `https://www.google.com/maps?q=${lat},${lng}`;
-    }
   }
+  return drafts;
+}
+
+
+// ── Tire size parsing (smart) ────────────────────────────────────────────────
+// Accepts: 265/65r18 · 265 65 18 · 2656518 · 265-65-18 · 265/65zr18 98y
+function parseSize(input) {
+  if (!input) return null;
+  const s = input.trim().toUpperCase();
+  // structure detection
+  const struct = /ZR/.test(s) ? "ZR" : "R";
+  // 0) FLOTATION sizes: 33x12.50R17 · 35X12.5R20 (diameter x section R rim)
+  const f = s.match(/(\d{2})\s*[X×]\s*(\d{1,2}(?:\.\d{1,2})?)\s*Z?R?\s*(\d{2})/);
+  if (f) return { width: f[1], aspect: f[2], rim: f[3], structure: struct, flotation: true };
+  // 1) explicit separators: / space - or letters
+  let m = s.match(/(\d{3})\s*[\/\s\-]\s*(\d{2})\s*(?:Z?R)?\s*[\/\s\-]?\s*(\d{2})/);
+  if (m) return { width: m[1], aspect: m[2], rim: m[3], structure: struct };
+  // 2) compact 7 digits: 2656518
+  m = s.match(/^(\d{3})(\d{2})(\d{2})$/);
+  if (m) return { width: m[1], aspect: m[2], rim: m[3], structure: struct };
+  // 3) width/aspectRrim with optional load+speed: 325/30ZR21 98Y
+  m = s.match(/(\d{3})\/(\d{2})\s*Z?R?\s*(\d{2})/);
+  if (m) return { width: m[1], aspect: m[2], rim: m[3], structure: struct };
   return null;
 }
 
-// Parse a Kuwait Finder (PACI) result into address fields.
-// Example: "Jaber Al-Ahmad - Block 5 - St 433 - Parcel 147 - House 7 - PACI NO ... - Unit PACI ..."
-// Coordinates line "47.749298 , 29.345588" may be pasted too (any order).
-function parsePaciAddress(raw, knownAreas) {
-  const text = String(raw || "").replace(/\s+/g, " ").trim();
-  if (!text) return null;
-  const out = { area: "", block: "", street: "", lane: "", house: "", mapLink: "" };
-  // coordinates anywhere in the paste → pin
-  out.mapLink = paciToMapsLink(text) || "";
-  // labeled parts (case-insensitive)
-  const grab = (re) => { const m = text.match(re); return m ? m[1].trim() : ""; };
-  out.block = grab(/\bBlock\s+([A-Za-z0-9]+)/i);
-  out.street = grab(/\bSt(?:reet)?\.?\s+([A-Za-z0-9]+)/i);
-  out.lane = grab(/\b(?:Lane|Jadda|Jaddah)\s+([A-Za-z0-9]+)/i);
-  out.house = grab(/\bHouse\s+([A-Za-z0-9]+)/i);
-  // area = text before " - Block", with any leading House/Parcel prefixes stripped.
-  // (PACI often writes "House 7 - Parcel 147 Jaber Al-Ahmad - Block 5 - ...")
-  const bm = text.match(/^(.*?)\s*-\s*Block\b/i);
-  let firstSeg = bm ? bm[1].trim() : "";
-  firstSeg = firstSeg.replace(/^(?:House\s+\S+|Parcel\s+\S+)(?:\s*-\s*|\s+)/i, "");
-  firstSeg = firstSeg.replace(/^(?:House\s+\S+|Parcel\s+\S+)(?:\s*-\s*|\s+)/i, "");
-  if (/^[\d.,\s-]+$/.test(firstSeg)) firstSeg = ""; // guard: coordinates aren't an area
-  if (firstSeg) {
-    // normalize spacing/hyphens so "Jaber Al-Ahmad" matches app spelling "Jaber Al - Ahmad"
-    const norm = (s) => s.toLowerCase().replace(/\s*-\s*/g, "").replace(/\s+/g, " ").trim();
-    const fn = norm(firstSeg);
-    const hit = (knownAreas || []).find(a => norm(a) === fn)
-      || (knownAreas || []).find(a => norm(a).includes(fn) || fn.includes(norm(a)));
-    out.area = hit || firstSeg;
-  }
-  out.governorate = out.area ? (govFor(out.area) || "") : "";
-  const got = ["area", "block", "street", "house"].filter(k => out[k]);
-  return got.length ? out : null;
+function sizeString(t) {
+  const struct = t.structure || "R";
+  const flo = t.flotation || (Number(t.width) > 0 && Number(t.width) < 100);
+  let base = flo ? `${t.width}x${t.aspect}${struct}${t.rim}` : `${t.width}/${t.aspect}${struct}${t.rim}`;
+  if (t.loadIndex || t.speedRating) base += ` ${t.loadIndex || ""}${t.speedRating || ""}`.trimEnd();
+  return base;
 }
 
-// Trigger widget: agent pastes PACI coordinates → generates exact pin on demand.
-// Never auto-fills; the link exists only because the agent tapped Use.
-function PaciPinBuilder({ onUse, onFill }) {
-  const [open, setOpen] = useState(false);
-  const [val, setVal] = useState("");
-  const link = paciToMapsLink(val);
-  const parsed = onFill ? parsePaciAddress(val, KW_AREA_NAMES) : null;
-  const canApply = onFill ? (parsed || link) : link;
-  const apply = () => {
-    if (parsed && onFill) onFill(parsed); // fills area/block/st/lane/house (+ pin if present)
-    else if (link) onUse(link);           // coordinates-only paste → just the pin
-    setOpen(false); setVal("");
+function matchesSize(tire, parsed) {
+  if (!parsed) return false;
+  return tire.width === parsed.width && tire.aspect === parsed.aspect && tire.rim === parsed.rim;
+}
+
+// ── One-line tire description ─────────────────────────────────────────────────
+function tireLine(t) {
+  const cat = CATEGORY[t.category];
+  const flag = t.country ? (COUNTRIES[t.country] || "") : "";
+  const parts = [];
+  parts.push(t.brand);
+  if (t.pattern) parts.push(t.pattern);
+  parts.push(sizeString(t));
+  let line = parts.join(" ");
+  const tail = [];
+  if (flag || t.country) tail.push(`${flag} ${t.country}`.trim());
+  if (t.year) tail.push(t.year);
+  let result = line;
+  if (tail.length) result += " - " + tail.join(" - ");
+  return result;
+}
+
+// Brand + pattern only (no size) — for single-size lists where size is shown on top
+function tireName(t) {
+  const flag = t.country ? (COUNTRIES[t.country] || "") : "";
+  let name = t.brand + (t.pattern ? " " + t.pattern : "");
+  const tail = [];
+  const ld = `${t.loadIndex || ""}${t.speedRating || ""}`.trim();
+  if (ld) tail.push(ld);
+  if (flag || t.country) tail.push(`${flag} ${t.country}`.trim());
+  if (t.year) tail.push(t.year);
+  return tail.length ? `${name} ${tail.join(" - ")}` : name;
+}
+
+// ── Storage layer (swappable) ─────────────────────────────────────────────────
+// Uses in-memory state seeded with sample data. To integrate a backend, replace
+// these four functions with API calls — the UI calls only these.
+const SEED = [
+  mkTire({ brand: "Pirelli", pattern: "Cinturato P1", width: "185", aspect: "60", structure: "R", rim: "15", cost: 35.0, price: 44, sku: "PI26781000125", loadIndex: "88", speedRating: "H", year: "2025", country: "Romania", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "Cinturato P1", width: "185", aspect: "60", structure: "R", rim: "15", cost: 31.5, price: 40, sku: "PI26781000324", loadIndex: "88", speedRating: "H", year: "2025", country: "Romania", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "Cinturato All Season SF 3", width: "195", aspect: "45", structure: "R", rim: "16", cost: 49.0, price: 62, sku: "PI21501000424", loadIndex: "84", speedRating: "V", year: "2025", country: "Brazil", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "P ZERO PZ4", width: "205", aspect: "40", structure: "R", rim: "18", cost: 77.0, price: 97, sku: "PI31460000125", loadIndex: "86", speedRating: "W", year: "2025", country: "Romania", notes: "★ — BMW OE · RFT — Runflat", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "P ZERO", width: "205", aspect: "40", structure: "ZR", rim: "18", cost: 70.0, price: 88, sku: "PI22073000225", loadIndex: "86", speedRating: "Y", year: "2025", country: "Romania", notes: "AR — Alfa Romeo OE", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "Cinturato p7", width: "205", aspect: "45", structure: "R", rim: "17", cost: 70.0, price: 88, sku: "PI31459000125", loadIndex: "88", speedRating: "W", year: "2025", country: "Romania", notes: "★ — BMW OE · RFT — Runflat", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "Cinturato p7", width: "205", aspect: "55", structure: "R", rim: "16", cost: 33.6, price: 42, sku: "PI23289000425", loadIndex: "91", speedRating: "V", year: "2025", country: "Romania", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "Cinturato p7", width: "205", aspect: "55", structure: "R", rim: "16", cost: 42.0, price: 53, sku: "PI20402000125", loadIndex: "91", speedRating: "W", year: "2025", country: "Romania", notes: "RFT — Runflat", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "Cinturato p7", width: "205", aspect: "55", structure: "R", rim: "17", cost: 52.5, price: 66, sku: "PI36441000225", loadIndex: "91", speedRating: "W", year: "2025", country: "Romania", notes: "MO — Mercedes-Benz OE", supplier: "Behbehani (Pirelli)" }),
+  mkTire({ brand: "Pirelli", pattern: "Cinturato p7", width: "205", aspect: "55", structure: "R", rim: "17", cost: 63.0, price: 79, sku: "PI35411000125", loadIndex: "91", speedRating: "W", year: "2025", country: "Romania", notes: "MOE — Mercedes runflat · RFT — Runflat", supplier: "Behbehani (Pirelli)" }),
+  ];
+
+// Static pattern list per brand, computed once from SEED — reliable fallback
+// independent of React state, so pattern normalization always has data.
+const SEED_PATTERNS_BY_BRAND = (() => {
+  const map = {};
+  for (const t of SEED) {
+    if (!t.pattern) continue;
+    const b = (t.brand || "").toLowerCase();
+    if (!map[b]) map[b] = new Set();
+    map[b].add(t.pattern);
+  }
+  const out = {};
+  Object.keys(map).forEach(b => { out[b] = [...map[b]]; });
+  return out;
+})();
+
+function mkTire(d) {
+  const category = detectCategory(d.brand);
+  const now = new Date().toISOString();
+  return {
+    id: "t_" + Math.random().toString(36).slice(2, 10),
+    brand: d.brand, pattern: d.pattern || "", type: d.type || "Normal",
+    width: d.width, aspect: d.aspect, structure: d.structure || "R", rim: d.rim,
+    loadIndex: d.loadIndex || "", speedRating: d.speedRating || "",
+    country: d.country || countryForBrand(d.brand), year: d.year || "", supplier: d.supplier || "",
+    sku: d.sku || "",
+    cost: round3(Number(d.cost) || 0), price: round3(Number(d.price) || 0),
+    category, notes: d.notes || "", inStock: false,
+    history: [{ ts: now, cost: round3(Number(d.cost) || 0), price: round3(Number(d.price) || 0), note: "Created" }],
   };
+}
+
+// ── Car database (sample — extend freely) ─────────────────────────────────────
+const CAR_DB = {
+  "2011 porsche 911 carrera": [
+    { label: 'Option 1 — 18"', sizes: ["235/40ZR18", "265/40ZR18"] },
+    { label: 'Option 2 — 19"', sizes: ["235/35ZR19", "295/30ZR19"] },
+  ],
+  "2020 mercedes g63": [
+    { label: 'Standard — 20"', sizes: ["275/50R20"] },
+    { label: 'AMG — 22"', sizes: ["295/40R22"] },
+  ],
+  "2022 range rover sport": [
+    { label: 'Standard — 21"', sizes: ["275/45R21"] },
+    { label: 'Off-road — 20"', sizes: ["275/55R20"] },
+  ],
+  "2021 toyota land cruiser": [
+    { label: 'Standard — 18"', sizes: ["265/65R18"] },
+    { label: 'GR — 20"', sizes: ["265/55R20"] },
+  ],
+  "2019 nissan patrol": [
+    { label: 'Standard — 18"', sizes: ["275/70R18"] },
+    { label: 'Nismo — 22"', sizes: ["285/45R22"] },
+  ],
+};
+
+// Labor rates by quantity. Standard vs center-lock (torque wrench).
+const LABOR = {
+  standard: { 1: 15, 2: 15, 3: 20, 4: 20, 5: 25 },
+  centerlock: { 1: 25, 2: 25, 3: 40, 4: 40 }, // no 5 — center-lock cars have no spare
+};
+function laborFor(qty, centerlock) {
+  const table = centerlock ? LABOR.centerlock : LABOR.standard;
+  return table[qty] ?? table[4];
+}
+
+// ── Auto-pricing (purchaser's formula) ────────────────────────────────────────
+// For brands WITHOUT agreed supplier pricing (China / Kumho / etc.).
+// Margin (KD) is chosen by category + rim size, then:  price = roundUp((cost + margin) / 0.9)
+// The /0.9 embeds the ~10% installment buffer (Tabby/Taly).
+function marginFor(category, rim) {
+  const r = parseInt(rim, 10) || 0;
+  if (category === "SE") {
+    // Economy Safe (China): 7–9
+    if (r <= 16) return 7;
+    if (r <= 19) return 8;
+    return 9;
+  }
+  // PC / SV / TP : Smart Value, Premium Comfort, Top Performance — 7–12
+  if (r <= 15) return 7;
+  if (r <= 18) return 8;   // R18 = 8 (matches Kumho example: (40+8)/0.9 → 54)
+  if (r <= 20) return 9;
+  if (r <= 21) return 10;
+  return 12;
+}
+// Auto price from cost + margin, rounded UP to whole KD
+function autoPrice(cost, margin) {
+  const c = Number(cost) || 0, m = Number(margin) || 0;
+  if (c <= 0) return 0;
+  return Math.ceil((c + m) / 0.9);
+}
+
+// ── Agreed-brand pricing (Michelin / Pirelli) ────────────────────────────────
+// When the purchaser enters a COST (not list price) for an agreed brand, price is
+// derived from a margin % off the list-price discount structure:
+//   Michelin (year-dependent): 2024 → 20%, 2025 → 13%, 2026 → 17%
+//   Pirelli (any year): 13%
+// marginKD = round(cost × marginPct); price = roundUp(cost + marginKD).
+function agreedMarginPct(brand, supplier, year) {
+  const hay = `${brand || ""} ${supplier || ""}`;
+  if (/pirelli/i.test(hay)) return 0.13;
+  if (/michelin|bfgoodrich|bf goodrich/i.test(hay)) {
+    const y = String(year || new Date().getFullYear());
+    if (y === "2024") return 0.20;
+    if (y === "2025") return 0.13;
+    if (y === "2026") return 0.17;
+    // default to current year's bracket when year missing/other
+    const cy = String(new Date().getFullYear());
+    return cy === "2024" ? 0.20 : cy === "2025" ? 0.13 : 0.17;
+  }
+  return null;
+}
+function agreedPrice(cost, brand, supplier, year) {
+  const c = Number(cost) || 0;
+  if (c <= 0) return 0;
+  const pct = agreedMarginPct(brand, supplier, year);
+  if (pct == null) return 0;
+  const withMargin = c + c * pct;   // cost + margin (decimal kept)
+  // Pirelli adds a 10% installment charge on top (÷0.9), like the standard formula.
+  // Michelin's % already accounts for installment, so no extra buffer.
+  const isPirelli = /pirelli/i.test(`${brand || ""} ${supplier || ""}`);
+  const final = isPirelli ? withMargin / 0.9 : withMargin;
+  return Math.ceil(final);           // round only the final price up
+}
+
+// ── UNIFIED PRICING (single source of truth for all entry modes) ─────────────
+// Given a tire-like object {brand, supplier, category, rim, year, cost}, returns
+// the auto price using the correct rule: agreed brands (Michelin/Pirelli) use the
+// discount-based margin %, everyone else uses (cost + size-margin KD) ÷ 0.9.
+function computeTirePrice(t) {
+  const cost = Number(t.cost) || 0;
+  if (cost <= 0) return 0;
+  if (isAgreedPricing(t)) {
+    return agreedPrice(cost, t.brand, t.supplier, t.year);
+  }
+  const cat = t.category || detectCategory(t.brand);
+  return autoPrice(cost, autoMargin(cat, t.rim));
+}
+// A human-readable description of how the price was derived (for the pricing note).
+function pricingExplain(t) {
+  const cost = Number(t.cost) || 0;
+  if (isAgreedPricing(t)) {
+    const pct = agreedMarginPct(t.brand, t.supplier, t.year);
+    const isPir = /pirelli/i.test(`${t.brand || ""} ${t.supplier || ""}`);
+    const label = isPir ? "Pirelli" : "Michelin";
+    const yr = isPir ? "" : ` · ${t.year || "current year"}`;
+    const inst = isPir ? " + 10% installment" : "";
+    return `${label} agreed pricing — ${Math.round((pct || 0) * 100)}% margin${inst}${yr}`;
+  }
+  const cat = t.category || detectCategory(t.brand);
+  const m = t.rim ? autoMargin(cat, t.rim) : null;
+  return m != null
+    ? `Formula: (cost + ${m} KD) ÷ 0.9, rounded up`
+    : `Formula: (cost + margin) ÷ 0.9`;
+}
+
+// ── Auto-margin rules (for brands without agreed supplier pricing) ────────────
+// Margin in KD by category group + rim size. Price = roundUp((cost + margin) / 0.9),
+// where /0.9 embeds the 10% installment buffer. SE = China economy rules;
+// PC/SV/TP = the 7–12 rules.
+function autoMargin(category, rim) {
+  const r = parseInt(rim, 10) || 0;
+  if (category === "SE") {
+    // Economy Safe (China): 7–9
+    if (r <= 16) return 7;
+    if (r <= 19) return 8;
+    return 9;
+  }
+  // PC / SV / TP : 7–12
+  if (r <= 15) return 7;
+  if (r <= 18) return 8;   // R18 = 8 (matches purchaser's Kumho example)
+  if (r <= 20) return 9;
+  if (r === 21) return 10;
+  return 12; // R22+
+}
+
+// ── Cash discount ─────────────────────────────────────────────────────────────
+// Tires from the Michelin distributor have no installment buffer baked into their
+// price, so the cash discount must NOT apply to them (it would eat real margin).
+// We key off the supplier, so Michelin, BFGoodrich, etc. from that distributor are
+// all protected — even brands added later.
+function isMichelinSupplier(t) {
+  return /michelin/i.test(t.supplier || "");
+}
+// Suppliers/brands with agreed/fixed pricing (Michelin distributor, Pirelli distributor) —
+// their prices come from the uploaded supplier lists, so the auto-margin formula
+// should not be imposed on them. We check BOTH brand and supplier, because when adding
+// manually the supplier may be the distributor name (e.g. "Kuwait Automotive") that
+// doesn't contain the brand word.
+function isAgreedPricing(t) {
+  const hay = `${t.brand || ""} ${t.supplier || ""}`;
+  return /michelin|bfgoodrich|bf goodrich|pirelli/i.test(hay);
+}
+// Effective price for a tire given the active cash-discount level (0, 6, or 10).
+// Excluded suppliers (Michelin) always return the full price.
+// Discounted prices are rounded UP to the nearest whole KD (never undercharge).
+function effectivePrice(t, cashPct) {
+  if (!cashPct || isMichelinSupplier(t)) return round3(t.price);
+  return Math.ceil(t.price * (1 - cashPct / 100));
+}
+
+// Round to max 3 decimals, trimming trailing zeros (51.5 → 51.5, 51.499999 → 51.5, 48 → 48)
+function round3(n) {
+  return Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
+}
+
+// ── Availability freshness (3 tiers) ──────────────────────────────────────────
+// green 0-7 days · grey 8-15 days (aging) · red 16+ days (urgent)
+const FRESH_GREEN = 7;
+const FRESH_GREY = 15;
+function daysSince(ts) {
+  if (!ts) return null;
+  return Math.floor((Date.now() - ts) / (1000 * 60 * 60 * 24));
+}
+// returns 'green' | 'grey' | 'red' | null
+function freshnessTier(ts) {
+  const d = daysSince(ts);
+  if (d === null) return null;
+  if (d <= FRESH_GREEN) return "green";
+  if (d <= FRESH_GREY) return "grey";
+  return "red";
+}
+const FRESH_COLOR = { green: "#1D7A45", grey: "#8A8A7A", red: "#C0392B" };
+function freshnessLabel(ts) {
+  const d = daysSince(ts);
+  if (d === null) return "";
+  const ago = d === 0 ? "today" : d === 1 ? "1 day ago" : `${d} days ago`;
+  const tier = freshnessTier(ts);
+  if (tier === "green") return `Confirmed ${ago}`;
+  if (tier === "grey") return `Aging · ${ago}`;
+  return `Check now · ${ago}`;
+}
+function isStale(ts) {
+  const t = freshnessTier(ts);
+  return t === "grey" || t === "red";
+}
+
+// ── Profit tiers (by KD amount per tire — amount is the key signal, not margin %) ──
+function profitTier(profitKd) {
+  if (profitKd >= 11) return { bg: "#E7EFFA", fg: "#1A4F8A", label: "high" };   // blue — push
+  if (profitKd >= 7) return { bg: "#FBF4DF", fg: "#8A6A00", label: "mid" };      // yellow
+  return { bg: "#F0F0EC", fg: "#777", label: "low" };                            // grey
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+export default function App() {
+  // ── Auth gate ──────────────────────────────────────────────────────────────
+  const [authed, setAuthed] = useState(() => {
+    try { return sessionStorage.getItem("bnchr_auth") === "ok"; } catch { return false; }
+  });
+
+  if (!authed) return <Login onPass={() => setAuthed(true)} />;
+  return <MainApp />;
+}
+
+// ── Login screen ──────────────────────────────────────────────────────────────
+function Login({ onPass }) {
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState(false);
+
+  const submit = () => {
+    if (pw === APP_PASSWORD) {
+      try { sessionStorage.setItem("bnchr_auth", "ok"); } catch {}
+      onPass();
+    } else {
+      setErr(true);
+    }
+  };
+
   return (
-    <div style={{ marginTop: 6 }}>
-      {!open ? (
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(true)}>📍 {onFill ? "Fill from Kuwait Finder" : "Build exact pin from Kuwait Finder"}</button>
-      ) : (
-        <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)" }}>
-          <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 5 }}>
-            On <a href="https://gis.paci.gov.kw/Search/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Kuwait Finder</a>, find the address, then copy {onFill ? "its full address line (or just the coordinates)" : "its coordinates"} and paste here.
-          </div>
-          <textarea className="filter-input" style={{ width: "100%", minHeight: 46, resize: "vertical" }}
-            placeholder={onFill ? "Jaber Al-Ahmad - Block 5 - St 433 - House 7 …  or  29.345588, 47.749298" : "e.g. 29.352738, 47.994202"}
-            value={val} onChange={e => setVal(e.target.value)} />
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
-            <button type="button" className="btn btn-primary btn-sm" disabled={!canApply} onClick={apply}>{parsed ? "Fill address" : "Use this pin"}</button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setOpen(false); setVal(""); }}>Cancel</button>
-            {link && <a href={link} target="_blank" rel="noreferrer" style={{ fontSize: 11, color: "#15803D", textDecoration: "underline" }}>preview pin</a>}
-          </div>
-          {parsed && (
-            <div style={{ fontSize: 11, color: "#15803D", marginTop: 5 }}>
-              ✓ Found: {[parsed.area && `Area ${parsed.area}`, parsed.block && `Block ${parsed.block}`, parsed.street && `St ${parsed.street}`, parsed.lane && `Lane ${parsed.lane}`, parsed.house && `House ${parsed.house}`, parsed.mapLink && "pin"].filter(Boolean).join(" · ")} — check after filling.
+    <div style={S.loginWrap}>
+      <style>{CSS}</style>
+      <div style={S.loginCard}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 3, justifyContent: "center" }}>
+          <span style={{ ...S.logoMark, color: "#0F2419" }}>BNCHR+</span>
+          <span style={{ ...S.logoReg, color: "#C9A84C" }}>®</span>
+        </div>
+        <div style={S.loginSub}>Tire Purchase System</div>
+        <input
+          type="password"
+          value={pw}
+          autoFocus
+          onChange={e => { setPw(e.target.value); setErr(false); }}
+          onKeyDown={e => e.key === "Enter" && submit()}
+          placeholder="Team password"
+          style={{ ...S.loginInput, ...(err ? { borderColor: "#C0392B" } : {}) }}
+        />
+        {err && <div style={S.loginErr}>Incorrect password</div>}
+        <button onClick={submit} style={S.loginBtn}>Enter</button>
+      </div>
+    </div>
+  );
+}
+
+function MainApp() {
+  const [tires, setTiresRaw] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [tab, setTab] = useState("search"); // search | add | catalog
+  const [toast, setToast] = useState(null);
+
+  const showToast = useCallback((msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2200);
+  }, []);
+
+  // Load all tires from Supabase on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // Page through all rows (Supabase caps at 1000 per request)
+        let all = [], from = 0, page = 1000;
+        while (true) {
+          const { data, error } = await supabase
+            .from("tires").select("*").order("brand").range(from, from + page - 1);
+          if (error) throw error;
+          all = all.concat(data);
+          if (data.length < page) break;
+          from += page;
+        }
+        if (!cancelled) { setTiresRaw(all.map(rowToTire)); setLoading(false); }
+      } catch (e) {
+        if (!cancelled) { setLoadError(e.message || "Failed to load"); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Wrapped setter: applies the update locally, then syncs the diff to Supabase.
+  const tiresRef = React.useRef(tires);
+  useEffect(() => { tiresRef.current = tires; }, [tires]);
+
+  const setTires = useCallback((updater) => {
+    const prev = tiresRef.current;
+    const next = typeof updater === "function" ? updater(prev) : updater;
+    tiresRef.current = next;          // keep ref in sync immediately
+    setTiresRaw(next);                // update React state
+    syncToDb(prev, next, showToast);  // sync to DB as a real side-effect (outside updater)
+  }, [showToast]);
+
+  if (loading) {
+    return (
+      <div style={S.loginWrap}>
+        <style>{CSS}</style>
+        <div style={{ textAlign: "center", color: "#0F2419" }}>
+          <div style={{ ...S.logoMark, color: "#0F2419", fontSize: 28 }}>BNCHR+</div>
+          <div style={{ marginTop: 12, color: "#6B6B6B", fontSize: 14 }}>Loading catalog…</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.app}>
+      <style>{CSS}</style>
+      <header style={S.header}>
+        <div style={S.headerInner}>
+          <div style={S.logo}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 3 }}>
+              <span style={S.logoMark}>BNCHR+</span>
+              <span style={S.logoReg}>®</span>
             </div>
-          )}
-          {val && !parsed && !link && <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 5 }}>Couldn't read that — paste the full address line from Kuwait Finder, or its coordinates.</div>}
+            <span style={S.logoSub}>Tire Purchase System</span>
+          </div>
+          <nav style={S.nav}>
+            <NavBtn active={tab === "search"} onClick={() => setTab("search")} icon={<Search size={16} />} label="Search & Quote" />
+            <NavBtn active={tab === "add"} onClick={() => setTab("add")} icon={<Plus size={16} />} label="Add Tire" />
+            <NavBtn active={tab === "catalog"} onClick={() => setTab("catalog")} icon={<Package size={16} />} label={`Catalog (${tires.length})`} />
+            <NavBtn active={tab === "services"} onClick={() => setTab("services")} icon={<Tag size={16} />} label="Services" />
+            <NavBtn active={tab === "svcquote"} onClick={() => setTab("svcquote")} icon={<Share2 size={16} />} label="Service Quote" />
+          </nav>
+        </div>
+      </header>
+
+      {loadError && (
+        <div style={S.dbErrorBar}>
+          ⚠️ Could not reach the database: {loadError}. Changes may not be saved — please refresh.
+        </div>
+      )}
+
+      <main style={S.main}>
+        {tab === "search" && <SearchView tires={tires} setTires={setTires} showToast={showToast} />}
+        {tab === "add" && <AddView tires={tires} setTires={setTires} showToast={showToast} onDone={() => setTab("catalog")} />}
+        {tab === "catalog" && <CatalogView tires={tires} setTires={setTires} showToast={showToast} />}
+        {tab === "services" && <ServicesCatalogView showToast={showToast} />}
+        {tab === "svcquote" && <ServiceQuoteView showToast={showToast} />}
+      </main>
+
+      {toast && <div style={S.toast}><Check size={16} /> {toast}</div>}
+    </div>
+  );
+}
+
+// ── DB sync: diff previous vs next tire arrays, push changes to Supabase ───────
+async function syncToDb(prev, next, showToast) {
+  try {
+    const prevById = new Map(prev.map(t => [t.id, t]));
+    const nextById = new Map(next.map(t => [t.id, t]));
+
+    // INSERTS: tires in next with a local temp id (not yet in DB)
+    const inserts = next.filter(t => !isDbId(t.id));
+    // DELETES: ids in prev (that were DB rows) missing from next
+    const deletes = prev.filter(t => isDbId(t.id) && !nextById.has(t.id));
+    // UPDATES: DB rows present in both, with changed fields
+    const updates = next.filter(t => {
+      if (!isDbId(t.id)) return false;
+      const p = prevById.get(t.id);
+      if (!p) return false;
+      return JSON.stringify(tireToRow(p)) !== JSON.stringify(tireToRow(t))
+          || p._availableAt !== t._availableAt
+          || !!p.inStock !== !!t.inStock;
+    });
+
+    for (const t of inserts) {
+      const { data, error } = await supabase.from("tires").insert(tireToRow(t)).select().single();
+      if (error) throw error;
+      // swap temp id → real DB id in place (next render will reconcile)
+      t.id = data.id;
+    }
+    for (const t of updates) {
+      const row = tireToRow(t);
+      // Stamp confirmation date when in stock; clear it when out of stock
+      row.availability_checked_at = t.inStock ? (t._availableAt || new Date().toISOString()) : null;
+      row.updated_at = new Date().toISOString();
+      const { error } = await supabase.from("tires").update(row).eq("id", t.id);
+      if (error) throw error;
+    }
+    for (const t of deletes) {
+      const { error } = await supabase.from("tires").delete().eq("id", t.id);
+      if (error) throw error;
+    }
+  } catch (e) {
+    if (showToast) showToast("⚠️ Save failed — check connection");
+    console.error("Supabase sync error:", e);
+  }
+}
+
+function NavBtn({ active, onClick, icon, label }) {
+  return (
+    <button onClick={onClick} className="navbtn" style={{ ...S.navBtn, ...(active ? S.navBtnActive : {}) }}>
+      {icon}<span>{label}</span>
+    </button>
+  );
+}
+
+// ── SEARCH VIEW ───────────────────────────────────────────────────────────────
+function SearchView({ tires, setTires, showToast }) {
+  const [mode, setMode] = useState("size"); // size | car
+  const [sizeA, setSizeA] = useState("");
+  const [sizeB, setSizeB] = useState("");
+  const [useTwoSizes, setUseTwoSizes] = useState(false);
+  const [carQuery, setCarQuery] = useState("");
+  const [carFilter, setCarFilter] = useState(null);
+  const [selected, setSelected] = useState({}); // id -> bool (for sharing)
+  const [editing, setEditing] = useState(null);
+  const [historyFor, setHistoryFor] = useState(null);
+  const [qty, setQty] = useState(4); // tires customer needs
+  const [centerlock, setCenterlock] = useState(false);
+  const [cashPct, setCashPct] = useState(0); // cash discount: 0 (off) | 6 | 10
+  const [breakdown, setBreakdown] = useState(false); // show per-tire price detail
+  const [lang, setLang] = useState("ar"); // quote language: 'ar' default | 'en'
+  const [history, setHistory] = useState(() => {
+    // Restore recent searches from this device (per-device, last 8)
+    try {
+      const raw = localStorage.getItem("bnchr_search_history");
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  const [sortBy, setSortBy] = useState("price"); // 'price' | 'profit'
+  const [sortDir, setSortDir] = useState("asc"); // 'asc' (low→high, default) | 'desc' (high→low)
+  const [availFilter, setAvailFilter] = useState("available"); // 'available' | 'out' | 'all'
+  const [typeFilter, setTypeFilter] = useState("all"); // 'all' | 'offroad' | 'normal'
+  const [showMarkings, setShowMarkings] = useState(false);
+  const [showSug, setShowSug] = useState(false); // size autocomplete dropdown
+  const [focusField, setFocusField] = useState(null); // 'A' | 'B' | null
+
+  // Catalog size index — unique sizes that actually exist, with counts (for smart typing)
+  const catalogSizes = useMemo(() => {
+    const map = {};
+    for (const t of tires) {
+      const key = `${t.width}/${t.aspect}${t.structure}${t.rim}`;
+      if (!map[key]) map[key] = { label: key, width: t.width, aspect: t.aspect, rim: t.rim, count: 0 };
+      map[key].count++;
+    }
+    return Object.values(map).sort((a, b) => b.count - a.count);
+  }, [tires]);
+
+  // record a search into history (dedupe, keep last 8)
+  const pushHistory = (entry) => {
+    setHistory(prev => {
+      const next = [entry, ...prev.filter(h => h.value !== entry.value || h.mode !== entry.mode)];
+      return next.slice(0, 8);
+    });
+  };
+
+  // Persist search history to this device whenever it changes
+  useEffect(() => {
+    try { localStorage.setItem("bnchr_search_history", JSON.stringify(history)); } catch {}
+  }, [history]);
+
+  const parsedA = useMemo(() => parseSize(sizeA), [sizeA]);
+  const parsedB = useMemo(() => parseSize(sizeB), [sizeB]);
+
+  // car lookup
+  const carMatch = useMemo(() => {
+    const q = carQuery.trim().toLowerCase();
+    if (!q) return null;
+    const key = Object.keys(CAR_DB).find(k => k.includes(q) || q.includes(k));
+    return key ? { key, options: CAR_DB[key] } : null;
+  }, [carQuery]);
+
+  // Determine active search sizes
+  const activeSizes = useMemo(() => {
+    if (mode === "car" && carMatch) {
+      let opts = carMatch.options;
+      if (carFilter != null) opts = [carMatch.options[carFilter]];
+      const sizes = opts.flatMap(o => o.sizes).map(parseSize).filter(Boolean);
+      return sizes;
+    }
+    const arr = [];
+    if (parsedA) arr.push(parsedA);
+    if (useTwoSizes && parsedB) arr.push(parsedB);
+    return arr;
+  }, [mode, carMatch, carFilter, parsedA, parsedB, useTwoSizes]);
+
+  // Results grouped by size then category
+  const results = useMemo(() => {
+    if (!activeSizes.length) return [];
+    const dir = sortDir === "asc" ? 1 : -1; // desc = high→low
+    return activeSizes.map(sz => {
+      let matched = tires.filter(t => matchesSize(t, sz));
+      // Availability filter (default: available only) — uses inStock (source of truth)
+      if (availFilter === "available") matched = matched.filter(t => t.inStock);
+      else if (availFilter === "out") matched = matched.filter(t => !t.inStock);
+      if (typeFilter === "offroad") matched = matched.filter(t => t.type === "Off-Road");
+      else if (typeFilter === "normal") matched = matched.filter(t => t.type !== "Off-Road");
+      const byCat = {};
+      for (const c of CATEGORY_ORDER) {
+        const items = matched.filter(t => t.category === c);
+        if (items.length) {
+          items.sort(sortBy === "profit"
+            ? (a, b) => dir * ((b.price - b.cost) - (a.price - a.cost))
+            : (a, b) => dir * (b.price - a.price));
+          byCat[c] = items;
+        }
+      }
+      const szLabel = Number(sz.width) < 100 ? `${sz.width}x${sz.aspect}${sz.structure}${sz.rim}` : `${sz.width}/${sz.aspect}${sz.structure}${sz.rim}`;       return { size: sz, label: szLabel, byCat, count: matched.length };
+    });
+  }, [activeSizes, tires, sortBy, sortDir, availFilter, typeFilter]);
+
+  // Counts for the availability filter chips (within current size results, before avail filter)
+  const availCounts = useMemo(() => {
+    let all = 0, avail = 0;
+    for (const sz of activeSizes) {
+      for (const t of tires) {
+        if (matchesSize(t, sz)) {
+          all++;
+          if (t.inStock) avail++;
+        }
+      }
+    }
+    return { all, avail, out: all - avail };
+  }, [activeSizes, tires]);
+
+  const toggleSelect = (id) => setSelected(p => ({ ...p, [id]: !p[id] }));
+
+  // Size autocomplete suggestions — catalog sizes matching what's typed in the focused field
+  const typedRaw = focusField === "B" ? sizeB : sizeA;
+  const suggestions = useMemo(() => {
+    const q = (typedRaw || "").replace(/[^0-9]/g, ""); // digits only for matching
+    if (!q) return catalogSizes.slice(0, 6); // show top sizes when empty+focused
+    return catalogSizes
+      .filter(s => `${s.width}${s.aspect}${s.rim}`.startsWith(q) || `${s.width}${s.aspect}`.startsWith(q) || s.width.startsWith(q))
+      .slice(0, 6);
+  }, [typedRaw, catalogSizes]);
+
+  // Record into history when a valid size search yields a definite size (debounced via results)
+  useEffect(() => {
+    if (mode === "size" && parsedA) {
+      const label = useTwoSizes && parsedB
+        ? `${parsedA.width}/${parsedA.aspect}${parsedA.structure}${parsedA.rim} + ${parsedB.width}/${parsedB.aspect}${parsedB.structure}${parsedB.rim}`
+        : `${parsedA.width}/${parsedA.aspect}${parsedA.structure}${parsedA.rim}`;
+      const t = setTimeout(() => pushHistory({ mode: "size", value: label, sizeA, sizeB: useTwoSizes ? sizeB : "", two: useTwoSizes }), 1200);
+      return () => clearTimeout(t);
+    }
+  }, [parsedA, parsedB, useTwoSizes]); // eslint-disable-line
+
+  useEffect(() => {
+    if (mode === "car" && carMatch) {
+      const t = setTimeout(() => pushHistory({ mode: "car", value: carMatch.key, carQuery: carMatch.key }), 1200);
+      return () => clearTimeout(t);
+    }
+  }, [carMatch]); // eslint-disable-line
+
+  const applyHistory = (h) => {
+    if (h.mode === "size") {
+      setMode("size");
+      setSizeA(h.sizeA);
+      setUseTwoSizes(h.two);
+      setSizeB(h.sizeB || "");
+    } else {
+      setMode("car");
+      setCarQuery(h.carQuery);
+      setCarFilter(null);
+    }
+    setShowSug(false);
+  };
+
+  const pickSuggestion = (s) => {
+    if (focusField === "B") setSizeB(s.label); else setSizeA(s.label);
+    setShowSug(false);
+  };
+
+  const isStaggered = results.length === 2;
+  const shareText = useMemo(
+    () => buildShareText(results, null, selected, { qty, centerlock, staggered: isStaggered, breakdown, lang, cashPct }),
+    [results, selected, qty, centerlock, isStaggered, breakdown, lang, cashPct]
+  );
+  const hasShareable = results.some(r => Object.values(r.byCat).flat().some(t => t.inStock && selected[t.id]));
+  const selectedCount = useMemo(() => {
+    const ids = new Set();
+    results.forEach(r => Object.values(r.byCat).flat().forEach(t => {
+      if (t.inStock && selected[t.id]) ids.add(t.id);
+    }));
+    return ids.size;
+  }, [results, selected]);
+// ── Quote log: customer mobile (mandatory) + agent, saved when Copy is pressed ──
+  const [quoteMobile, setQuoteMobile] = useState("");
+  const [quoteAgent, setQuoteAgent] = useState(() => { try { return localStorage.getItem("bnchr_agent") || ""; } catch { return ""; } });
+  const pickAgent = (a) => { setQuoteAgent(a); try { localStorage.setItem("bnchr_agent", a); } catch {} };
+  const saveQuoteLog = () => {
+    const mobile = quoteMobile.trim();
+    if (!mobile) return { ok: false, msg: "Enter customer mobile first" };
+    if (!quoteAgent) return { ok: false, msg: "Select your name (agent) first" };
+    const seen = new Set(); const qlines = [];
+    results.forEach((r, ri) => Object.values(r.byCat).flat().forEach(t => {
+      if (t.inStock && selected[t.id] && !seen.has(t.id)) {
+        seen.add(t.id);
+        qlines.push({ tire_id: t.id, brand: t.brand, pattern: t.pattern || "", size: r.label, year: t.year || "", price: t.price, position: isStaggered ? (ri === 0 ? "front" : "rear") : null });
+      }
+    }));
+    if (!qlines.length) return { ok: false, msg: "No tires selected" };
+    const row = { customer_mobile: mobile, agent: quoteAgent, qty: isStaggered ? 4 : qty, staggered: isStaggered, centerlock, cash_pct: cashPct, lang, lines: qlines, quote_text: shareText };
+    try { supabase.from("quotes").insert(row).then(() => {}); } catch (e) {}
+    return { ok: true };
+  };
+  const saveEdit = (updated) => {
+    setTires(prev => prev.map(t => {
+      if (t.id !== updated.id) return t;
+      const changed = t.cost !== updated.cost || t.price !== updated.price;
+      const history = changed
+        ? [...t.history, { ts: new Date().toISOString(), cost: updated.cost, price: updated.price, note: "Edited" }]
+        : t.history;
+      return { ...updated, category: detectCategory(updated.brand), history };
+    }));
+    setEditing(null);
+    showToast("Tire updated");
+  };
+
+  return (
+    <div>
+      {/* (Availability re-check is now handled by the purchaser in the Catalog) */}
+
+      {/* Search controls */}
+      <div style={S.card}>
+        <div style={S.modeRow}>
+          <button onClick={() => setMode("size")} className="seg" style={{ ...S.seg, ...(mode === "size" ? S.segOn : {}) }}>
+            <Tag size={15} /> By Size
+          </button>
+          <button onClick={() => setMode("car")} className="seg" style={{ ...S.seg, ...(mode === "car" ? S.segOn : {}) }}>
+            <Car size={15} /> By Car
+          </button>
+          <div style={{ flex: 1 }} />
+          <button onClick={() => setShowMarkings(true)} className="seg" style={{ ...S.seg, fontSize: 12 }} title="OE & runflat markings reference">
+            🏷 Markings
+          </button>
+        </div>
+
+        {mode === "size" ? (
+          <div>
+            <label style={S.label}>Tire size</label>
+            <div style={{ position: "relative" }}>
+              <input
+                autoFocus value={sizeA}
+                onChange={e => { setSizeA(e.target.value); setShowSug(true); }}
+                onFocus={() => { setFocusField("A"); setShowSug(true); }}
+                onBlur={() => setTimeout(() => setShowSug(false), 150)}
+                placeholder="265/65r18  ·  265 65 18  ·  2656518  ·  265-65-18"
+                style={S.input} className="inp"
+              />
+              {showSug && focusField === "A" && suggestions.length > 0 && (
+                <div style={S.sugBox}>
+                  {suggestions.map(s => (
+                    <button key={s.label} className="sugitem" style={S.sugItem}
+                      onMouseDown={() => pickSuggestion(s)}>
+                      <span style={S.sugSize}>{s.label}</span>
+                      <span style={S.sugCount}>{s.count} tire{s.count !== 1 ? "s" : ""}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {parsedA && <div style={S.parsed}>Width {parsedA.width} · Aspect {parsedA.aspect} · Rim {parsedA.rim}"</div>}
+
+            <label className="chk" style={S.chkRow}>
+              <input type="checkbox" checked={useTwoSizes} onChange={e => setUseTwoSizes(e.target.checked)} />
+              <span>Staggered fitment — add a second size (front/rear differ)</span>
+            </label>
+
+            {useTwoSizes && (
+              <div style={{ marginTop: 10, position: "relative" }}>
+                <label style={S.label}>Second size (rear)</label>
+                <input value={sizeB}
+                  onChange={e => { setSizeB(e.target.value); setShowSug(true); }}
+                  onFocus={() => { setFocusField("B"); setShowSug(true); }}
+                  onBlur={() => setTimeout(() => setShowSug(false), 150)}
+                  placeholder="295/30zr19" style={S.input} className="inp" />
+                {showSug && focusField === "B" && suggestions.length > 0 && (
+                  <div style={S.sugBox}>
+                    {suggestions.map(s => (
+                      <button key={s.label} className="sugitem" style={S.sugItem}
+                        onMouseDown={() => pickSuggestion(s)}>
+                        <span style={S.sugSize}>{s.label}</span>
+                        <span style={S.sugCount}>{s.count} tire{s.count !== 1 ? "s" : ""}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {parsedB && <div style={S.parsed}>Width {parsedB.width} · Aspect {parsedB.aspect} · Rim {parsedB.rim}"</div>}
+              </div>
+            )}
+
+            {history.length > 0 && (
+              <div style={S.histWrap}>
+                <span style={S.histLabel}>Recent</span>
+                <div style={S.histChips}>
+                  {history.map((h, i) => (
+                    <button key={i} className="histchip" style={S.histChip} onClick={() => applyHistory(h)}>
+                      {h.mode === "car" ? <Car size={12} /> : <Tag size={12} />} {h.value}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div>
+            <label style={S.label}>Car (year + make + model)</label>
+            <input
+              autoFocus value={carQuery} onChange={e => { setCarQuery(e.target.value); setCarFilter(null); }}
+              placeholder="2011 porsche 911 carrera"
+              style={S.input} className="inp"
+            />
+            {carQuery && !carMatch && <div style={S.parsedMuted}>No match yet — try "2011 porsche 911 carrera" or "2020 mercedes g63"</div>}
+            {carMatch && (
+              <div style={S.carOpts}>
+                <button onClick={() => setCarFilter(null)} style={{ ...S.carChip, ...(carFilter === null ? S.carChipOn : {}) }}>All sizes</button>
+                {carMatch.options.map((o, i) => (
+                  <button key={i} onClick={() => setCarFilter(i)} style={{ ...S.carChip, ...(carFilter === i ? S.carChipOn : {}) }}>
+                    {o.label} · {o.sizes.join(" / ")}
+                  </button>
+                ))}
+              </div>
+            )}
+            {history.length > 0 && (
+              <div style={S.histWrap}>
+                <span style={S.histLabel}>Recent</span>
+                <div style={S.histChips}>
+                  {history.map((h, i) => (
+                    <button key={i} className="histchip" style={S.histChip} onClick={() => applyHistory(h)}>
+                      {h.mode === "car" ? <Car size={12} /> : <Tag size={12} />} {h.value}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Availability filter bar (above results) */}
+      {activeSizes.length > 0 && (
+        <div style={S.availFilterBar}>
+          <button onClick={() => setAvailFilter("available")} className="availfilterbtn"
+            style={{ ...S.availFilterBtn, ...(availFilter === "available" ? S.availFilterBtnOn : {}) }}>
+            Available ({availCounts.avail})
+          </button>
+          <button onClick={() => setAvailFilter("out")} className="availfilterbtn"
+            style={{ ...S.availFilterBtn, ...(availFilter === "out" ? S.availFilterBtnOn : {}) }}>
+            Out of Stock ({availCounts.out})
+          </button>
+          <button onClick={() => setAvailFilter("all")} className="availfilterbtn"
+            style={{ ...S.availFilterBtn, ...(availFilter === "all" ? S.availFilterBtnOn : {}) }}>
+            All ({availCounts.all})
+          </button>
+          <span style={{ width: 1, alignSelf: "stretch", background: "#E2E2DA", margin: "0 4px" }} />
+          <button onClick={() => setTypeFilter(typeFilter === "offroad" ? "all" : "offroad")} className="availfilterbtn"
+            style={{ ...S.availFilterBtn, ...(typeFilter === "offroad" ? S.availFilterBtnOn : {}) }}>
+            🏔 Off-Road
+          </button>
+          <button onClick={() => setTypeFilter(typeFilter === "normal" ? "all" : "normal")} className="availfilterbtn"
+            style={{ ...S.availFilterBtn, ...(typeFilter === "normal" ? S.availFilterBtnOn : {}) }}>
+            Road
+          </button>
+        </div>
+      )}
+
+      {/* Results */}
+      {results.length > 0 && results.map((r, idx) => (
+        <div key={idx} style={S.card}>
+          <div style={S.sizeHeader}>
+            <span style={S.sizeHeaderLabel}>{r.label}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {idx === 0 && (
+                <div style={S.sortWrap}>
+                  <span style={S.sortLabel}>Sort:</span>
+                  <button onClick={() => setSortBy("price")} className="sortbtn"
+                    style={{ ...S.sortBtn, ...(sortBy === "price" ? S.sortBtnOn : {}) }}>Price</button>
+                  <button onClick={() => setSortBy("profit")} className="sortbtn"
+                    style={{ ...S.sortBtn, ...(sortBy === "profit" ? S.sortBtnOn : {}) }}>Profit</button>
+                  <button onClick={() => setSortDir(d => d === "desc" ? "asc" : "desc")} className="sortbtn"
+                    style={{ ...S.sortBtn, ...S.sortDirBtn }}
+                    title={sortDir === "desc" ? "High to Low (tap for Low to High)" : "Low to High (tap for High to Low)"}>
+                    {sortDir === "desc" ? "↓ High–Low" : "↑ Low–High"}
+                  </button>
+                </div>
+              )}
+              <span style={S.sizeHeaderCount}>{r.count} tire{r.count !== 1 ? "s" : ""}{availFilter !== "all" ? " shown" : " in catalog"}</span>
+            </div>
+          </div>
+          {r.count === 0 && <div style={S.empty}>{availFilter === "available" ? "No available tires for this size. Switch to 'All' to see out-of-stock options, or add tires in the Add Tire tab." : "No tires in catalog for this size. Add them in the Add Tire tab."}</div>}
+          {CATEGORY_ORDER.filter(c => r.byCat[c]).map(c => (
+            <div key={c} style={{ marginTop: 14 }}>
+              <div style={{ ...S.catTag, background: CATEGORY[c].soft, color: CATEGORY[c].color }}>
+                <span style={{ ...S.catDot, background: CATEGORY[c].color }} />
+                {CATEGORY[c].en} <span style={S.catAr}>{CATEGORY[c].ar}</span>
+              </div>
+              {r.byCat[c].map(t => (
+                <TireRow
+                  key={t.id} t={t}
+                  available={t.inStock ? (t._availableAt ? new Date(t._availableAt).getTime() : Date.now()) : null}
+                  selected={selected[t.id]}
+                  onToggleSelect={() => toggleSelect(t.id)}
+                  onHistory={() => setHistoryFor(t)}
+                  cashPct={cashPct}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      ))}
+
+      {/* Empty states when a search was attempted but produced nothing */}
+      {results.length === 0 && mode === "size" && sizeA.trim() !== "" && !parsedA && (
+        <div style={S.card}><div style={S.empty}>That doesn't look like a valid tire size yet. Try a format like <b>265/65R18</b>, <b>265 65 18</b>, or <b>2656518</b>.</div></div>
+      )}
+      {results.length === 0 && mode === "car" && carQuery.trim() !== "" && !carMatch && (
+        <div style={S.card}><div style={S.empty}>No match for "<b>{carQuery}</b>" in the car database yet. Try searching by tire size instead, or check the spelling.</div></div>
+      )}
+
+      {/* Share bar */}
+      {hasShareable && (
+        <ShareBar text={shareText} showToast={showToast}
+          qty={qty} setQty={setQty} centerlock={centerlock} setCenterlock={setCenterlock}
+          breakdown={breakdown} setBreakdown={setBreakdown}
+          lang={lang} setLang={setLang}
+          cashPct={cashPct} setCashPct={setCashPct}
+          hasMichelinSelected={results.some(r => Object.values(r.byCat).flat().some(t => t.inStock && selected[t.id] && isMichelinSupplier(t)))}
+          selectedCount={selectedCount}
+          quoteMobile={quoteMobile} setQuoteMobile={setQuoteMobile}
+          quoteAgent={quoteAgent} pickAgent={pickAgent} saveQuoteLog={saveQuoteLog}
+          staggered={isStaggered} />
+      )}
+
+      {editing && <EditModal tire={editing} onClose={() => setEditing(null)} onSave={saveEdit} />}
+      {historyFor && <HistoryModal tire={historyFor} onClose={() => setHistoryFor(null)} />}
+
+      {showMarkings && (
+        <div style={S.modalWrap} onClick={() => setShowMarkings(false)}>
+          <div style={S.modal} onClick={e => e.stopPropagation()}>
+            <div style={S.modalHead}>
+              <h3 style={S.modalTitle}>Tire Markings Guide</h3>
+              <button onClick={() => setShowMarkings(false)} className="iconbtn" style={S.iconBtn}><X size={18} /></button>
+            </div>
+            <p style={S.sub}>OE approval & runflat codes found on premium tire sidewalls. Useful when recommending OEM-spec tires.</p>
+            {[
+              ["OEM approval", ["MO", "MO1", "MOE", "★", "N0", "N1", "N2", "N3", "AO", "AO1", "RO1", "AR", "J", "JLR", "L", "F", "B", "VO"]],
+              ["Runflat", ["ZP", "ZPS", "RFT", "ROF", "SSR", "DSST", "HRS", "EMT", "RSC", "RF"]],
+              ["Sidewall / load", ["OWL", "RWL", "BSW", "XL", "LT", "C"]],
+              ["Weather", ["M+S", "3PMSF"]],
+            ].map(([group, codes]) => (
+              <div key={group} style={{ marginTop: 14 }}>
+                <div style={S.markGroup}>{group}</div>
+                {codes.filter(c => TIRE_MARKINGS[c]).map(c => (
+                  <div key={c} style={S.markRow}>
+                    <span style={S.markCode}>{c}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={S.markMeaning}>{TIRE_MARKINGS[c].meaning}</div>
+                      <div style={S.markBrands}>{TIRE_MARKINGS[c].brands}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-// ─── Kuwait areas → governorate (6 governorates) ──────────────────────────────
-// Used for clean, consistent area data + auto-derived governorate for reporting.
-const KW_AREAS = {
-  // Al Asimah
-  "Khaldiya": "Al Asimah",
-  "Dasma": "Al Asimah",
-  "Da'iya": "Al Asimah",
-  "Doha": "Al Asimah",
-  "Rawda": "Al Asimah",
-  "Surra": "Al Asimah",
-  "Shamiya": "Al Asimah",
-  "Sharq": "Al Asimah",
-  "Shuwaikh": "Al Asimah",
-  "Sulaibikhat": "Al Asimah",
-  "Sawaber": "Al Asimah",
-  "Adailiya": "Al Asimah",
-  "Faiha": "Al Asimah",
-  "Qadisiya": "Al Asimah",
-  "Qibla": "Al Asimah",
-  "Mirqab": "Al Asimah",
-  "Mansouriya": "Al Asimah",
-  "Nuzha": "Al Asimah",
-  "Yarmouk": "Al Asimah",
-  "Bneid Al - Gar": "Al Asimah",
-  "Hadaeq Al-Soor": "Al Asimah",
-  "Dasman": "Al Asimah",
-  "Abdullah Al - salem": "Al Asimah",
-  "Garnata": "Al Asimah",
-  "Failaka": "Al Asimah",
-  "Qurtuba": "Al Asimah",
-  "Kaifan": "Al Asimah",
-  "Jaber Al - Ahmad": "Al Asimah",
-  "Maaskar Al-Mubarakiya": "Al Asimah",
-  // Hawalli
-  "Jabriya": "Hawalli",
-  "Rumaithiya": "Hawalli",
-  "Zahra": "Hawalli",
-  "Salmiya": "Hawalli",
-  "Salam": "Hawalli",
-  "Shaab": "Hawalli",
-  "Shuhada'a": "Hawalli",
-  "Sadiq": "Hawalli",
-  "Mubarakiya": "Hawalli",
-  "Bayan": "Hawalli",
-  "Hateen": "Hawalli",
-  "Hawally": "Hawalli",
-  "Salwa": "Hawalli",
-  "Mubarak Al - Abdullah Al - Jaber": "Hawalli",
-  "Mishref": "Hawalli",
-  // Farwaniya
-  "Eshbilya": "Farwaniya",
-  "Andalous": "Farwaniya",
-  "Rabia": "Farwaniya",
-  "Rihab": "Farwaniya",
-  "Riggae": "Farwaniya",
-  "Rai": "Farwaniya",
-  "Shadadiya": "Farwaniya",
-  "Dhajeej": "Farwaniya",
-  "Ardiya": "Farwaniya",
-  "Omariya": "Farwaniya",
-  "Firdous": "Farwaniya",
-  "Al - Farwaniyah": "Farwaniya",
-  "Jleeb Al - Shuyoukh": "Farwaniya",
-  "Khaitan": "Farwaniya",
-  "Sabah Al - Nasser": "Farwaniya",
-  "Abdullah Al - Mubarak": "Farwaniya",
-  // Mubarak Al-Kabeer
-  "Adan": "Mubarak Al-Kabeer",
-  "Funaitees": "Mubarak Al-Kabeer",
-  "Qurain": "Mubarak Al-Kabeer",
-  "Qosour": "Mubarak Al-Kabeer",
-  "Messayl": "Mubarak Al-Kabeer",
-  "Messila": "Mubarak Al-Kabeer",
-  "Abu Al - Hasania": "Mubarak Al-Kabeer",
-  "Abu Fatira": "Mubarak Al-Kabeer",
-  "Sabah Al - salem": "Mubarak Al-Kabeer",
-  "Subhan": "Mubarak Al-Kabeer",
-  "Gharb Abu Fatira Al-Herafiya": "Mubarak Al-Kabeer",
-  "Mubarak Al - Kabeer": "Mubarak Al-Kabeer",
-  // Ahmadi
-  "Ahmadi": "Ahmadi",
-  "Khiran": "Ahmadi",
-  "Riqqa": "Ahmadi",
-  "Shuaiba": "Ahmadi",
-  "Sabahiya": "Ahmadi",
-  "Dhaher": "Ahmadi",
-  "Egaila": "Ahmadi",
-  "Fahaheel": "Ahmadi",
-  "Fintas": "Ahmadi",
-  "Mangaf": "Ahmadi",
-  "Mahboula": "Ahmadi",
-  "Wafra": "Ahmadi",
-  "Abu Halifa": "Ahmadi",
-  "Jaber Al - Ali": "Ahmadi",
-  "Ali Sabah Al - Salem": "Ahmadi",
-  "Fahad Al - Ahmad": "Ahmadi",
-  "Sabah Al - Ahmad": "Ahmadi",
-  "Sabah Al - Ahmad Al-Bahriya": "Ahmadi",
-  "Mina Abdullah": "Ahmadi",
-  "Hadiya": "Ahmadi",
-  // Jahra
-  "Jahra": "Jahra",
-  "Sulaibiya": "Jahra",
-  "Abdaly": "Jahra",
-  "A'youn": "Jahra",
-  "Qasr": "Jahra",
-  "Qeirawan": "Jahra",
-  "Mutla": "Jahra",
-  "Naseem": "Jahra",
-  "Na'eem": "Jahra",
-  "Nah'da": "Jahra",
-  "Waha": "Jahra",
-  "Amghara": "Jahra",
-  "Taima": "Jahra",
-  "Suad Al - Abdullah": "Jahra",
-};
-const KW_AREA_NAMES = Object.keys(KW_AREAS).sort();
-const govFor = (area) => KW_AREAS[area] || "";
+function TireRow({ t, available, selected, onToggleSelect, onHistory, cashPct = 0 }) {
+  const effPrice = effectivePrice(t, cashPct);
+  const discounted = effPrice !== round3(t.price);
+  return (
+    <div style={{ ...S.tireRow, ...(available ? S.tireRowAvail : {}) }}>
+      <div style={S.tireMain}>
+        {available && (
+          <input type="checkbox" checked={!!selected} onChange={onToggleSelect} className="chk" style={{ marginRight: 10, marginTop: 3 }} />
+        )}
+        <div style={{ flex: 1 }}>
+          <div style={S.tireLine}>{tireLine(t)}</div>
+          {t.notes && <div style={S.markingNote}>🏷 {t.notes}</div>}
+          <div style={S.tireMeta}>
+            {discounted ? (
+              <span style={S.priceTag}>
+                <span style={{ textDecoration: "line-through", color: "#B0B0A8", fontWeight: 500, marginRight: 5 }}>{t.price}</span>
+                {effPrice} KD
+              </span>
+            ) : (
+              <span style={S.priceTag}>{t.price} KD</span>
+            )}
+            <span style={S.costTag}>cost {t.cost}</span>
+            {(() => {
+              const profit = round3(effPrice - t.cost);
+              const margin = effPrice ? Math.round(profit / effPrice * 100) : 0;
+              const tier = profitTier(profit);
+              const loss = profit < 0;
+              return (
+                <span style={{ ...S.profitBadge, background: loss ? "#FBEAE8" : tier.bg, color: loss ? "#9B2C20" : tier.fg }}>
+                  {loss ? "⚠ " : "+"}{profit} KD <span style={S.profitMargin}>· {margin}%</span>
+                </span>
+              );
+            })()}
+            {t.supplier && <span style={S.supplierTag}>{t.supplier}</span>}
+            {t.type === "Off-Road" && <span style={S.offroadTag}>Off-Road</span>}
+          </div>
+        </div>
+      </div>
+      <div style={S.tireActions}>
+        <div style={S.availWrap}>
+          {(() => {
+            const tier = available ? freshnessTier(available) : null;
+            const badgeStyle = !available ? S.availOff
+              : tier === "green" ? S.availOn
+              : tier === "grey" ? S.availGrey
+              : S.availStale;
+            return (
+              <span style={{ ...S.availBadgeRO, ...badgeStyle }}>
+                {available ? <><Check size={13} /> Available</> : "Out of Stock"}
+              </span>
+            );
+          })()}
+          {available && (
+            <span style={{ ...S.freshLabel, color: FRESH_COLOR[freshnessTier(available)] }}>
+              {freshnessLabel(available)}
+            </span>
+          )}
+        </div>
+        <button onClick={onHistory} className="iconbtn" style={S.iconBtn} title="Price history"><History size={15} /></button>
+      </div>
+    </div>
+  );
+}
 
-// ─── Kuwait named streets by governorate (official; most KW streets are numbers) ─
-// 'Main' roads (highways) are shown for every governorate.
-const KW_MAIN_STREETS = ["AL _ Maghreb", "Abdul Aziz Bin Abdul Al - Rahman Al - Saud", "Airport", "Arabian Gulf", "Cairo", "Damascus", "Esa Bin Sulman Al - Khalifa", "Faisal Bin Abdul Aziz", "Ghazali", "Ghous", "Jahra", "Jamal Abdul Nasser", "Mohammed Bin Al - Qasim", "Riyadh", "The Custodian of The Two Holy Mosques King Fahad Ibn Abdul Aziz Road"];
-const KW_STREETS_BY_GOV = {
-  "Al Asimah": ["AI - Edreesi", "Abdul Al - Rahman Al - Dhakhil", "Abdul Al - Rahman Yousif Al - Bader", "Abdul Aziz Abdul Mehsin Al - Rashed", "Abdul Aziz Abdullah Al - Sarawy", "Abdul Aziz Bin Abdullah Bin Baz", "Abdul Aziz Ebrahim Al - Meshl", "Abdul Aziz Hamad Al - Sagher", "Abdul Aziz Mohammed Al - Duaij", "Abdul Aziz Yousif Al - Mzaini", "Abdul Hameed Abdul Abdul Aziz Al - Sane", "Abdul Latif Sulaiman Al - Othman", "Abdul Minem Riyad", "Abdul Qader Al - Hussaini", "Abdul Wahab Hussain Al - Qurtas", "Abdullah Al - Ahmed", "Abdullah Al - Khalaf Al - Saeed", "Abdullah Al - Khalifa Al - Sabah", "Abdullah Al - Mijrin Al - Roomi", "Abdullah Al - Mubarak", "Abdullah Al - Nouri", "Abdullah Al - salem", "Abdullah Mohammed Al - Hajeri", "Abdullah Zakariya Al - Anasri", "Abu Al - Asswad Al - Do’aly", "Abu Al - Faraj Al - Asfahani", "Abu Ayob Al - Anssari", "Abu Bakr Al - siddeeq", "Abu Hayyan Al - Tawheedy", "Abu Moussa Al - Asha’ary", "Abu Obaidah Abu Al - Jarah", "Abu Tammam", "Abu Yousif Al - Qadi", "Aden", "Ahmed Al - Estath", "Ahmed Al - Ganim", "Ahmed Al - Hindi", "Ahmed Al - Jaber", "Ahmed Bin Abdul Aziz Al - Anssary", "Ahmed Lottfi Al - sayed", "Ahmed Shawki", "Akkah", "Al - Arabi", "Al - Baha’a Zuhair", "Al - Baroodi", "Al - Emam Al - Hassan Bin Ali Bin Abi Talib", "Al - Emam Al - Hassein Bin Ali Bin Abi Talib", "Al - Khaleel Bin Ahmed", "Al - Ma’arri", "Al - Nabi’gha Al - Thebiani", "Al - No’man Bin Basheer", "Al - Oroba", "Al - Salhiya", "Al - Shareef Al - Radi", "Al - Tabarri", "Ali Al - Salem", "Ali Bin Abi Talib", "Ali Sulaiman Abu Khail", "Amadi", "Ammar Bin Yasser", "Amna Bint Wahab", "Amorria", "Anbarri", "Arafat", "Assma’ Bint Abu Bakr Al - Siddeeq", "Aukadh", "Aumayah", "Azd", "Azhar", "Babel", "Bader", "Balqees", "Belal Bin Rabah", "Bludan", "Bo Asseya", "Bukhary", "Burgan", "Dasma", "Da’iya", "Doha", "Duwaihi Bin Rumaih", "Ebn Abbas", "Ebn Al - Arqam", "Ebn Al - Atheer", "Ebn Al - Haythem", "Ebn Battota", "Ebn Ceena", "Ebn Hani", "Ebn Hazm", "Ebn Katheer", "Ebn Mandhour", "Ebn Mesbah", "Ebrahim Al - Mudhaf", "Esa Abdul Rahman Al - Asousi", "Escandariya", "Eshbilya", "Eyas Bin", "Fahad Al - Salem", "Faiha,", "Failaka", "Farazdaq", "Furat", "Garnata", "Gazza", "Ghassan", "Hakah", "Hamad Al - Khalifa Al - Humaeda", "Hamad Al - Saghir", "Hamza Bin Abdul Mutalib", "Haram Bin Senan", "Hassan Bin Thabit", "Hateen", "Hathramout", "Hisham Bin Abdul Malik", "Hunain", "Jaber Al - Mubarak", "Jahedh", "Jamal Addin Al - Afggani", "Jameel Bin Muamar", "Jareer", "Jassim Bodai", "Jassim Mohammed Al - Wazzan", "Jazaeir", "Jehad", "Kadhma", "Kanana", "Karama", "Khalid Ayoob Bandar", "Khalid Ebn Al - Waleed", "Khawla Bint Al - Azwar", "Komait", "Koofa", "Lo’lo’a", "Maan Bin Za’ida", "Maisaloun", "Mamoun", "Manfalouti", "Mangaf", "Mansour", "Marakish", "Marjan", "Marqash", "Masoudi", "Mazzini", "Mina", "Mohalab", "Mohammed Abdu", "Mohammed Abdul Mehsin Al - Kharafi", "Mohammed Bin Hamad Bin La’boun", "Mohammed Ibn Hagan", "Mohammed Rafie Marafie", "Mohammed Thinayyan Al - Ghanim", "Mohammed Yousif Al - Adasani", "Mubarak Al - Kabeer", "Mubarakiya", "Muktaffi", "Muroaa", "Mutawakkil", "Najda", "Nasser", "Nasser Ibrahim Al - Sagabi", "Neel", "Nusf Al - Yousif Al - Nuaf", "Nuzha", "Om Al - Qeween", "Oman", "Omar Al - Mukhtar", "Omar Bin Abdul Aziz", "Omar Bin Al - Khatab", "Omar Bin Habira", "Omru’o Al - Qays", "Orass", "Osama Bin Mongith", "Othman Bin Affan", "Por Sa’eed", "Qadisiya", "Qortubi", "Quds", "Quraiysh", "Qurtuba", "Qussai Bin Kilab", "Rab,ah Al - Adewya", "Raed", "Raffaee", "Rasheed", "Rashid Bin Ahmed Al - Romi", "Rashid Burusli", "Rawdhatain", "Rebat", "Salah Al - Deen Al - Ayobi", "Salam", "Salih Abdul Rahman Al - Abdaly", "Sami Ahmed Al - Munayyes", "Sami Qasim Al - Meshri", "Sanaa’", "Sayed Ali Sayed Sulaiman Al - Refai", "Sa’ad Bin Ebada", "Sebaway", "Seif Al - Dawlah Al -Hamadani", "Shabbi", "Shahba’a", "Shamiya", "Shamlan Bin Seif", "Shamlan Bin Yousif", "Shebani", "Shuhada’a", "Shuwaikh", "Soor", "Souk Al - Gharabally", "Sukayna Bint Al - Hussein", "Sultan Al Kulaib", "Surra", "Suwais", "Tarabluss", "Tariq Bin Ziyad", "Telmesani", "Thaalbi", "Wahran", "Watia", "Wazzan", "Wehda", "Yamen", "Yosif Bin Tashqeen", "Yousif Abdul Aziz Al - Fleaj", "Yousif Al - Adhma", "Yousif Al - Roomi", "Yousif Al - Sabeeh", "Zabadani", "Zahra’"],
-  "Hawalli": ["Abdul Kareem Al - Khattabi", "AbdulAl - Rahman Al - Ghafigi", "Abdullah Abdul Latif Al - Othman", "Abdullah Al - Fadala", "Abdullah Al - Faraj", "Abdullah Bin Al - Zubair", "Abdullah Bin Masoud", "Abdullah Mshari Al - Roudan", "Abu Hanifah", "Abu Horeira", "Abu Thar Al - Ghafari", "Ahmed Bin Hanbal", "Ahmed Bin Tolon", "Al - Awazim", "Al - Dhahak Bin Qays", "Al - Hassan Al - Basri", "Al - Masjed Al - Aqssa", "Al - Muthana", "Al - Mu’gheera Bin Sho’ba", "Al - Zubair Bin Al - Awam", "Ali Thnayan Al - Othainah", "Amman", "Amro Bin Al - Aas", "Baghdad", "Bahrain", "Beirut", "Belajat", "Dimna", "Ebn Al - Khateeb", "Ebn Khaldoon", "Ebn Roshd", "Ebn Salam", "Ebrahim Mohammed Al - Mazidi", "Esa Al - Qatami", "Hamad Al - Khalid", "Hamad Al - Mubarak", "Haroon Al - Rasheed", "Hassan Al - Banna", "Hilal Al - Mutairi", "Hira’a", "Hmoud Al - Nasser", "Jaber Bin Hayyan", "Khalid Bin Abdul Aziz", "Khansa", "Kindi", "Luthan", "Maath Bin Jabal", "Malik Bin Anas", "Manama", "Mohammed Wasmi Al - Wasmi", "Motanabbi", "Mousa Al - Abdul Razzaq", "Mousa Bin Nusair", "Musaed Al - Azmi", "Mus’ab Bin Al - Zubair", "Mutamad", "Mutasim", "Mutaz", "Nafie Bin Al - Azraq", "Nah’da", "Naser Al - Bader", "Nasser Al - Mobarak", "Ohod", "Osama Bin Zaid", "Qatar", "Qotaiba Bin Muslim", "Rabee’a", "Saba’", "Salem Al - Mubarak", "Salwa", "Sati’ Al - Husari", "Sayed Yaseen Al -Tabtabai", "Sa’eed Bin Al - Mesayeb", "Shaab", "Shafae", "Shaheen Al - Ghanim", "Sharahbeel Bin Hasna", "Sulaiman Al - Adsani", "Suraqa Bin Malik", "Ta’awn", "Thahabi", "Thaqeef", "Tunis", "Wasel Bin Atta", "Yarmouk", "Yathrib", "Yousif Al - Bader", "Yousif Bin Homoud", "Yousif Bin Isa Al - Qanaei", "Zaba’", "Zerqa’a Al - Yammama"],
-  "Farwaniya": ["Abdulah Mohammed Al - Khaldi", "Abdullah Bin Al - Mugafa’", "Abu Dhabi", "Al - Alla’ Al - Jarood", "Al - Waleed Bin Abdul Malik", "Ardon", "Ebn Sereen", "Ebn Tofail", "Ebn Zaher", "Ebrahim Bin Adham", "Ebrahim Bin Al - Aghlab", "Firdous", "Habeeb Al - Monawer", "Khalid Egab Al - Ashhab", "Mazin Bin Malik", "Muscat", "Omariya", "Rabia", "Saud Bin Abdul Aziz", "Zaid Al - Khail"],
-  "Mubarak Al-Kabeer": [],
-  "Ahmadi": ["Abdul Malik Bin Marwan", "Abu Firas Al - Hamadany", "Abu Mihjin Al - Thaqafy", "Al - Ahnaf Bin Qays", "Al - Daboos", "Al - Kassaei", "Awadh Mohammed Al - Khedher", "Balatt Al - Shuhadaa", "Bani Rabi’aa", "Dubai", "Ebn Malik", "Ebn Taymiya", "Ebrahim Al - Mousseli", "Faisal Al - Malik Al - Sabah", "Hadiya", "Hatem Al - Ta’ai", "Homoud Abdul Aziz Al - Sinan", "Ka’ab Bin Zuhair", "Malik Bin Al - Raib", "Mecca", "Mohammed Abdul Mehsin Al - Duaij", "Mohammed Iqbal", "Mudhar Bin Nazar", "Mutlaq Fahad Al - Adwani", "Ras Al - Khaima", "Razi", "Riqqa", "Sabahiya", "Sahil", "Turfa Bin Al - Abd"],
-  "Jahra": ["Abdaly", "Abdullah Bin Jad’an", "Abu Al - Boqa Al - Ak,bari", "Ahw’ass", "Ain Jaloot", "Al - Baghllany", "Al - Hajaj Bin Yousif Al - Thaqafi", "Al - Najashi", "Amro Bin Kalthoum", "Assma’i", "Attraf", "Bakri", "Bayrooni", "Bisher Bin Abi Awana", "Dihya Al - Kalbi", "Do’bell Al - Khozai", "Ebn Abd Rabbah", "Ebn Al - Roomi", "Ebn Bassam", "Ebn Hijer", "Hajib Bin Zorara", "Khalaf Al - Ahmar", "Louay Bin Ghalib", "Mahdi", "Marzouq Al - Met’eb", "Maskeen Al - Darmi", "Muhalhal Bin Rabiaa", "Murshid Al -Tawala Al - Shimmary", "Nsser Bin Sayyar", "Qiss Bin Sa’eda", "Sa’eed Bin Jubair", "Sha’bi", "Slayil", "Sulaibiya", "Suyoti"],
-};
-// streets for an area = its governorate's streets + main roads
-const streetsForArea = (area) => {
-  const gov = govFor(area);
-  const base = KW_STREETS_BY_GOV[gov] || [];
-  return [...base, ...KW_MAIN_STREETS];
-};
+// Hardened clipboard copy — three strategies, never silent, reports the reason on failure.
+async function bnchrCopy(text) {
+  let lastErr = "";
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+      return { ok: true };
+    }
+    lastErr = "clipboard API unavailable";
+  } catch (e) { lastErr = (e && (e.name || e.message)) || "clipboard blocked"; }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed"; ta.style.top = "-9999px";
+    ta.setAttribute("readonly", "");
+    document.body.appendChild(ta);
+    ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    if (ok) return { ok: true };
+    lastErr = lastErr || "execCommand refused";
+  } catch (e) { lastErr = (e && (e.name || e.message)) || lastErr || "execCommand failed"; }
+  return { ok: false, err: lastErr };
+}
 
-// ─── Car brands (Kuwait-relevant) + common models ─────────────────────────────
-const CAR_DATA = {
+function ShareBar({ text, showToast, qty, setQty, centerlock, setCenterlock, breakdown, setBreakdown, lang, setLang, cashPct, setCashPct, hasMichelinSelected, selectedCount, staggered, quoteMobile, setQuoteMobile, quoteAgent, pickAgent, saveQuoteLog }) {
+  const [open, setOpen] = useState(false);
+  const copy = async () => {
+    try {
+      const gate = saveQuoteLog();
+      if (!gate.ok) { showToast(gate.msg); return; }
+      const r = await bnchrCopy(text);
+      showToast(r.ok ? "Quote copied to clipboard" : `⚠ Copy blocked (${r.err}) — select the text and press Ctrl/Cmd+C`);
+    } catch (e) { showToast(`⚠ Copy error: ${(e && e.message) || e}`); }
+  };
+
+  const qtyOptions = centerlock ? [1, 2, 3, 4] : [1, 2, 3, 4, 5];
+  const labShown = laborFor(staggered ? 4 : qty, centerlock);
+
+  useEffect(() => { if (centerlock && qty > 4) setQty(4); }, [centerlock]); // eslint-disable-line
+
+  return (
+    <>
+      <div style={S.shareBar}>
+{/* Row 0 — customer mobile (mandatory) + agent */}
+<div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+  <input type="tel" value={quoteMobile} onChange={e => setQuoteMobile(e.target.value)}
+    placeholder="Customer mobile *"
+    style={{ flex: "1 1 150px", minWidth: 140, padding: "8px 10px", borderRadius: 8, fontSize: 16, outline: "none",
+      border: quoteMobile.trim() ? "1.5px solid #2e7d32" : "1.5px solid #d32f2f" }} />
+  {["Alaa", "Hussain"].map(a => (
+    <button key={a} onClick={() => pickAgent(a)}
+      style={{ padding: "8px 12px", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontSize: 13,
+        border: quoteAgent === a ? "2px solid #2e7d32" : "1px solid #bbb",
+        background: quoteAgent === a ? "#e8f5e9" : "#fff", color: quoteAgent === a ? "#2e7d32" : "#555" }}>
+      {quoteAgent === a ? "✓ " : ""}{a}
+    </button>
+  ))}
+</div>
+{/* Row 1 — controls */}
+        <div style={S.shareRow}>
+          <div style={S.langWrap}>
+            <button onClick={() => setLang("ar")} className="langbtn"
+              style={{ ...S.langBtn, ...(lang === "ar" ? S.langBtnOn : {}) }}>عربي</button>
+            <button onClick={() => setLang("en")} className="langbtn"
+              style={{ ...S.langBtn, ...(lang === "en" ? S.langBtnOn : {}) }}>EN</button>
+          </div>
+          <div style={S.qtyWrap}>
+            <span style={S.qtyLabel}>{staggered ? "Full set" : "Qty"}</span>
+            {staggered ? (
+              <span style={S.qtyFixed}>4 tires (2+2)</span>
+            ) : (
+              <div style={S.qtyBtns}>
+                {qtyOptions.map(n => (
+                  <button key={n} onClick={() => setQty(n)} className="qtybtn"
+                    style={{ ...S.qtyBtn, ...(qty === n ? S.qtyBtnOn : {}) }}>{n}</button>
+                ))}
+              </div>
+            )}
+          </div>
+          <button onClick={() => setCenterlock(v => !v)} className="clbtn"
+            style={{ ...S.clBtn, ...(centerlock ? S.clBtnOn : {}) }}
+            title="Center-lock wheels (Porsche GT3 etc.) use torque-wrench labor rates">
+            {centerlock ? <Check size={13} /> : null} Center-lock
+          </button>
+          <button onClick={() => setBreakdown(v => !v)} className="clbtn"
+            style={{ ...S.clBtn, ...(breakdown ? S.clBtnOn : {}) }}
+            title="Show per-tire price breakdown in the quote">
+            {breakdown ? <Check size={13} /> : null} Show breakdown
+          </button>
+          <div style={S.cashWrap}>
+            <span style={S.qtyLabel}>Cash disc.</span>
+            <div style={S.qtyBtns}>
+              {[0, 6, 10].map(p => (
+                <button key={p} onClick={() => setCashPct(p)} className="qtybtn"
+                  style={{ ...S.qtyBtn, ...(cashPct === p ? S.cashBtnOn : {}) }}
+                  title={p === 0 ? "No cash discount" : `Drop price by ${p}% for cash payment`}>
+                  {p === 0 ? "Off" : p + "%"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <span style={S.laborHint}>Labor: {labShown} KD</span>
+        </div>
+        {cashPct > 0 && hasMichelinSelected && (
+          <div style={S.cashNote}>
+            ⚠️ Cash discount excluded for Michelin-supplier tires (Michelin / BFGoodrich) — they have no installment buffer. Other brands discounted {cashPct}%.
+          </div>
+        )}
+        {/* Row 2 — actions */}
+        <div style={S.shareRow}>
+          {selectedCount > 0 && (
+            <span style={S.selCount}>{selectedCount} tire{selectedCount !== 1 ? "s" : ""} selected to share</span>
+          )}
+          <div style={{ flex: 1 }} />
+          <button onClick={() => setOpen(true)} className="ghost" style={S.previewBtn}><Search size={15} /> Preview</button>
+          <button onClick={copy} className="primary" style={S.copyMain}><Copy size={16} /> Copy quote</button>
+        </div>
+      </div>
+      {open && (
+        <div style={S.modalWrap} onClick={() => setOpen(false)}>
+          <div style={S.modal} onClick={e => e.stopPropagation()}>
+            <div style={S.modalHead}>
+              <h3 style={S.modalTitle}>Quote preview {staggered ? "· Staggered" : `· ${qty} tire${qty > 1 ? "s" : ""}`}{centerlock ? " · Center-lock" : ""}{breakdown ? " · Detailed" : ""}</h3>
+              <button onClick={() => setOpen(false)} className="iconbtn" style={S.iconBtn}><X size={18} /></button>
+            </div>
+            <pre style={{ ...S.preview, direction: lang === "ar" ? "rtl" : "ltr", textAlign: lang === "ar" ? "right" : "left" }}>{text}</pre>
+            <button onClick={copy} className="primary" style={{ ...S.copyMain, width: "100%", justifyContent: "center", marginTop: 12 }}><Copy size={16} /> Copy quote</button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── WhatsApp text builder ─────────────────────────────────────────────────────
+// opts: { qty, centerlock, staggered }
+function buildShareText(results, availability, selected, opts) {
+  const { qty = 4, centerlock = false, staggered = false, breakdown = false, lang = "ar", cashPct = 0 } = opts || {};
+  // Price each tire after any cash discount (Michelin-supplier tires are never discounted)
+  const px = (t) => effectivePrice(t, cashPct);
+  const LRM = "\u200E"; // left-to-right mark
+  const RLM = "\u200F"; // right-to-left mark
+  const ltr = (s) => LRM + s + LRM;
+  const rtl = (s) => RLM + s + RLM;
+  const RULE = "━━━━━━━━━━━━━━";
+  const DOTS = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄";
+  const ar = lang === "ar";
+
+  // Arabic category names
+  const CAT_AR = { TP: "أعلى أداء", PC: "جودة وسعر", SV: "قيمة ذكية", SE: "اقتصادي آمن" };
+
+  const isSel = (t) => t.inStock && selected[t.id];
+  const lab = laborFor(staggered ? 4 : qty, centerlock);
+
+  // Build the production line (only parts that exist). > stays in LTR layer.
+  // EN: > Prod. 2025 / Italy 🇮🇹    AR: > الصنع: 2025 / إيطاليا 🇮🇹
+  const prodLine = (t) => {
+    const flag = t.country && COUNTRIES[t.country] ? COUNTRIES[t.country] : "";
+    if (ar) {
+      const yr = t.year ? ltr(String(t.year)) : "";
+      const ctryName = t.country ? (COUNTRIES_AR[t.country] || t.country) : "";
+      const ctry = ctryName ? `${rtl(ctryName)} ${flag}`.trim() : "";
+      const parts = [yr, ctry].filter(Boolean);
+      if (!parts.length) return "";
+      return `> ${rtl("الصنع:")} ${parts.join(" / ")}\n`;
+    }
+    const yr = t.year ? `Prod. ${t.year}` : "";
+    const ctry = t.country ? `${t.country} ${flag}`.trim() : "";
+    const parts = [yr, ctry].filter(Boolean);
+    if (!parts.length) return "";
+    return `> ${ltr(parts.join(" / "))}\n`;
+  };
+
+  // ── Header ──
+  let out;
+  if (ar) {
+    out = rtl("```عرض سعر بنجر بلاس```") + "\n\n";
+  } else {
+    out = LRM + ltr("```BNCHR+ Tire Quote```") + "\n\n";
+  }
+
+  // ── Size block ──
+  if (ar) {
+    out += `> ${rtl("المقاس:")}\n`;
+    if (staggered && results.length === 2) {
+      out += `> ${ltr(results[0].label)} ${rtl("أمامي")}\n> ${ltr(results[1].label)} ${rtl("خلفي")}\n\n`;
+    } else if (results.length === 1) {
+      out += `> ${ltr(results[0].label)}\n\n`;
+    } else out += "\n";
+  } else {
+    out += `> Tire size:\n`;
+    if (staggered && results.length === 2) {
+      out += `> ${results[0].label} front\n> ${results[1].label} rear\n\n`;
+    } else if (results.length === 1) {
+      out += `> ${results[0].label}\n\n`;
+    } else out += "\n";
+  }
+  out += RULE + "\n\n";
+
+  const catBlocks = [];
+  for (const c of CATEGORY_ORDER) {
+    let block = "";
+
+    if (staggered && results.length === 2) {
+      const [front, rear] = results;
+      const frontItems = (front.byCat[c] || []).filter(isSel);
+      const rearItems = (rear.byCat[c] || []).filter(isSel);
+      const keyOf = (t) => `${t.brand}||${t.pattern || ""}`;
+      const rearMap = {};
+      rearItems.forEach(t => { rearMap[keyOf(t)] = t; });
+      // Primary: pair front+rear of the SAME brand+pattern (unchanged behavior)
+      const usedRear = new Set();
+      const pairs = [];
+      for (const f of frontItems) {
+        const r = rearMap[keyOf(f)];
+        if (r && !usedRear.has(r.id)) { pairs.push({ f, r }); usedRear.add(r.id); }
+      }
+      // Fallback: any selected front/rear that didn't pair by exact pattern → pair them
+      // (the mixed-pattern case — usually same brand, forced by availability).
+      const leftoverFront = frontItems.filter(f => !pairs.some(p => p.f.id === f.id));
+      const leftoverRear = rearItems.filter(r => !usedRear.has(r.id));
+      if (leftoverFront.length && leftoverRear.length) {
+        // Prefer matching within the same brand first, then whatever remains.
+        const rearPool = [...leftoverRear];
+        for (const f of leftoverFront) {
+          let idx = rearPool.findIndex(r => r.brand === f.brand);
+          if (idx === -1) idx = 0; // fall back to first available rear
+          const r = rearPool.splice(idx, 1)[0];
+          if (r) pairs.push({ f, r, mixed: true });
+        }
+      }
+      pairs.sort((a, b) => px(b.f) - px(a.f));
+      const lines = pairs.map(({ f, r, mixed }) => {
+        const fP = px(f), rP = px(r);
+        const frontTotal = round3(fP * 2);
+        const rearTotal = round3(rP * 2);
+        const tires = round3(frontTotal + rearTotal);
+        const total = round3(tires + lab);
+        const fName = f.brand + (f.pattern ? " " + f.pattern : "");
+        const rName = r.brand + (r.pattern ? " " + r.pattern : "");
+        // Same model front+rear → one name. Mixed → show both, labeled.
+        const sameModel = !mixed && fName === rName;
+        const pl = prodLine(f);
+        if (ar) {
+          const title = sameModel
+            ? ltr(fName)
+            : ltr(fName) + " " + rtl("(أمامي)") + "\n" + ltr(rName) + " " + rtl("(خلفي)");
+          let s = `${title}\n${pl}` + rtl(`4 إطارات + خدمة المنازل`) + `\n*${ltr(total + " د.ك")}*`;
+          if (breakdown) {
+            s += "\n\n" + `> ${rtl("تفاصيل السعر:")}` + "\n" + `> ${rtl("2 أمامي:")} ${ltr(frontTotal + " د.ك")} ${rtl("(" + fP + " د.ك للواحد)")}` + "\n" + `> ${rtl("2 خلفي:")} ${ltr(rearTotal + " د.ك")} ${rtl("(" + rP + " د.ك للواحد)")}` + "\n" + `> ${rtl("خدمة المنازل:")} ${ltr(lab + " د.ك")}`;
+          }
+          return s;
+        }
+        const title = sameModel
+          ? fName
+          : `${fName} (front)\n${rName} (rear)`;
+        let s = `${title}\n${pl}Set of 4 + home service\n*${total} KD*`;
+        if (breakdown) {
+          s += `\n\n> Price details:\n> 2x Front: ${frontTotal} KD (${fP} KD each)\n> 2x Rear: ${rearTotal} KD (${rP} KD each)\n> 1x Home service: ${lab} KD`;
+        }
+        return s;
+      });
+      if (lines.length) block = lines.join("\n\n");
+    } else {
+      const items = [];
+      for (const r of results) items.push(...(r.byCat[c] || []).filter(isSel));
+      items.sort((a, b) => px(b) - px(a));
+      const lines = items.map(t => {
+        const tP = px(t);
+        const tires = round3(tP * qty);
+        const total = round3(tires + lab);
+        const name = t.brand + (t.pattern ? " " + t.pattern : "");
+        const pl = prodLine(t);
+        if (ar) {
+          let s = `${ltr(name)}\n${pl}` + rtl(`${qty} ${qty > 2 ? "إطارات" : "إطار"} + خدمة المنازل`) + `\n*${ltr(total + " د.ك")}*`;
+          if (breakdown) {
+            s += "\n\n" + `> ${rtl("تفاصيل السعر:")}` + "\n" + `> ${rtl(qty + " إطارات:")} ${ltr(tires + " د.ك")} ${rtl("(" + tP + " د.ك للواحد)")}` + "\n" + `> ${rtl("خدمة المنازل:")} ${ltr(lab + " د.ك")}`;
+          }
+          return s;
+        }
+        let s = `${name}\n${pl}Set of ${qty} + home service\n*${total} KD*`;
+        if (breakdown) {
+          s += `\n\n> Price details:\n> ${qty}x Tires: ${tires} KD (${tP} KD each)\n> 1x Home service: ${lab} KD`;
+        }
+        return s;
+      });
+      if (lines.length) block = lines.join("\n\n");
+    }
+
+    if (block) {
+      const header = ar
+        ? `> ${rtl(CAT_AR[c])}`
+        : `> ${CATEGORY[c].en.toUpperCase()}`;
+      catBlocks.push(header + "\n\n" + block);
+    }
+  }
+
+  out += catBlocks.join(`\n\n${DOTS}\n\n`) + "\n\n";
+  out += RULE + "\n\n";
+
+  // ── Footer ──
+  if (ar) {
+    if (centerlock) {
+      out += `> ${rtl("✅ السعر شامل التركيب والميزان والترصيص وخدمة عزم القفل المركزي، مع كفالة التاير من الوكيل.")}`;
+    } else {
+      out += `> ${rtl("✅ السعر شامل التركيب والميزان والترصيص، مع كفالة التاير من الوكيل.")}`;
+    }
+  } else {
+    if (centerlock) {
+      out += `> ✅ Includes installation, balancing, center-lock torque service, and the tire distributor warranty.`;
+    } else {
+      out += `> ✅ Includes installation, balancing, and the tire distributor warranty.`;
+    }
+  }
+  return out;
+}
+
+// ── Live profit indicator (shown while setting price in Add/Edit) ──────────────
+function ProfitIndicator({ cost, price, category, tire, showNote = true }) {
+  const c = Number(cost) || 0;
+  const p = Number(price) || 0;
+  if (!p) return null;
+  const profit = round3(p - c);
+  const margin = p ? Math.round(profit / p * 100) : 0;
+  const setProfit = round3(profit * 4);
+  const tier = profitTier(profit);
+  const cat = CATEGORY[category];
+  // Target = what the unified pricing formula would produce for this cost
+  const target = (c && tire) ? computeTirePrice({ ...tire, cost: c }) : 0;
+  const gap = target - p; // positive = priced below formula target
+
+  return (
+    <div style={{ ...S.profInd, borderColor: tier.fg }}>
+      <div style={S.profIndRow}>
+        <span style={{ ...S.profIndAmt, color: tier.fg, background: tier.bg }}>
+          {profit >= 0 ? "+" : ""}{profit} KD/tire
+        </span>
+        <span style={S.profIndMargin}>{margin}% margin</span>
+        <span style={{ ...S.profIndTier, color: tier.fg }}>● {tier.label}</span>
+      </div>
+      <div style={S.profIndRow2}>
+        <span style={S.profIndSet}>+{setProfit} KD per set of 4</span>
+        {c > 0 && target > 0 && (
+          <span style={S.profIndTarget}>
+            Formula price: {target} KD
+            {gap > 0 ? ` · ${gap} KD below` : gap < 0 ? ` · ${-gap} KD above ✓` : " · on target ✓"}
+          </span>
+        )}
+      </div>
+      {showNote && tire && c > 0 && (
+        <div style={S.profIndNote}>{pricingExplain({ ...tire, cost: c })}</div>
+      )}
+    </div>
+  );
+}
+
+// ── ADD VIEW ──────────────────────────────────────────────────────────────────
+function AddView({ tires = [], setTires, showToast, onDone }) {
+  const empty = { brand: "", pattern: "", type: "Normal", width: "", aspect: "", structure: "R", rim: "", loadIndex: "", speedRating: "", country: "", year: "", supplier: "", cost: "", price: "", notes: "" };
+  const [f, setF] = useState(empty);
+  const [autoFill, setAutoFill] = useState(true); // cost change → auto price from formula
+  const [mode, setMode] = useState("quick"); // 'quick' | 'smart' | 'manual'
+  const [pasteText, setPasteText] = useState("");
+  const [quickText, setQuickText] = useState("");
+  const [behbehaniOld, setBehbehaniOld] = useState(false); // 35% vs 30% (auto from 2024 detection)
+  const [drafts, setDrafts] = useState([]); // parsed preview rows
+  const [dupWarn, setDupWarn] = useState(0); // count of duplicates pending confirmation
+
+  const category = detectCategory(f.brand);
+  const cat = CATEGORY[category];
+
+  // ── History lookups (for suggesting gaps in Quick Entry) ──
+  // most common value of `field` for a given brand (+optional pattern), from catalog
+  const histValue = (brand, pattern, field) => {
+    if (!brand) return "";
+    const b = brand.toLowerCase();
+    const matches = tires.filter(t => t.brand.toLowerCase() === b && (!pattern || (t.pattern || "").toLowerCase() === pattern.toLowerCase()));
+    const pool = matches.length ? matches : tires.filter(t => t.brand.toLowerCase() === b);
+    const counts = {};
+    pool.forEach(t => { const v = t[field]; if (v) counts[v] = (counts[v] || 0) + 1; });
+    const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    return best ? best[0] : "";
+  };
+  // patterns that exist in catalog, grouped by brand (for pattern matching/suggestions)
+  const patternsByBrand = useMemo(() => {
+    const map = {};
+    tires.forEach(t => {
+      if (!t.pattern) return;
+      const b = t.brand.toLowerCase();
+      if (!map[b]) map[b] = new Set();
+      map[b].add(t.pattern);
+    });
+    const out = {};
+    Object.keys(map).forEach(b => { out[b] = [...map[b]]; });
+    return out;
+  }, [tires]);
+
+  // suggested price from category margin on cost
+  // (price suggestions now use the autoPrice formula directly)
+
+  // ── Pattern normalization (brand-aware) ──
+  // Returns { value, original, corrected, suggestions[] }
+  // 1) exact case-insensitive match to a catalog pattern for this brand → snap silently
+  // 2) close typo (edit distance ≤2) → auto-correct + flag, plus related-family suggestions
+  // 3) no match → keep as typed, but still offer suggestions if any look related
+  const normalizePattern = (brand, raw) => {
+    const input = (raw || "").trim();
+    if (!input) return { value: "", original: input, corrected: false, suggestions: [] };
+    // catalog patterns for this brand (with their canonical catalog spelling + frequency)
+    const b = (brand || "").toLowerCase();
+    const counts = {};
+    tires.forEach(t => {
+      if (b && t.brand.toLowerCase() !== b) return;
+      const p = (t.pattern || "").trim();
+      if (p) counts[p] = (counts[p] || 0) + 1;
+    });
+    const known = Object.keys(counts);
+    if (!known.length) return { value: input, original: input, corrected: false, suggestions: [] };
+
+    // 1) exact case-insensitive match → snap to catalog spelling
+    const exact = known.find(p => p.toLowerCase() === input.toLowerCase());
+    if (exact) return { value: exact, original: input, corrected: false, suggestions: relatedPatterns(exact, known, counts) };
+
+    // 2) typo match — closest by edit distance
+    let best = null, bestD = 99;
+    for (const p of known) {
+      const d = levenshtein(input, p);
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    // also try matching against the first word (e.g. "pzer" vs "P ZERO" → match base "P ZERO")
+    const corrected = best && bestD <= 2;
+    const value = corrected ? best : input;
+    return {
+      value,
+      original: input,
+      corrected,
+      suggestions: relatedPatterns(value, known, counts, input),
+    };
+  };
+  // patterns in the same family (share the base name), ranked, excluding the chosen value
+  const relatedPatterns = (chosen, known, counts, typed) => {
+    // family key: if the first word is very short (e.g. "P"), use first two words ("P ZERO")
+    const famKey = (p) => {
+      const w = (p || "").toLowerCase().split(/\s+/);
+      return (w[0] && w[0].length <= 2 && w[1]) ? `${w[0]} ${w[1]}` : (w[0] || "");
+    };
+    const key = famKey(chosen || typed || "");
+    if (!key || key.length < 2) return [];
+    return known
+      .filter(p => p.toLowerCase() !== (chosen || "").toLowerCase() && famKey(p) === key)
+      .sort((a, b) => counts[b] - counts[a])
+      .slice(0, 4);
+  };
+
+  // ── Quick Entry parse (size on its own line, then Brand/Pattern/Load/Speed/Country/Cost/Price) ──
+  const runQuickParse = () => {
+    const lines = quickText.split(/\n+/).map(l => l.trim()).filter(Boolean);
+    let curSize = null;
+    const rows = [];
+    for (const line of lines) {
+      // size line? (has slash but parses as a size and has no other slash-fields beyond size)
+      const asSize = parseSize(line);
+      const slashParts = line.split("/").map(s => s.trim());
+      // treat as size header if it parses as a size AND isn't a 5+ field tire line
+      if (asSize && slashParts.length <= 3 && !/[a-z]{3,}/i.test(line.replace(/r|zr/i, ""))) {
+        curSize = asSize; continue;
+      }
+      // also allow a bare size like "265/65r18" (letters only in R/ZR)
+      if (asSize && /^\d{3}\s*\/\s*\d{2}\s*z?r?\s*\d{2}/i.test(line)) {
+        curSize = asSize; continue;
+      }
+      // otherwise it's a tire line split by "/"
+      const p = line.split("/").map(s => s.trim());
+      if (p.length < 1 || !p[0]) continue;
+      const [brandRaw = "", patternRaw = "", loadIndex = "", speedRatingRaw = "", country = "", year = "", cost = "", price = ""] = p;
+      // normalize brand (silent capitalization, flagged typo correction)
+      const bn = normalizeBrand(brandRaw);
+      const brand = bn.value;
+      // normalize pattern (brand-aware: snap to catalog spelling, correct typos, suggest family)
+      const bkey = brand.toLowerCase();
+      const brandPats = (patternsByBrand[bkey] && patternsByBrand[bkey].length)
+        ? patternsByBrand[bkey]
+        : (SEED_PATTERNS_BY_BRAND[bkey] || []);
+      const pn = normalizePattern(patternRaw, brand, brandPats);
+      // safety: pattern must never equal the brand name (guards against any mapping slip)
+      let pattern = pn.value;
+      if (pattern && pattern.toLowerCase() === brand.toLowerCase()) pattern = patternRaw;
+      const speedRating = speedRatingRaw.toUpperCase(); // speed ratings always uppercase
+      const ccat = detectCategory(brand);
+      let countryFinal = country ? (COUNTRY_ALIASES[country.toLowerCase()] || country) : (histValue(brand, pattern, "country") || countryForBrand(brand));
+      const yearFinal = year || String(new Date().getFullYear());
+      // manufacturer spec lookup (exact load/speed for this brand+pattern+size)
+      const spec = lookupSpec(brand, pattern, curSize?.width, curSize?.aspect, curSize?.rim);
+      const loadFinal = loadIndex || (spec && spec.load) || histValue(brand, pattern, "loadIndex");
+      const speedFinal = speedRating || (spec && spec.speed) || histValue(brand, pattern, "speedRating");
+      // Price: explicit value wins; otherwise the unified pricing brain decides
+      // (agreed brands → discount margin; others → formula).
+      let priceFinal;
+      if (price) {
+        priceFinal = price;
+      } else if (cost) {
+        priceFinal = String(computeTirePrice({
+          brand, supplier: supplierForBrand(brand), category: ccat, rim: curSize?.rim, year: yearFinal, cost,
+        }));
+      } else {
+        priceFinal = "";
+      }
+      rows.push({
+        brand, pattern,
+        brandOriginal: bn.original, brandCorrected: bn.corrected,
+        patternOriginal: pn.original, patternCorrected: pn.corrected, patternSuggestions: pn.suggestions,
+        width: curSize?.width || "", aspect: curSize?.aspect || "", structure: curSize?.structure || "R", rim: curSize?.rim || "",
+        loadIndex: loadFinal, speedRating: speedFinal, country: countryFinal,
+        year: yearFinal, supplier: supplierForBrand(brand),
+        cost: cost || "", price: priceFinal,
+        category: ccat,
+        type: /scorpion|terrain|at\d|ko\d|off|mt\b/i.test(pattern + " " + brand) ? "Off-Road" : "Normal",
+        notes: "",
+        // track which fields were auto-suggested (for highlighting)
+        _suggested: {
+          loadIndex: !loadIndex && !!loadFinal,
+          speedRating: !speedRating && !!speedFinal,
+          country: !country && !!countryFinal,
+          year: !year,
+          price: false,
+        },
+        sourceLine: line,
+      });
+    }
+    if (!rows.length) { showToast("No tires found — check the format"); return; }
+    setDrafts(rows);
+  };
+
+  // ── Smart Fill parse ──
+  const runParse = () => {
+    const parsed = parseSupplierQuote(pasteText);
+    if (!parsed.length) { showToast("Couldn't find tires in that text"); return; }
+    const rows = parsed.map(d => {
+      const brand = d.brand;
+      const ccat = detectCategory(brand);
+      const supplier = supplierForBrand(brand);
+      const isBehbehani = /behbehani/i.test(supplier);
+      // Behbehani sends List Price → apply discount (35% if 2024 in line, else 30%)
+      let cost = d.amountRaw || 0;
+      if (isBehbehani && d.amountRaw) {
+        const disc = (d.year === "2024" || behbehaniOld) ? 0.35 : 0.30;
+        cost = round3(d.amountRaw * (1 - disc));
+      }
+      const agreedBrand = isAgreedPricing({ brand, supplier });
+      // Agreed brands: if a list price was sent use it; otherwise the unified brain.
+      const price = (agreedBrand && d.amountRaw)
+        ? round3(d.amountRaw)
+        : computeTirePrice({ brand, supplier, category: ccat, rim: d.size?.rim, year: d.year, cost });
+      const country = d.country || countryForBrand(brand);
+      return {
+        brand,
+        pattern: d.pattern || "",
+        type: /at\d|ko\d|terrain|off|mt\b/i.test(d.sourceLine) ? "Off-Road" : "Normal",
+        width: d.size?.width || "", aspect: d.size?.aspect || "", structure: d.size?.structure || "R", rim: d.size?.rim || "",
+        loadIndex: "", speedRating: d.speedRating || "",
+        country, year: d.year || "", supplier,
+        cost, price,
+        category: ccat,
+        notes: d.markings || "",
+        sourceLine: d.sourceLine,
+        listPrice: isBehbehani ? d.amountRaw : null,
+      };
+    });
+    setDrafts(rows);
+  };
+
+  const updateDraft = (i, key, val) => {
+    setDrafts(prev => prev.map((d, idx) => {
+      if (idx !== i) return d;
+      const next = { ...d, [key]: val };
+      if (key === "brand") {
+        next.category = detectCategory(val);
+        next.supplier = supplierForBrand(val) || d.supplier;
+        // if user set it back to their original (or edited manually), stop flagging as corrected
+        if (val === d.brandOriginal) next.brandCorrected = false;
+      }
+      if (key === "pattern") {
+        // user picked a suggestion or edited → clear the correction flag & suggestions
+        next.patternCorrected = false;
+        next.patternSuggestions = [];
+      }
+      if (key === "pattern") {
+        // once the user picks a suggestion or reverts, clear the flag and suggestions
+        next.patternCorrected = false;
+        next.patternSuggestions = [];
+      }
+      if (key === "cost") {
+        next.cost = val;
+        if (autoFill && val) {
+          next.price = computeTirePrice({ brand: next.brand, supplier: next.supplier, category: detectCategory(next.brand), rim: next.rim, year: next.year, cost: val });
+        } else if (!val) {
+          next.price = 0;
+        }
+      }
+      // user edited a field → it's no longer an auto-suggestion
+      if (d._suggested && d._suggested[key]) next._suggested = { ...d._suggested, [key]: false };
+      return next;
+    }));
+  };
+  const removeDraft = (i) => setDrafts(prev => prev.filter((_, idx) => idx !== i));
+
+  // Duplicate check: same brand + size + pattern already in catalog
+  const isDup = (d) => tires.some(t =>
+    t.brand.toLowerCase() === (d.brand || "").toLowerCase() &&
+    t.width === d.width && t.aspect === d.aspect && t.rim === d.rim &&
+    (t.pattern || "").toLowerCase() === (d.pattern || "").toLowerCase()
+  );
+
+  const addAllDrafts = (force = false) => {
+    const valid = drafts.filter(d => d.brand && d.width && d.aspect && d.rim && d.cost);
+    if (!valid.length) { showToast("Each tire needs a brand, size and cost — check the highlighted rows"); return; }
+    const dups = valid.filter(isDup);
+    if (dups.length && !force) {
+      setDupWarn(dups.length);
+      return;
+    }
+    setTires(prev => [...valid.map(d => mkTire(d)), ...prev]);
+    showToast(`Added ${valid.length} tire${valid.length !== 1 ? "s" : ""} to catalog`);
+    setDrafts([]); setPasteText(""); setQuickText(""); setDupWarn(0);
+    onDone?.();
+  };
+
+  // auto price (manual mode) — unified pricing brain
+  useEffect(() => {
+    if (autoFill && f.cost) {
+      const p = computeTirePrice({ brand: f.brand, supplier: f.supplier, category, rim: f.rim, year: f.year, cost: f.cost });
+      setF(prev => ({ ...prev, price: String(p) }));
+    }
+  }, [f.cost, f.rim, f.supplier, f.brand, f.year, autoFill, category]); // eslint-disable-line
+
+  // auto-fill load/speed from manufacturer spec when brand+pattern+size are known and fields are empty
+  useEffect(() => {
+    const spec = lookupSpec(f.brand, f.pattern, f.width, f.aspect, f.rim);
+    if (spec) {
+      setF(prev => ({
+        ...prev,
+        loadIndex: prev.loadIndex || spec.load,
+        speedRating: prev.speedRating || spec.speed,
+      }));
+    }
+  }, [f.brand, f.pattern, f.width, f.aspect, f.rim]); // eslint-disable-line
+
+  const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
+  const sizePreview = (f.width && f.aspect && f.rim)
+    ? sizeString({ width: f.width, aspect: f.aspect, structure: f.structure, rim: f.rim, loadIndex: f.loadIndex, speedRating: f.speedRating })
+    : "—";
+
+  const linePreview = (f.brand && f.width && f.aspect && f.rim)
+    ? tireLine({ ...f, category })
+    : "Fill brand and size to preview";
+
+  const submit = (force = false) => {
+    if (!f.brand || !f.width || !f.aspect || !f.rim || !f.cost) {
+      showToast("Brand, size and cost are required"); return;
+    }
+    if (isDup(f) && !force) {
+      setDupWarn(-1); // -1 = manual single dup
+      return;
+    }
+    setTires(prev => [mkTire(f), ...prev]);
+    showToast("Tire added to catalog");
+    setF(empty); setDupWarn(0);
+    onDone?.();
+  };
+
+  return (
+    <div style={S.card}>
+      <h2 style={S.h2}>Add tires to catalog</h2>
+
+      {/* Mode toggle */}
+      <div style={S.modeRow}>
+        <button onClick={() => setMode("quick")} className="seg" style={{ ...S.seg, ...(mode === "quick" ? S.segOn : {}) }}>
+          ⚡ Quick Entry
+        </button>
+        <button onClick={() => setMode("smart")} className="seg" style={{ ...S.seg, ...(mode === "smart" ? S.segOn : {}) }}>
+          ✨ Smart Fill
+        </button>
+        <button onClick={() => setMode("manual")} className="seg" style={{ ...S.seg, ...(mode === "manual" ? S.segOn : {}) }}>
+          <Plus size={15} /> Manual
+        </button>
+      </div>
+
+      {mode === "quick" ? (
+        <div>
+          <p style={S.sub}>Type the size on its own line, then one tire per line separated by <b>/</b>:<br/>
+            <span style={S.quickFormat}>Brand / Pattern / Load / Speed / Country / Year / Cost / Price</span><br/>
+            <b>Skip a field?</b> Leave it empty between slashes — e.g. <span style={S.quickInline}>Pirelli / Scorpion / / H / USA / 2025 / 70</span> skips Load.
+            Trailing fields can just be dropped. Cost is required; everything else fills from history (or current year / suggested price) if blank.</p>
+          <textarea
+            value={quickText} onChange={e => setQuickText(e.target.value)}
+            placeholder={"265/65r18\n\nPirelli / Scorpion / 114 / H / USA / 2025 / 70 / 100\nKumho / AT52 / 116 / R / Korea / 2026 / 45\nMichelin / LTX / 120 / S / / / 88"}
+            style={{ ...S.input, minHeight: 150, resize: "vertical", fontFamily: "monospace", fontSize: 13, lineHeight: 1.6 }} className="inp" />
+          {quickText.trim() && <QuickHelper text={quickText} />}
+          <div style={{ display: "flex", gap: 10, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={runQuickParse} className="primary" style={S.waBtn}>⚡ Build preview</button>
+            {drafts.length > 0 && <span style={{ fontSize: 13, color: "#666", fontWeight: 600 }}>{drafts.length} tire{drafts.length !== 1 ? "s" : ""} ready</span>}
+          </div>
+          {drafts.length > 0 && <DraftPreview drafts={drafts} updateDraft={updateDraft} removeDraft={removeDraft} addAllDrafts={addAllDrafts} setDrafts={setDrafts} dupWarn={dupWarn} clearDup={() => setDupWarn(0)} showSuggested />}
+        </div>
+      ) : mode === "smart" ? (
+        <div>
+          <p style={S.sub}>Paste a supplier's reply (from WhatsApp). The system detects brand, size, cost, year & country, infers the supplier, and applies your margin. Review and edit before adding.</p>
+          <textarea
+            value={pasteText} onChange={e => setPasteText(e.target.value)}
+            placeholder={"Paste supplier reply here, e.g.\n\nF: 245/35R20\nFront 91Y Pzero 155 kd 2025\nR: 305/30R20\nRear 103Y Pzero 210 kd 2025"}
+            style={{ ...S.input, minHeight: 120, resize: "vertical", fontFamily: "monospace", fontSize: 13 }} className="inp" />
+          <div style={{ display: "flex", gap: 10, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={runParse} className="primary" style={S.waBtn}>✨ Parse quote</button>
+            {drafts.length > 0 && <span style={{ fontSize: 13, color: "#666", fontWeight: 600 }}>{drafts.length} tire{drafts.length !== 1 ? "s" : ""} detected</span>}
+          </div>
+
+          {drafts.length > 0 && <DraftPreview drafts={drafts} updateDraft={updateDraft} removeDraft={removeDraft} addAllDrafts={addAllDrafts} setDrafts={setDrafts} dupWarn={dupWarn} clearDup={() => setDupWarn(0)} hint="Review each row — edit any field, remove unwanted rows, then add all. Behbehani list prices are auto-discounted (30%, or 35% for 2024 stock)." />}
+        </div>
+      ) : (
+      <div>
+      <p style={S.sub}>Enter cost — price auto-calculates from the pricing formula (cost + size-based margin ÷ 0.9). Michelin, BFGoodrich and Pirelli keep their supplier price. You can always edit the price.</p>
+
+      {/* live preview */}
+      <div style={{ ...S.previewLine, borderColor: cat.color }}>
+        <div style={{ ...S.catTag, background: cat.soft, color: cat.color, display: "inline-flex", marginBottom: 8 }}>
+          <span style={{ ...S.catDot, background: cat.color }} />{cat.en} <span style={S.catAr}>{cat.ar}</span>
+        </div>
+        <div style={S.previewText}>{linePreview}{f.price ? `  —  ${f.price} KD` : ""}</div>
+        <div style={S.previewSize}>Size: {sizePreview}</div>
+      </div>
+
+      <div style={S.grid}>
+        <Field label="Brand *"><input style={S.input} className="inp" value={f.brand} onChange={set("brand")} placeholder="Pirelli" list="brands" />
+          <datalist id="brands">{Object.keys(BRAND_CATEGORY).map(b => <option key={b} value={b.replace(/\b\w/g, c => c.toUpperCase())} />)}</datalist>
+        </Field>
+        <Field label="Pattern (optional)">
+          <input style={S.input} className="inp" value={f.pattern} onChange={set("pattern")} placeholder="PZ4 Trofeo" list="addPatternList" />
+          <datalist id="addPatternList">
+            {patternsForBrand(f.brand).map(p => <option key={p} value={p} />)}
+          </datalist>
+        </Field>
+        <Field label="Type"><select style={S.input} className="inp" value={f.type} onChange={set("type")}><option>Normal</option><option>Off-Road</option></select></Field>
+
+        <Field label="Width"><input style={S.input} className="inp" value={f.width} onChange={set("width")} placeholder="325" inputMode="numeric" /></Field>
+        <Field label="Aspect ratio"><input style={S.input} className="inp" value={f.aspect} onChange={set("aspect")} placeholder="30" inputMode="numeric" /></Field>
+        <Field label="Structure"><select style={S.input} className="inp" value={f.structure} onChange={set("structure")}><option>R</option><option>ZR</option></select></Field>
+        <Field label="Rim size"><input style={S.input} className="inp" value={f.rim} onChange={set("rim")} placeholder="21" inputMode="numeric" /></Field>
+        <Field label="Load index (optional)"><input style={S.input} className="inp" value={f.loadIndex} onChange={set("loadIndex")} placeholder="98" /></Field>
+        <Field label="Speed rating (optional)"><input style={S.input} className="inp" value={f.speedRating} onChange={set("speedRating")} placeholder="Y" /></Field>
+
+        <Field label="Production country (optional)">
+          <select style={S.input} className="inp" value={f.country} onChange={set("country")}>
+            <option value="">—</option>
+            {Object.keys(COUNTRIES).map(c => <option key={c} value={c}>{COUNTRIES[c]} {c}</option>)}
+          </select>
+        </Field>
+        <Field label="Production year"><input style={S.input} className="inp" value={f.year} onChange={set("year")} placeholder="2026" inputMode="numeric" list="years" />
+          <datalist id="years">{YEAR_OPTIONS.map(y => <option key={y} value={y} />)}</datalist>
+        </Field>
+        <Field label="Supplier (optional)"><input style={S.input} className="inp" value={f.supplier} onChange={set("supplier")} placeholder="Abbas Ghuloom" list="suppliers" />
+          <datalist id="suppliers">{KNOWN_SUPPLIERS.map(s => <option key={s} value={s} />)}</datalist>
+        </Field>
+
+        <Field label="Cost / unit (KD) *"><input style={S.input} className="inp" value={f.cost} onChange={set("cost")} placeholder="180" inputMode="decimal" /></Field>
+        <Field label={`Price / unit (KD)${autoFill ? " — auto, editable" : ""}`}>
+          <input style={{ ...S.input, ...(autoFill ? S.inputAuto : {}) }} className="inp" value={f.price} onChange={set("price")} placeholder="250" inputMode="decimal" />
+        </Field>
+      </div>
+
+      <label className="chk" style={S.chkRow}>
+        <input type="checkbox" checked={autoFill} onChange={e => setAutoFill(e.target.checked)} />
+        <span>
+          {isAgreedPricing(f)
+            ? `Auto-price for ${/pirelli/i.test(`${f.brand} ${f.supplier}`) ? "Pirelli" : "Michelin"} (${Math.round(agreedMarginPct(f.brand, f.supplier, f.year) * 100)}% margin${/michelin|bfgoodrich/i.test(`${f.brand} ${f.supplier}`) ? `, ${f.year || "current year"}` : ""}) — you can still edit`
+            : `Auto-price from formula (cost + ${f.rim ? autoMargin(category, f.rim) : "margin"} KD) ÷ 0.9 — you can still edit the price`}
+        </span>
+      </label>
+
+      <ProfitIndicator cost={f.cost} price={f.price} category={category} tire={{ brand: f.brand, supplier: f.supplier, category, rim: f.rim, year: f.year }} />
+
+      <Field label="Notes (optional)"><textarea style={{ ...S.input, minHeight: 60, resize: "vertical" }} className="inp" value={f.notes} onChange={set("notes")} /></Field>
+
+      {dupWarn === -1 && (
+        <div style={{ ...S.dupBanner, marginTop: 14 }}>
+          <span>⚠️ This tire may already be in the catalog. Add it anyway?</span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setDupWarn(0)} className="ghost" style={S.dupCancelBtn}>Cancel</button>
+            <button onClick={() => submit(true)} className="primary" style={S.dupAddBtn}>Add anyway</button>
+          </div>
+        </div>
+      )}
+      <button onClick={() => submit(false)} className="primary" style={{ ...S.waBtn, marginTop: 16 }}><Plus size={16} /> Add to catalog</button>
+      </div>
+      )}
+    </div>
+  );
+}
+
+function QuickHelper({ text }) {
+  const FIELDS = ["Brand", "Pattern", "Load", "Speed", "Country", "Year", "Cost", "Price"];
+  // take the last non-empty, non-size line as the one being typed
+  const lines = text.split(/\n+/).map(l => l.trim()).filter(Boolean);
+  let last = "";
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const isSize = /^\d{3}\s*\/\s*\d{2}\s*z?r?\s*\d{2}/i.test(lines[i]) && lines[i].split("/").length <= 3;
+    if (!isSize) { last = lines[i]; break; }
+  }
+  if (!last || !last.includes("/")) return null;
+  const parts = last.split("/").map(s => s.trim());
+  return (
+    <div style={S.qHelp}>
+      <span style={S.qHelpLabel}>Reading last line as:</span>
+      <div style={S.qHelpRow}>
+        {FIELDS.map((f, i) => {
+          if (i >= parts.length) return null;
+          const val = parts[i];
+          const empty = !val;
+          return (
+            <span key={f} style={S.qHelpChip}>
+              <span style={S.qHelpField}>{f}</span>
+              <span style={{ ...S.qHelpVal, ...(empty ? { color: "#C9A84C", fontStyle: "italic" } : {}) }}>{empty ? "(skip→fill)" : val}</span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DraftPreview({ drafts, updateDraft, removeDraft, addAllDrafts, setDrafts, hint, showSuggested, dupWarn, clearDup }) {
+  const countryNames = Object.keys(COUNTRIES);
+  return (
+    <div style={{ marginTop: 18 }}>
+      {hint && <div style={S.draftHint}>{hint}</div>}
+      {showSuggested && <div style={S.draftHint}>Fields shown in <span style={{ color: "#1A4F8A", fontWeight: 700 }}>blue</span> were auto-suggested from history — check them before adding.</div>}
+      {drafts.map((d, i) => {
+        const dcat = CATEGORY[d.category];
+        const profit = round3((Number(d.price) || 0) - (Number(d.cost) || 0));
+        const margin = Number(d.price) ? Math.round(profit / Number(d.price) * 100) : 0;
+        const tier = profitTier(profit);
+        const sug = d._suggested || {};
+        return (
+          <div key={i} style={S.draftCard}>
+            <div style={S.draftTop}>
+              <span style={{ ...S.catMini, background: dcat.soft, color: dcat.color }}>{dcat.en}</span>
+              <span style={S.draftSrc}>{d.sourceLine}</span>
+              <button onClick={() => removeDraft(i)} className="iconbtn" style={{ ...S.iconBtn, marginLeft: "auto", width: 28, height: 28 }}><X size={14} /></button>
+            </div>
+            <div style={S.draftGrid}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <DraftField label="Brand" value={d.brand} onChange={v => updateDraft(i, "brand", v)} options={[...new Set(KNOWN_BRANDS)]} />
+                {d.brandCorrected && d.brandOriginal && d.brand !== d.brandOriginal && (
+                  <button onClick={() => updateDraft(i, "brand", d.brandOriginal)} style={S.brandFix}
+                    title="Click to keep your original spelling as a new brand">
+                    “{d.brandOriginal}” → {d.brand} · keep mine
+                  </button>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <DraftField label="Pattern" value={d.pattern} onChange={v => updateDraft(i, "pattern", v)} options={patternsForBrand(d.brand)} />
+                  {d.patternCorrected && d.patternOriginal && d.pattern !== d.patternOriginal && (
+                    <button onClick={() => updateDraft(i, "pattern", d.patternOriginal)} style={S.brandFix}
+                      title="Click to keep your original spelling">
+                      “{d.patternOriginal}” → {d.pattern} · keep mine
+                    </button>
+                  )}
+                  {d.patternSuggestions && d.patternSuggestions.length > 0 && (
+                    <div style={S.patSugWrap}>
+                      <span style={S.patSugLabel}>Did you mean:</span>
+                      {d.patternSuggestions.map(s => (
+                        <button key={s} onClick={() => updateDraft(i, "pattern", s)} style={S.patSugChip}>{s}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <DraftField label="Type" value={d.type} onChange={v => updateDraft(i, "type", v)} options={["Normal", "Off-Road"]} w={92} />
+              <DraftField label="Width" value={d.width} onChange={v => updateDraft(i, "width", v)} w={62} />
+              <DraftField label="Aspect" value={d.aspect} onChange={v => updateDraft(i, "aspect", v)} w={62} />
+              <DraftField label="Rim" value={d.rim} onChange={v => updateDraft(i, "rim", v)} w={56} />
+              <DraftField label="Load" value={d.loadIndex} onChange={v => updateDraft(i, "loadIndex", v)} w={56} suggested={sug.loadIndex} />
+              <DraftField label="Speed" value={d.speedRating} onChange={v => updateDraft(i, "speedRating", v)} w={56} suggested={sug.speedRating} />
+              {d.year !== undefined && <DraftField label="Year" value={d.year} onChange={v => updateDraft(i, "year", v)} options={YEAR_OPTIONS} w={72} />}
+              <DraftField label="Country" value={d.country} onChange={v => updateDraft(i, "country", v)} options={countryNames} suggested={sug.country} />
+              <DraftField label="Supplier" value={d.supplier} onChange={v => updateDraft(i, "supplier", v)} options={KNOWN_SUPPLIERS} w={140} />
+              <DraftField label={d.listPrice ? `Cost (list ${d.listPrice})` : "Cost"} value={d.cost} onChange={v => updateDraft(i, "cost", v)} w={d.listPrice ? 130 : 70} />
+              <DraftField label="Price" value={d.price} onChange={v => updateDraft(i, "price", v)} w={70} suggested={sug.price} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                <label style={S.draftLabel}>Profit</label>
+                <span style={{ ...S.profitBadge, background: tier.bg, color: tier.fg, padding: "7px 10px" }}>+{profit} · {margin}%</span>
+                <span style={S.draftSetGain}>+{round3(profit * 4)} / set of 4</span>
+              </div>
+            </div>
+            {Number(d.cost) > 0 && Number(d.price) > 0 && (
+              <div style={S.draftPriceNote}>💡 {pricingExplain({ brand: d.brand, supplier: d.supplier, category: d.category, rim: d.rim, year: d.year, cost: d.cost })}</div>
+            )}
+            <div style={{ marginTop: 8 }}>
+              <DraftField label={d.notes ? "Notes · marking detected ✓" : "Notes"} value={d.notes} onChange={v => updateDraft(i, "notes", v)} w={"100%"} />
+            </div>
+          </div>
+        );
+      })}
+      {dupWarn > 0 && (
+        <div style={S.dupBanner}>
+          <span>⚠️ {dupWarn} of these may already be in the catalog. Add them anyway?</span>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={clearDup} className="ghost" style={S.dupCancelBtn}>Cancel</button>
+            <button onClick={() => addAllDrafts(true)} className="primary" style={S.dupAddBtn}>Add anyway</button>
+          </div>
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <button onClick={() => setDrafts([])} className="ghost" style={{ ...S.copyBtn, justifyContent: "center" }}>Clear</button>
+        <button onClick={() => addAllDrafts(false)} className="primary" style={{ ...S.waBtn, flex: 1, justifyContent: "center" }}>
+          <Check size={16} /> Add {drafts.filter(d => d.brand && d.width && d.cost).length} tires to catalog
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DraftField({ label, value, onChange, w, options, suggested }) {
+  const [open, setOpen] = React.useState(false);
+  const [hoverIdx, setHoverIdx] = React.useState(-1);
+  const wrapRef = React.useRef(null);
+
+  // close on outside click
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const val = value || "";
+  // filter options by what's typed (but if exact match, show all so they can browse siblings)
+  const filtered = (options || []).filter(o => {
+    if (!val) return true;
+    const lo = o.toLowerCase(), lv = val.toLowerCase();
+    return lo.includes(lv) || lo.replace(/[\s\-]/g, "").includes(lv.replace(/[\s\-]/g, ""));
+  });
+  const list = filtered.length ? filtered : (options || []);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, position: "relative" }} ref={wrapRef}>
+      <label style={{ ...S.draftLabel, ...(suggested ? { color: "#1A4F8A" } : {}) }}>{label}{suggested ? " ·sug" : ""}</label>
+      <input value={val} onChange={e => { onChange(e.target.value); if (options) setOpen(true); }}
+        onFocus={() => options && setOpen(true)}
+        onKeyDown={e => {
+          if (!options) return;
+          if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setHoverIdx(i => Math.min(i + 1, list.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setHoverIdx(i => Math.max(i - 1, 0)); }
+          else if (e.key === "Enter" && open && hoverIdx >= 0) { e.preventDefault(); onChange(list[hoverIdx]); setOpen(false); }
+          else if (e.key === "Escape") setOpen(false);
+        }}
+        style={{ ...S.draftInput, width: w || 110, ...(suggested ? { borderColor: "#1A4F8A", background: "#F2F7FC", color: "#1A4F8A", fontWeight: 700 } : {}) }} className="inp" />
+      {options && open && list.length > 0 && (
+        <div style={S.ddPanel}>
+          {list.map((o, idx) => (
+            <div key={o}
+              onMouseDown={(e) => { e.preventDefault(); onChange(o); setOpen(false); }}
+              onMouseEnter={() => setHoverIdx(idx)}
+              style={{ ...S.ddItem, ...(idx === hoverIdx ? S.ddItemHover : {}), ...(o === val ? S.ddItemActive : {}) }}>
+              {o}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return <div><label style={S.label}>{label}</label>{children}</div>;
+}
+
+// ── CATALOG VIEW ──────────────────────────────────────────────────────────────
+function BulkEditModal({ tires, onClose, onSave }) {
+  // Two modes: "pricing" (year/cost/margin/price — fast) and "full" (pattern/load/
+  // speed/country/notes — for backfilling missing data). Same rows, different columns.
+  const [mode, setMode] = useState("pricing");
+  const [rows, setRows] = useState(() =>
+    tires
+      .slice()
+      .sort((a, b) => a.price - b.price) // low → high, matching Search & Quote
+      .map(t => {
+        const agreed = isAgreedPricing(t);
+        const margin = autoMargin(t.category, t.rim);
+        // Unified pricing on open so margin & price always match.
+        const price = computeTirePrice(t);
+        return {
+          id: t.id,
+          brand: t.brand,
+          label: `${t.brand}${t.pattern ? " " + t.pattern : ""}`,
+          pattern: t.pattern || "",
+          type: t.type || "Normal",
+          supplier: t.supplier || "",
+          structure: t.structure || "R",
+          sku: t.sku || "",
+          loadIndex: t.loadIndex || "",
+          speedRating: t.speedRating || "",
+          notes: t.notes || "",
+          country: t.country || "", category: t.category, rim: t.rim,
+          year: t.year || "",
+          cost: t.cost,
+          margin,                       // suggested margin (non-agreed)
+          price,                        // formula price
+          priceEdited: false,           // shown as auto for all
+          agreed,                       // agreed-pricing brand
+          useFormula: true,             // all rows compute on cost change
+        };
+      })
+  );
+
+  const update = (id, field, value) => {
+    setRows(prev => prev.map(r => {
+      if (r.id !== id) return r;
+      const nr = { ...r, [field]: value };
+      if ((field === "cost" || field === "margin") && nr.useFormula) {
+        nr.price = nr.agreed
+          ? computeTirePrice(nr)
+          : autoPrice(nr.cost, nr.margin);
+        nr.priceEdited = false;
+      }
+      if (field === "price") nr.priceEdited = true;
+      return nr;
+    }));
+  };
+
+  // Toggle the formula on for an agreed-pricing row (purchaser opts in)
+  const applyFormula = (id) => {
+    setRows(prev => prev.map(r => {
+      if (r.id !== id) return r;
+      const price = autoPrice(r.cost, r.margin);
+      return { ...r, useFormula: true, price, priceEdited: false };
+    }));
+  };
+
+  const profitOf = (r) => round3((Number(r.price) || 0) - (Number(r.cost) || 0));
+  const marginPctOf = (r) => {
+    const p = Number(r.price) || 0;
+    return p ? Math.round(profitOf(r) / p * 100) : 0;
+  };
+
+  // Size-only label (no load/speed) for assurance: e.g. "275/60R20"
+  const t0 = tires[0];
+  const sizeLabel = t0 ? `${t0.width}/${t0.aspect}${t0.structure || "R"}${t0.rim}` : "";
+
+  return (
+    <div style={S.modalWrap} onClick={onClose}>
+      <div style={{ ...S.modal, maxWidth: 860, width: "96vw" }} onClick={e => e.stopPropagation()}>
+        <div style={S.modalHead}>
+          <div>
+            <h3 style={S.modalTitle}>Quick edit</h3>
+            {sizeLabel && <div style={S.bulkSizeLabel}>{sizeLabel} · {rows.length} tire{rows.length !== 1 ? "s" : ""}</div>}
+          </div>
+          <button onClick={onClose} className="iconbtn" style={S.iconBtn}><X size={18} /></button>
+        </div>
+
+        {/* Mode toggle */}
+        <div style={S.bulkModeWrap}>
+          <button onClick={() => setMode("pricing")} style={{ ...S.bulkModeBtn, ...(mode === "pricing" ? S.bulkModeBtnOn : {}) }}>Pricing</button>
+          <button onClick={() => setMode("full")} style={{ ...S.bulkModeBtn, ...(mode === "full" ? S.bulkModeBtnOn : {}) }}>Full edit</button>
+        </div>
+
+        <p style={S.sub}>
+          {mode === "pricing"
+            ? 'Price auto-calculates as (cost + margin) ÷ 0.9, rounded up. Michelin/BFGoodrich/Pirelli keep their supplier price — tap "Apply formula" to override.'
+            : "Fill in or correct pattern, load index, speed rating, country and notes. Useful when data is missing."}
+        </p>
+
+        <div style={{ ...S.bulkTableWrap, ...(mode === "full" ? { overflowX: "auto" } : {}) }}>
+          {mode === "pricing" ? (
+            <>
+              <div style={{ ...S.bulkRow, ...S.bulkHeadRow }}>
+                <span style={{ flex: 2 }}>Tire</span>
+                <span style={S.bulkCol}>Year</span>
+                <span style={S.bulkCol}>Cost</span>
+                <span style={S.bulkCol}>Margin</span>
+                <span style={S.bulkCol}>Price</span>
+                <span style={{ ...S.bulkCol, flex: 1.3 }}>Profit / %</span>
+              </div>
+              {rows.map(r => {
+                const profit = profitOf(r);
+                const loss = profit < 0;
+                const formulaOff = r.agreed && !r.useFormula;
+                return (
+                  <div key={r.id} style={S.bulkRow}>
+                    <div style={{ flex: 2, minWidth: 0 }}>
+                      <div style={S.bulkTireName}>{r.label}</div>
+                      <div style={S.bulkTireSub}>
+                        {r.country || "—"} · R{r.rim}
+                        {r.agreed && <span style={S.agreedTag}>agreed price</span>}
+                      </div>
+                    </div>
+                    <input style={S.bulkInput} value={r.year} onChange={e => update(r.id, "year", e.target.value)} placeholder="Year" />
+                    <input style={S.bulkInput} type="number" value={r.cost} onChange={e => update(r.id, "cost", e.target.value)} />
+                    {formulaOff ? (
+                      <button style={{ ...S.bulkInput, ...S.applyFormulaBtn }} onClick={() => applyFormula(r.id)} title="Override the supplier price using cost + margin formula">
+                        Apply formula
+                      </button>
+                    ) : (
+                      <input style={{ ...S.bulkInput, ...S.bulkMargin }} type="number" value={r.margin} onChange={e => update(r.id, "margin", e.target.value)} />
+                    )}
+                    <input style={{ ...S.bulkInput, ...(r.priceEdited ? {} : S.bulkAuto) }} type="number" value={r.price} onChange={e => update(r.id, "price", e.target.value)} title={r.priceEdited ? "Set price" : "Auto from cost + margin"} />
+                    <span style={{ ...S.bulkCol, flex: 1.3, justifyContent: "flex-start" }}>
+                      <span style={{ ...S.bulkProfit, color: loss ? "#C0392B" : "#1D7A45" }}>
+                        {loss ? "⚠ " : "+"}{profit} KD
+                      </span>
+                      <span style={S.bulkPct}>· {marginPctOf(r)}%</span>
+                    </span>
+                  </div>
+                );
+              })}
+            </>
+          ) : (
+            <div style={{ minWidth: 920 }}>
+              <div style={{ ...S.bulkRow, ...S.bulkHeadRow }}>
+                <span style={{ flex: 1.3 }}>Tire</span>
+                <span style={{ flex: 1.5 }}>Pattern</span>
+                <span style={S.bulkCol}>Type</span>
+                <span style={S.bulkCol}>Struct</span>
+                <span style={S.bulkCol}>Load</span>
+                <span style={S.bulkCol}>Speed</span>
+                <span style={{ flex: 1.1 }}>Country</span>
+                <span style={{ flex: 1.4 }}>Supplier</span>
+                <span style={{ flex: 1.2 }}>SKU</span>
+                <span style={{ flex: 1.8 }}>Notes / markings</span>
+              </div>
+              {rows.map(r => (
+                <div key={r.id} style={S.bulkRow}>
+                  <div style={{ flex: 1.3, minWidth: 0 }}>
+                    <div style={S.bulkTireName}>{r.brand}</div>
+                    <div style={S.bulkTireSub}>R{r.rim}</div>
+                  </div>
+                  <input style={{ ...S.bulkInput, flex: 1.5 }} value={r.pattern} onChange={e => update(r.id, "pattern", e.target.value)} placeholder="Pattern" />
+                  <select style={S.bulkInput} value={r.type} onChange={e => update(r.id, "type", e.target.value)}>
+                    <option>Normal</option><option>Off-Road</option>
+                  </select>
+                  <select style={S.bulkInput} value={r.structure} onChange={e => update(r.id, "structure", e.target.value)}>
+                    <option>R</option><option>ZR</option>
+                  </select>
+                  <input style={S.bulkInput} value={r.loadIndex} onChange={e => update(r.id, "loadIndex", e.target.value)} placeholder="Load" />
+                  <input style={S.bulkInput} value={r.speedRating} onChange={e => update(r.id, "speedRating", e.target.value)} placeholder="Spd" />
+                  <select style={{ ...S.bulkInput, flex: 1.1 }} value={r.country} onChange={e => update(r.id, "country", e.target.value)}>
+                    <option value="">—</option>
+                    {Object.keys(COUNTRIES).map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <input style={{ ...S.bulkInput, flex: 1.4 }} value={r.supplier} onChange={e => update(r.id, "supplier", e.target.value)} placeholder="Supplier" />
+                  <input style={{ ...S.bulkInput, flex: 1.2 }} value={r.sku} onChange={e => update(r.id, "sku", e.target.value)} placeholder="SKU" />
+                  <input style={{ ...S.bulkInput, flex: 1.8 }} value={r.notes} onChange={e => update(r.id, "notes", e.target.value)} placeholder="e.g. Porsche (N0), XL" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 9, marginTop: 16, justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={S.cancelBtn}>Cancel</button>
+          <button onClick={() => onSave(rows)} style={S.saveAllBtn}><Check size={15} /> Save all</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CatalogView({ tires, setTires, showToast }) {
+  const [q, setQ] = useState("");
+  const [catFilter, setCatFilter] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [historyFor, setHistoryFor] = useState(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(null); // tire pending delete confirmation
+  const [bulkSize, setBulkSize] = useState(null);      // size key for bulk edit, or null
+  const [catSortBy, setCatSortBy] = useState("price"); // 'price' | 'profit' | 'newest'
+  const [catSortDir, setCatSortDir] = useState("desc"); // 'desc' (high→low, default) | 'asc'
+  // Catalog search history (per-device, last 8, separate from Search & Quote)
+  const [catHistory, setCatHistory] = useState(() => {
+    try {
+      const raw = localStorage.getItem("bnchr_catalog_history");
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+  const pushCatHistory = (term) => {
+    const v = (term || "").trim();
+    if (!v) return;
+    setCatHistory(prev => {
+      const next = [v, ...prev.filter(h => h.toLowerCase() !== v.toLowerCase())];
+      return next.slice(0, 8);
+    });
+  };
+  useEffect(() => {
+    try { localStorage.setItem("bnchr_catalog_history", JSON.stringify(catHistory)); } catch {}
+  }, [catHistory]);
+  // Record a search after the user pauses typing (debounced)
+  useEffect(() => {
+    if (!q.trim()) return;
+    const t = setTimeout(() => pushCatHistory(q), 1200);
+    return () => clearTimeout(t);
+  }, [q]);
+  const [fType, setFType] = useState("");      // "" | Normal | Off-Road
+  const [fProfit, setFProfit] = useState("");  // "" | high | mid | low
+  const [fRim, setFRim] = useState("");        // "" | "18" ...
+  const [fSupplier, setFSupplier] = useState(""); // "" | supplier name
+  const [fStale, setFStale] = useState(false); // (availability lives in search tab; kept for future)
+
+  // Unique rims & suppliers for filter options
+  const rimOptions = useMemo(() => [...new Set(tires.map(t => t.rim))].sort((a, b) => Number(a) - Number(b)), [tires]);
+  const supplierOptions = useMemo(() => [...new Set(tires.map(t => t.supplier).filter(Boolean))].sort(), [tires]);
+
+  const activeFilterCount = [fType, fProfit, fRim, fSupplier].filter(Boolean).length;
+  const clearFilters = () => { setFType(""); setFProfit(""); setFRim(""); setFSupplier(""); };
+
+  const parsed = parseSize(q);
+  const filtered = useMemo(() => {
+    let base = tires.filter(t => !catFilter || t.category === catFilter);
+
+    // advanced filters
+    if (fType) base = base.filter(t => t.type === fType);
+    if (fRim) base = base.filter(t => t.rim === fRim);
+    if (fSupplier) base = base.filter(t => t.supplier === fSupplier);
+    if (fProfit) base = base.filter(t => profitTier(round3(t.price - t.cost)).label === fProfit);
+
+    // Apply search, then sort by chosen direction
+    const lastActivity = (t) => {
+      // most recent history timestamp = when it was added or last edited
+      if (t.history && t.history.length) {
+        return Math.max(...t.history.map(h => new Date(h.ts).getTime() || 0));
+      }
+      return t._availableAt ? new Date(t._availableAt).getTime() : 0;
+    };
+    const sortFn = (arr) => {
+      const dir = catSortDir === "asc" ? 1 : -1;
+      if (catSortBy === "newest") {
+        // newest first when desc (default), oldest first when asc
+        return [...arr].sort((a, b) => dir * (lastActivity(b) - lastActivity(a)) * -1);
+      }
+      return [...arr].sort((a, b) =>
+        catSortBy === "profit"
+          ? dir * ((a.price - a.cost) - (b.price - b.cost))
+          : dir * (a.price - b.price));
+    };
+
+    if (!q.trim()) return sortFn(base);
+
+    // Full size match first (265/65r18, 2656518, etc.)
+    if (parsed) {
+      const exact = base.filter(t => matchesSize(t, parsed));
+      if (exact.length) return sortFn(exact);
+    }
+
+    // Multi-term: every term must match somewhere (brand, pattern, supplier, size, country, dims)
+    const terms = q.toLowerCase().split(/[\s,]+/).filter(Boolean);
+    return sortFn(base.filter(t => {
+      const hay = `${t.brand} ${t.pattern} ${t.supplier} ${t.country} ${sizeString(t)} ${t.width} ${t.aspect} ${t.rim} ${t.type} ${t.sku || ""}`.toLowerCase();
+      return terms.every(term => {
+        // pure number term → match width/aspect/rim as whole tokens, else substring
+        if (/^\d{2,3}$/.test(term)) {
+          return t.width === term || t.aspect === term || t.rim === term || hay.includes(term);
+        }
+        return hay.includes(term);
+      });
+    }));
+  }, [tires, q, parsed, catFilter, fType, fProfit, fRim, fSupplier, catSortBy, catSortDir]);
+
+  // Smart-typing suggestions for the catalog (brands + sizes that match)
+  const sugg = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    if (!term || parsed) return [];
+    const lastTerm = term.split(/[\s,]+/).pop();
+    if (!lastTerm || lastTerm.length < 2) return [];
+    const brands = [...new Set(tires.map(t => t.brand))]
+      .filter(b => b.toLowerCase().includes(lastTerm))
+      .slice(0, 5)
+      .map(b => ({ type: "brand", label: b }));
+    return brands;
+  }, [q, tires, parsed]);
+
+  const del = (id) => { setTires(prev => prev.filter(t => t.id !== id)); showToast("Tire removed"); };
+  const confirmDelete = () => {
+    if (confirmDel) { del(confirmDel.id); setConfirmDel(null); }
+  };
+
+  // Duplicate a tire (e.g. same tire from a different country) — copy comes in OUT of stock
+  const duplicateTire = (t) => {
+    const copy = {
+      ...t,
+      id: "t_" + Math.random().toString(36).slice(2, 10), // temp id → DB insert on sync
+      inStock: false,
+      _availableAt: null,
+      history: [{ ts: new Date().toISOString(), cost: t.cost, price: t.price, note: "Duplicated" }],
+    };
+    setTires(prev => {
+      // insert the copy right after the original
+      const idx = prev.findIndex(x => x.id === t.id);
+      const next = [...prev];
+      next.splice(idx + 1, 0, copy);
+      return next;
+    });
+    setEditing(copy); // open the edit box on the new copy so the purchaser can adjust it
+  };
+
+  // Save all bulk edits at once
+  const saveBulk = (rows) => {
+    const byId = new Map(rows.map(r => [r.id, r]));
+    setTires(prev => prev.map(t => {
+      const r = byId.get(t.id);
+      if (!r) return t;
+      const newCost = Number(r.cost) || 0;
+      const newPrice = Number(r.price) || 0;
+      // detect any change across pricing + full-edit fields
+      const priceChanged = t.cost !== newCost || t.price !== newPrice;
+      const fieldsChanged = (t.year || "") !== (r.year || "")
+        || (t.pattern || "") !== (r.pattern || "")
+        || (t.type || "") !== (r.type || "")
+        || (t.supplier || "") !== (r.supplier || "")
+        || (t.structure || "") !== (r.structure || "")
+        || (t.sku || "") !== (r.sku || "")
+        || (t.loadIndex || "") !== (r.loadIndex || "")
+        || (t.speedRating || "") !== (r.speedRating || "")
+        || (t.country || "") !== (r.country || "")
+        || (t.notes || "") !== (r.notes || "");
+      if (!priceChanged && !fieldsChanged) return t;
+      const history = priceChanged
+        ? [...t.history, { ts: new Date().toISOString(), cost: newCost, price: newPrice, note: "Bulk edit" }]
+        : [...t.history, { ts: new Date().toISOString(), cost: t.cost, price: t.price, note: "Bulk edit (details)" }];
+      return {
+        ...t,
+        year: r.year,
+        cost: newCost,
+        price: newPrice,
+        pattern: r.pattern,
+        type: r.type,
+        supplier: r.supplier,
+        structure: r.structure,
+        sku: r.sku,
+        loadIndex: r.loadIndex,
+        speedRating: r.speedRating,
+        country: r.country,
+        notes: r.notes,
+        history,
+      };
+    }));
+    setBulkSize(null);
+    showToast("Changes saved");
+  };
+
+  // ── Export (current filtered view) ──
+const exportRows = () => filtered.map(t => {
+    const profit = round3(t.price - t.cost);
+    const margin = t.price ? Math.round(profit / t.price * 100) : 0;
+    return {
+      Brand: t.brand, Pattern: t.pattern || "", Category: CATEGORY[t.category].en,
+      Type: t.type, Size: sizeString(t), Width: t.width, Aspect: t.aspect,
+      Structure: t.structure, Rim: t.rim, LoadIndex: t.loadIndex || "", SpeedRating: t.speedRating || "",
+      "Markings / OEM": t.notes || "",
+      Country: t.country || "", Year: t.year || "", Supplier: t.supplier || "", SKU: t.sku || "",
+      Cost: t.cost, Price: t.price, Profit: profit, Margin: margin + "%",
+      Availability: t.inStock ? "In Stock" : "Out of Stock",
+      "Availability Confirmed": t._availableAt ? new Date(t._availableAt).toISOString().slice(0, 10) : "",
+    };
+  });
+
+  const downloadFile = (content, filename, mime) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+
+  const stamp = () => new Date().toISOString().slice(0, 10);
+
+  const exportCSV = () => {
+    const rows = exportRows();
+    if (!rows.length) { showToast("Nothing to export"); return; }
+    const headers = Object.keys(rows[0]);
+    const esc = (v) => {
+      const s = String(v ?? "");
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = "\uFEFF" + [headers.join(","), ...rows.map(r => headers.map(h => esc(r[h])).join(","))].join("\n");
+    downloadFile(csv, `BNCHR_catalog_${stamp()}.csv`, "text/csv;charset=utf-8;");
+    showToast(`Exported ${rows.length} tires (CSV)`);
+  };
+  const saveEdit = (updated) => {
+    setTires(prev => prev.map(t => {
+      if (t.id !== updated.id) return t;
+      const changed = t.cost !== updated.cost || t.price !== updated.price;
+      const history = changed ? [...t.history, { ts: new Date().toISOString(), cost: updated.cost, price: updated.price, note: "Edited" }] : t.history;
+      return { ...updated, category: detectCategory(updated.brand), history };
+    }));
+    setEditing(null); showToast("Tire updated");
+  };
+
+  // Purchaser toggles in-stock status (confirming resets the freshness clock)
+  const toggleStock = (tire) => {
+    const turningOn = !tire.inStock;
+    const stamp = new Date().toISOString();
+    setTires(prev => prev.map(t =>
+      t.id === tire.id
+        ? { ...t, inStock: turningOn, _availableAt: turningOn ? stamp : null }
+        : t
+    ));
+    showToast(turningOn ? "Marked in stock" : "Marked out of stock");
+  };
+
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ flex: 1, minWidth: 200, position: "relative" }}>
+            <Search size={16} style={S.searchIcon} />
+            <input value={q} onChange={e => setQ(e.target.value)}
+              placeholder="Try: michelin 18 · 265 65 18 · pirelli off-road · behbehani"
+              style={{ ...S.input, paddingLeft: 38 }} className="inp" />
+            {sugg.length > 0 && (
+              <div style={S.sugBox}>
+                {sugg.map(s => (
+                  <button key={s.label} className="sugitem" style={S.sugItem}
+                    onMouseDown={() => {
+                      const parts = q.split(/[\s,]+/);
+                      parts[parts.length - 1] = s.label;
+                      setQ(parts.join(" ") + " ");
+                    }}>
+                    <span style={S.sugSize}>{s.label}</span>
+                    <span style={S.sugCount}>{tires.filter(t => t.brand === s.label).length} tires</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button onClick={() => setCatFilter("")} style={{ ...S.filterChip, ...(catFilter === "" ? S.filterChipOn : {}) }}>All</button>
+            {CATEGORY_ORDER.map(c => (
+              <button key={c} onClick={() => setCatFilter(c)} style={{ ...S.filterChip, ...(catFilter === c ? { ...S.filterChipOn, background: CATEGORY[c].color, borderColor: CATEGORY[c].color } : {}) }}>
+                {CATEGORY[c].en.split(" ")[0]}
+              </button>
+            ))}
+            <button onClick={() => setShowFilters(true)} className="filterChip"
+              style={{ ...S.filterChip, ...(activeFilterCount ? S.filterChipOn : {}), display: "flex", alignItems: "center", gap: 5 }}>
+              <Filter size={13} /> Filters{activeFilterCount ? ` (${activeFilterCount})` : ""}
+            </button>
+          </div>
+        </div>
+        {catHistory.length > 0 && !q.trim() && (
+          <div style={S.catHistoryWrap}>
+            <History size={13} style={{ color: "#999", flexShrink: 0 }} />
+            {catHistory.map((h, i) => (
+              <button key={i} onClick={() => setQ(h)} className="histchip" style={S.histChip}>{h}</button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={S.card}>
+        <div style={{ ...S.catalogHead, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span>{filtered.length} tire{filtered.length !== 1 ? "s" : ""}</span>
+            <div style={S.sortWrap}>
+              <span style={S.sortLabel}>Sort:</span>
+              <button onClick={() => setCatSortBy("price")} className="sortbtn"
+                style={{ ...S.sortBtn, ...(catSortBy === "price" ? S.sortBtnOn : {}) }}>Price</button>
+              <button onClick={() => setCatSortBy("profit")} className="sortbtn"
+                style={{ ...S.sortBtn, ...(catSortBy === "profit" ? S.sortBtnOn : {}) }}>Profit</button>
+              <button onClick={() => setCatSortBy("newest")} className="sortbtn"
+                style={{ ...S.sortBtn, ...(catSortBy === "newest" ? S.sortBtnOn : {}) }}>Newest</button>
+              <button onClick={() => setCatSortDir(d => d === "desc" ? "asc" : "desc")} className="sortbtn"
+                style={{ ...S.sortBtn, ...S.sortDirBtn }}
+                title={catSortBy === "newest"
+                  ? (catSortDir === "desc" ? "Newest first (tap for oldest first)" : "Oldest first (tap for newest first)")
+                  : (catSortDir === "desc" ? "High to Low (tap for Low to High)" : "Low to High (tap for High to Low)")}>
+                {catSortBy === "newest"
+                  ? (catSortDir === "desc" ? "↓ Newest" : "↑ Oldest")
+                  : (catSortDir === "desc" ? "↓ High–Low" : "↑ Low–High")}
+              </button>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 7 }}>
+            {parsed && filtered.length > 0 && (
+              <button onClick={() => setBulkSize(filtered.map(t => t.id))} className="ghost" style={S.bulkBtn}
+                title="Quick-edit year, cost & price for all tires of this size">
+                <Edit3 size={14} /> Quick edit all
+              </button>
+            )}
+            <button onClick={exportCSV} className="ghost" style={S.dlBtn} title="Download current view as CSV">
+              <Download size={14} /> Download CSV
+            </button>
+          </div>
+        </div>
+        {filtered.map(t => {
+          const ts = t._availableAt ? new Date(t._availableAt).getTime() : null;
+          const inStock = !!t.inStock;
+          const tier = freshnessTier(ts);
+          return (
+          <div key={t.id} style={S.catalogRow}>
+            <div style={{ flex: 1 }}>
+              <div style={S.tireLine}>{tireLine(t)}</div>
+              {t.notes && <div style={S.markingNote}>🏷 {t.notes}</div>}
+              <div style={S.tireMeta}>
+                <span style={{ ...S.catMini, background: CATEGORY[t.category].soft, color: CATEGORY[t.category].color }}>{CATEGORY[t.category].en}</span>
+                <span style={S.priceTag}>{t.price} KD</span>
+                <span style={S.costTag}>cost {t.cost}</span>
+                {(() => {
+                  const profit = round3(t.price - t.cost);
+                  const margin = t.price ? Math.round(profit / t.price * 100) : 0;
+                  const ptier = profitTier(profit);
+                  return (
+                    <span style={{ ...S.profitBadge, background: ptier.bg, color: ptier.fg }}>
+                      +{profit} KD <span style={S.profitMargin}>· {margin}%</span>
+                    </span>
+                  );
+                })()}
+                {t.supplier && <span style={S.supplierTag}>{t.supplier}</span>}
+                {t.sku && <span style={S.skuTag}>SKU {t.sku}</span>}
+              </div>
+            </div>
+            <div style={S.tireActions}>
+              <button onClick={() => toggleStock(t)} className="availbtn"
+                style={{ ...S.catStockBtn, ...(inStock ? { background: tier ? FRESH_COLOR[tier] : "#1D7A45", borderColor: tier ? FRESH_COLOR[tier] : "#1D7A45", color: "#fff" } : {}) }}
+                title={inStock ? (freshnessLabel(ts) || "In stock") + " — tap to mark out of stock" : "Out of stock — tap to mark available"}>
+                {inStock ? <><Check size={13} /> {freshnessLabel(ts) || "In Stock"}</> : "Out of Stock"}
+              </button>
+              <button onClick={() => setHistoryFor(t)} className="iconbtn" style={S.iconBtn} title="Price history"><History size={15} /></button>
+              <button onClick={() => duplicateTire(t)} className="iconbtn" style={S.iconBtn} title="Duplicate (e.g. another country)"><Copy size={15} /></button>
+              <button onClick={() => setEditing(t)} className="iconbtn" style={S.iconBtn} title="Edit"><Edit3 size={15} /></button>
+              <button onClick={() => setConfirmDel(t)} className="iconbtn" style={{ ...S.iconBtn, color: "#C0392B" }} title="Delete"><Trash2 size={15} /></button>
+            </div>
+          </div>
+          );
+        })}
+        {filtered.length === 0 && <div style={S.empty}>No tires match. Try a different search.</div>}
+      </div>
+
+      {editing && <EditModal tire={editing} onClose={() => setEditing(null)} onSave={saveEdit} />}
+      {historyFor && <HistoryModal tire={historyFor} onClose={() => setHistoryFor(null)} />}
+
+      {confirmDel && (
+        <div style={S.modalWrap} onClick={() => setConfirmDel(null)}>
+          <div style={{ ...S.modal, maxWidth: 380 }} onClick={e => e.stopPropagation()}>
+            <div style={S.modalHead}>
+              <h3 style={S.modalTitle}>Delete tire?</h3>
+              <button onClick={() => setConfirmDel(null)} className="iconbtn" style={S.iconBtn}><X size={18} /></button>
+            </div>
+            <p style={{ ...S.sub, marginBottom: 6 }}>This permanently removes:</p>
+            <div style={S.delTarget}>
+              <div style={S.tireLine}>{tireLine(confirmDel)}</div>
+              <div style={{ fontSize: 12, color: "#888", marginTop: 3 }}>
+                {confirmDel.supplier || "—"}{confirmDel.sku ? ` · SKU ${confirmDel.sku}` : ""}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 9, marginTop: 18 }}>
+              <button onClick={() => setConfirmDel(null)} style={S.cancelBtn}>Cancel</button>
+              <button onClick={confirmDelete} style={S.deleteConfirmBtn}><Trash2 size={15} /> Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bulkSize && (
+        <BulkEditModal
+          tires={tires.filter(t => bulkSize.includes(t.id))}
+          onClose={() => setBulkSize(null)}
+          onSave={saveBulk}
+        />
+      )}
+
+      {showFilters && (
+        <div style={S.drawerWrap} onClick={() => setShowFilters(false)}>
+          <div style={S.drawer} onClick={e => e.stopPropagation()}>
+            <div style={S.modalHead}>
+              <h3 style={S.modalTitle}>Filters{activeFilterCount ? ` · ${activeFilterCount} active` : ""}</h3>
+              <button onClick={() => setShowFilters(false)} className="iconbtn" style={S.iconBtn}><X size={18} /></button>
+            </div>
+
+            <div style={S.filterGroup}>
+              <span style={S.filterLabel}>Type</span>
+              <div style={S.filterChipRow}>
+                {["", "Normal", "Off-Road"].map(v => (
+                  <button key={v} onClick={() => setFType(v)} style={{ ...S.fChip, ...(fType === v ? S.fChipOn : {}) }}>
+                    {v === "" ? "All" : v}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={S.filterGroup}>
+              <span style={S.filterLabel}>Profit tier</span>
+              <div style={S.filterChipRow}>
+                {[["", "All"], ["high", "🔵 High (11+)"], ["mid", "🟡 Mid (7-10)"], ["low", "⚪ Low (≤6)"]].map(([v, lbl]) => (
+                  <button key={v} onClick={() => setFProfit(v)} style={{ ...S.fChip, ...(fProfit === v ? S.fChipOn : {}) }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={S.filterGroup}>
+              <span style={S.filterLabel}>Rim size</span>
+              <div style={S.filterChipRow}>
+                <button onClick={() => setFRim("")} style={{ ...S.fChip, ...(fRim === "" ? S.fChipOn : {}) }}>All</button>
+                {rimOptions.map(r => (
+                  <button key={r} onClick={() => setFRim(r)} style={{ ...S.fChip, ...(fRim === r ? S.fChipOn : {}) }}>{r}"</button>
+                ))}
+              </div>
+            </div>
+
+            <div style={S.filterGroup}>
+              <span style={S.filterLabel}>Supplier</span>
+              <select value={fSupplier} onChange={e => setFSupplier(e.target.value)} style={S.input} className="inp">
+                <option value="">All suppliers</option>
+                {supplierOptions.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button onClick={clearFilters} className="ghost" style={{ ...S.copyBtn, flex: 1, justifyContent: "center" }}>Clear all</button>
+              <button onClick={() => setShowFilters(false)} className="primary" style={{ ...S.waBtn, flex: 1, justifyContent: "center" }}>
+                Show {filtered.length} tire{filtered.length !== 1 ? "s" : ""}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── EDIT MODAL ────────────────────────────────────────────────────────────────
+function EditModal({ tire, onClose, onSave }) {
+  const [f, setF] = useState({ ...tire, cost: String(tire.cost), price: String(tire.price) });
+  const [showAll, setShowAll] = useState(false);
+  const [autoFill, setAutoFill] = useState(true); // cost change → auto price from formula
+  const set = (k) => (e) => setF(prev => ({ ...prev, [k]: e.target.value }));
+  const save = () => onSave({ ...f, cost: round3(Number(f.cost) || 0), price: round3(Number(f.price) || 0) });
+
+  const category = detectCategory(f.brand);
+  const cat = CATEGORY[category];
+  const agreed = isAgreedPricing(f);
+  const suggestedMargin = f.rim ? autoMargin(category, f.rim) : null;
+  const reapplyMargin = () => {
+    if (!f.cost) return;
+    const p = computeTirePrice({ brand: f.brand, supplier: f.supplier, category, rim: f.rim, year: f.year, cost: f.cost });
+    setF(prev => ({ ...prev, price: String(p) }));
+  };
+
+  const sizePreview = (f.width && f.aspect && f.rim)
+    ? sizeString({ width: f.width, aspect: f.aspect, structure: f.structure, rim: f.rim, loadIndex: f.loadIndex, speedRating: f.speedRating })
+    : "—";
+
+  return (
+    <div style={S.modalWrap} onClick={onClose}>
+      <div style={S.modal} onClick={e => e.stopPropagation()}>
+        <div style={S.modalHead}>
+          <h3 style={S.modalTitle}>Edit tire</h3>
+          <button onClick={onClose} className="iconbtn" style={S.iconBtn}><X size={18} /></button>
+        </div>
+
+        {/* Category + size preview (always visible) */}
+        <div style={{ ...S.previewLine, borderColor: cat.color, marginBottom: 14 }}>
+          <div style={{ ...S.catTag, background: cat.soft, color: cat.color, display: "inline-flex", marginBottom: 6 }}>
+            <span style={{ ...S.catDot, background: cat.color }} />{cat.en} <span style={S.catAr}>{cat.ar}</span>
+          </div>
+          <div style={S.previewText}>{f.brand}{f.pattern ? " " + f.pattern : ""}</div>
+          <div style={S.previewSize}>Size: {sizePreview}</div>
+        </div>
+
+        {/* Default fields */}
+        <div style={S.grid}>
+          <Field label="Supplier"><input style={S.input} className="inp" value={f.supplier || ""} onChange={set("supplier")} /></Field>
+          <Field label="Year"><input style={S.input} className="inp" value={f.year || ""} onChange={set("year")} inputMode="numeric" /></Field>
+          <Field label="Cost (KD)"><input style={S.input} className="inp" value={f.cost}
+            onChange={e => { const v = e.target.value; setF(prev => ({ ...prev, cost: v, price: (autoFill && v) ? String(computeTirePrice({ brand: prev.brand, supplier: prev.supplier, category, rim: prev.rim, year: prev.year, cost: v })) : prev.price })); }}
+            inputMode="decimal" /></Field>
+          <Field label="Price (KD)"><input style={S.input} className="inp" value={f.price} onChange={set("price")} inputMode="decimal" /></Field>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, gap: 10, flexWrap: "wrap" }}>
+          <label className="chk" style={{ ...S.chkRow, marginTop: 0, fontSize: 12.5 }}>
+            <input type="checkbox" checked={autoFill} onChange={e => setAutoFill(e.target.checked)} />
+            <span>
+              {agreed
+                ? `Auto-price (${/pirelli/i.test(`${f.brand} ${f.supplier}`) ? "Pirelli 13%" : `Michelin ${Math.round(agreedMarginPct(f.brand, f.supplier, f.year) * 100)}%`})`
+                : `Auto-price from formula (cost + ${suggestedMargin ?? "margin"} KD) ÷ 0.9`}
+            </span>
+          </label>
+          <button onClick={reapplyMargin} className="ghost" style={S.reapplyBtn} title="Recompute price from cost">
+            Re-apply formula
+          </button>
+        </div>
+
+        <ProfitIndicator cost={f.cost} price={f.price} category={category} tire={{ brand: f.brand, supplier: f.supplier, category, rim: f.rim, year: f.year }} />
+
+        {/* View all toggle */}
+        <button onClick={() => setShowAll(v => !v)} className="ghost" style={S.viewAllBtn}>
+          {showAll ? <ChevronDown size={15} /> : <ChevronRight size={15} />} {showAll ? "Hide extra fields" : "View all fields"}
+        </button>
+
+        {showAll && (
+          <div style={S.grid}>
+            <Field label="Brand"><input style={S.input} className="inp" value={f.brand} onChange={set("brand")} /></Field>
+            <Field label="Pattern">
+              <input style={S.input} className="inp" value={f.pattern || ""} onChange={set("pattern")} list="editPatternList" />
+              <datalist id="editPatternList">
+                {patternsForBrand(f.brand).map(p => <option key={p} value={p} />)}
+              </datalist>
+            </Field>
+            <Field label="Type"><select style={S.input} className="inp" value={f.type} onChange={set("type")}><option>Normal</option><option>Off-Road</option></select></Field>
+            <Field label="Width"><input style={S.input} className="inp" value={f.width} onChange={set("width")} inputMode="numeric" /></Field>
+            <Field label="Aspect ratio"><input style={S.input} className="inp" value={f.aspect} onChange={set("aspect")} inputMode="numeric" /></Field>
+            <Field label="Structure"><select style={S.input} className="inp" value={f.structure} onChange={set("structure")}><option>R</option><option>ZR</option></select></Field>
+            <Field label="Rim size"><input style={S.input} className="inp" value={f.rim} onChange={set("rim")} inputMode="numeric" /></Field>
+            <Field label="Load index"><input style={S.input} className="inp" value={f.loadIndex || ""} onChange={set("loadIndex")} /></Field>
+            <Field label="Speed rating"><input style={S.input} className="inp" value={f.speedRating || ""} onChange={set("speedRating")} /></Field>
+            <Field label="Country">
+              <select style={S.input} className="inp" value={f.country || ""} onChange={set("country")}>
+                <option value="">—</option>
+                {Object.keys(COUNTRIES).map(c => <option key={c} value={c}>{COUNTRIES[c]} {c}</option>)}
+              </select>
+            </Field>
+            <Field label="SKU / Part no."><input style={S.input} className="inp" value={f.sku || ""} onChange={set("sku")} placeholder="Supplier part number" /></Field>
+            <Field label="Notes"><input style={S.input} className="inp" value={f.notes || ""} onChange={set("notes")} /></Field>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+          <button onClick={onClose} className="ghost" style={{ ...S.copyBtn, flex: 1, justifyContent: "center" }}>Cancel</button>
+          <button onClick={save} className="primary" style={{ ...S.waBtn, flex: 1, justifyContent: "center" }}><Check size={16} /> Save changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── HISTORY MODAL ─────────────────────────────────────────────────────────────
+function HistoryModal({ tire, onClose }) {
+  return (
+    <div style={S.modalWrap} onClick={onClose}>
+      <div style={S.modal} onClick={e => e.stopPropagation()}>
+        <div style={S.modalHead}>
+          <h3 style={S.modalTitle}>Price history</h3>
+          <button onClick={onClose} className="iconbtn" style={S.iconBtn}><X size={18} /></button>
+        </div>
+        <div style={S.tireLine}>{tireLine(tire)}</div>
+        <div style={{ marginTop: 14 }}>
+          {[...tire.history].reverse().map((h, i) => (
+            <div key={i} style={S.histRow}>
+              <Clock size={14} style={{ color: "#999", marginTop: 2 }} />
+              <div style={{ flex: 1 }}>
+                <div style={S.histMain}>Cost {h.cost} KD · Price {h.price} KD <span style={S.histMargin}>({h.price ? Math.round((h.price - h.cost) / h.price * 100) : 0}% margin)</span></div>
+                <div style={S.histMeta}>{h.note} · {new Date(h.ts).toLocaleString()}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── styles ────────────────────────────────────────────────────────────────────
+// ═══ SERVICES CATALOG — Phase 1 of the multi-service expansion ═══════════════
+// Non-tire product families, following the canonical BNCHR+ SKU registry.
+// Multi-supplier costs per product (one live offer per supplier, refreshed on re-quote).
+// Spec fields: {opts:[...]}=tap chips · {combo:[...]}=searchable select w/ custom · {free:"ph"}=text
+const SVC_CATEGORIES = {
+  battery:    { label: "Batteries",   prefixes: ["BT"],                   unit: "pc",
+    specs: [
+      ["ah", "Capacity (Ah)", { combo: ["35","45","50","55","60","66","70","74","80","90","95","100","105","110"] }],
+      ["size_group", "Size group", { combo: ["55D23L","55D23R","80D26L","80D26R","95D31L","95D31R","105D31L","LN1","LN2","LN3","LN4","LN5","H5","H6","H7","H8"] }],
+      ["tech", "Tech", { opts: ["Flooded","EFB","AGM"] }],
+      ["cca", "CCA", { free: "680" }],
+      ["warranty_months", "Warranty (months)", { opts: ["12","15","18","24"] }],
+    ] },
+  engine_oil: { label: "Engine Oil",  prefixes: ["EO"],                   unit: "litre",
+    specs: [
+      ["viscosity", "Viscosity", { combo: ["0W16","0W20","0W30","0W40","5W20","5W30","5W40","5W50","10W30","10W40","10W60","15W40","15W50","20W50"] }],
+      ["type", "Type", { opts: ["FS","SS","Mineral"] }],
+      ["line", "Line (optional)", { free: "SSL / EHC / VMO…" }],
+      ["approvals", "Approvals", { free: "VW 504.00 · MB 229.51" }],
+      ["interval_km", "Interval (KM)", { combo: ["5000","10000","15000"] }],
+    ] },
+  fluid:      { label: "Fluids",      prefixes: ["FL", "BF"],             unit: "litre",
+    specs: [
+      ["fluid_type", "Fluid type", { opts: ["ATF","CLT","GEAR","PS","BRK"] }],
+      ["spec", "Spec", { combo: ["Dexron VI","Dexron III","ATF+4","CVT","Type F","75W-90","80W-90","75W-140","DOT 3","DOT 4","DOT 5.1","G12","G13"] }],
+    ] },
+  filter:     { label: "Filters",     prefixes: ["FO", "FA", "FC", "FF"], unit: "pc",
+    specs: [
+      ["filter_type", "Filter type", { opts: ["Oil","Air","Cabin","Fuel"] }],
+      ["part_ref", "Part ref", { free: "15400-PLM-A02" }],
+    ] },
+  brake:      { label: "Brakes",      prefixes: ["BP", "BD", "BS"],       unit: "set",
+    specs: [
+      ["brake_type", "Type", { opts: ["Pads","Disc","Sensor"] }],
+      ["position", "Position", { opts: ["Front","Rear"] }],
+      ["part_ref", "Part ref", { free: "P85020" }],
+    ] },
+  spark_plug: { label: "Spark Plugs", prefixes: ["SP"],                   unit: "pc",
+    specs: [
+      ["part_ref", "Part ref", { free: "ILKAR7B11" }],
+      ["gap", "Gap", { free: "0.8mm" }],
+    ] },
+  other:      { label: "Other",       prefixes: ["PT", "CC"],             unit: "pc",
+    specs: [
+      ["group", "Group", { free: "SUSP / FRAG / POLISH" }],
+    ] },
+};
+// ── auto-generation: product name + SKU from brand/specs (editable overrides) ──
+const SVC_PART_BRANDS = {
+  battery: ["Varta","Bosch","Amaron","ACDelco","Solite","Exide","Hankook","Duracell","Optima","Banner"],
+  engine_oil: ["RAVENOL","TOTAL","Mobil","MOBIL1","Castrol","Shell","Liqui Moly","Motul","Valvoline","AMSOIL","Fuchs"],
+  fluid: ["RAVENOL","TOTAL","Castrol","Mobil","Liqui Moly","Prestone","ZIC","Motul"],
+  filter: ["MANN","Bosch","Mahle","K&N","Denso","Fram","Wix"],
+  brake: ["Brembo","Bosch","ATE","Textar","TRW","Akebono","Ferodo","Zimmermann"],
+  spark_plug: ["NGK","Denso","Bosch","Champion"],
+  other: [],
+};
+const svcIsCarBrand = (b) => {
+  const x = String(b || "").trim().toLowerCase();
+  return !!x && typeof SQ_BRANDS !== "undefined" && SQ_BRANDS.some(cb => cb.toLowerCase() === x);
+};
+function svcGenName(cat, brand, sp = {}) {
+  const b = String(brand || "").trim();
+  const g = svcIsCarBrand(b) ? " Genuine" : "";
+  const int = sp.interval_km ? ` [${Number(sp.interval_km).toLocaleString()} KM]` : "";
+  const ref = sp.part_ref ? ` [Part No. ${sp.part_ref}]` : "";
+  const sq = (x) => String(x || "").trim();
+  if (cat === "engine_oil") return [b + g, sq(sp.line), sq(sp.viscosity), "Engine Oil"].filter(Boolean).join(" ") + int;
+  if (cat === "battery")    return [b + g, "Battery", sp.ah ? `${sp.ah}AH` : "", sq(sp.tech)].filter(Boolean).join(" ");
+  if (cat === "filter")     return [b + g, sq(sp.filter_type) || "Oil", "Filter"].filter(Boolean).join(" ") + ref;
+  if (cat === "brake") {
+    const what = sp.brake_type === "Disc" ? "Brake Discs" : sp.brake_type === "Sensor" ? "Brake Sensor" : "Brake Pads";
+    return [b + g, sq(sp.position), what].filter(Boolean).join(" ") + ref;
+  }
+  if (cat === "spark_plug") return [b + g, "Spark Plugs"].filter(Boolean).join(" ") + ref;
+  if (cat === "fluid") {
+    const t = { ATF: "ATF", CLT: "Coolant", GEAR: "Gear Oil", PS: "Power Steering Fluid", BRK: "Brake Fluid" }[sp.fluid_type] || "Fluid";
+    return [b, t, sq(sp.spec)].filter(Boolean).join(" ");
+  }
+  return "";
+}
+const svcSkuCode = (x) => String(x || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+function svcGenSku(cat, brand, sp = {}) {
+  const B = svcSkuCode(brand).slice(0, 4);
+  if (!B) return "";
+  const R = svcSkuCode(sp.part_ref).slice(0, 10);
+  if (cat === "engine_oil") return ["EO", B, svcSkuCode(sp.viscosity), svcSkuCode(sp.line).slice(0, 4) || null].filter(Boolean).join("-");
+  if (cat === "battery")    return ["BT", B, sp.ah || null, sp.warranty_months || null].filter(Boolean).join("-");
+  if (cat === "filter")     return [{ Oil: "FO", Air: "FA", Cabin: "FC", Fuel: "FF" }[sp.filter_type] || "FO", B, R || null].filter(Boolean).join("-");
+  if (cat === "brake")      return [{ Pads: "BP", Disc: "BD", Sensor: "BS" }[sp.brake_type] || "BP", B, R || null].filter(Boolean).join("-");
+  if (cat === "spark_plug") return ["SP", B, R || null].filter(Boolean).join("-");
+  if (cat === "fluid")      return sp.fluid_type === "BRK" ? ["BF", B, svcSkuCode(sp.spec).slice(0, 6) || null].filter(Boolean).join("-") : ["FL", sp.fluid_type || "ATF", B].join("-");
+  return ["PT", B].join("-");
+}
+const SVC_CAT_KEYS = Object.keys(SVC_CATEGORIES);
+const svcCatOfSku = (sku) => SVC_CAT_KEYS.find(k => SVC_CATEGORIES[k].prefixes.some(p => String(sku || "").toUpperCase().startsWith(p + "-"))) || null;
+
+function ServicesCatalogView({ showToast }) {
+  const [products, setProducts] = useState([]);
+  const [offers, setOffers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [cat, setCat] = useState("all");
+  const [q, setQ] = useState("");
+  const [brandF, setBrandF] = useState("all");
+  const [showInactive, setShowInactive] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const [form, setForm] = useState(null); // null | { mode:'add'|'edit', d:{...} }
+  const [offerDraft, setOfferDraft] = useState({ supplier: "", cost: "" });
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [p, o] = await Promise.all([
+        supabase.from("service_products").select("*").order("category").order("sku"),
+        supabase.from("service_product_offers").select("*").order("updated_at", { ascending: false }),
+      ]);
+      if (p.error) throw p.error;
+      setProducts(p.data || []);
+      setOffers(o.data || []);
+    } catch (e) { showToast("⚠ Could not load services catalog"); }
+    setLoading(false);
+  }, [showToast]);
+  useEffect(() => { load(); }, [load]);
+
+  const offersOf = (pid) => offers.filter(o => o.product_id === pid);
+  const bestCost = (pid) => {
+    const os = offersOf(pid).filter(o => Number(o.cost) > 0);
+    return os.length ? Math.min(...os.map(o => Number(o.cost))) : null;
+  };
+
+  const brands = useMemo(() => [...new Set(products.map(p => p.brand).filter(Boolean))].sort(), [products]);
+  const ql = q.trim().toLowerCase();
+  const shown = products
+    .filter(p => showInactive ? true : p.active !== false)
+    .filter(p => cat === "all" ? true : p.category === cat)
+    .filter(p => brandF === "all" ? true : p.brand === brandF)
+    .filter(p => !ql || [p.sku, p.brand, p.name, JSON.stringify(p.specs || {})].some(v => String(v || "").toLowerCase().includes(ql)));
+
+  const specSummary = (p) => {
+    const def = SVC_CATEGORIES[p.category];
+    if (!def) return "";
+    return def.specs.map(([k]) => (p.specs || {})[k]).filter(Boolean).join(" · ");
+  };
+
+  // ── product form ──
+  const blankFor = (c) => ({ category: c, sku: "", brand: "", name: "", specs: {}, unit: SVC_CATEGORIES[c].unit, selling_price: "", cost: "", supplier: "", notes: "", active: true, _nameEdit: false, _skuEdit: false });
+  const openAdd = () => setForm({ mode: "add", d: blankFor(cat === "all" ? "battery" : cat) });
+  const openEdit = (p) => setForm({ mode: "edit", d: { ...p, specs: { ...(p.specs || {}) }, selling_price: p.selling_price ?? "", cost: "", supplier: "", _nameEdit: true, _skuEdit: true } });
+  // any brand/spec change regenerates name + SKU unless the agent manually edited them
+  const regen = (d) => ({
+    ...d,
+    name: d._nameEdit ? d.name : (d.category === "other" ? d.name : svcGenName(d.category, d.brand, d.specs)),
+    sku: d._skuEdit ? d.sku : svcGenSku(d.category, d.brand, d.specs),
+  });
+  const setD = (patch) => setForm(f => ({ ...f, d: regen({ ...f.d, ...patch }) }));
+  const setSpec = (k, v) => setForm(f => ({ ...f, d: regen({ ...f.d, specs: { ...f.d.specs, [k]: v } }) }));
+  const skuOk = (d) => SVC_CATEGORIES[d.category].prefixes.some(p => d.sku.toUpperCase().startsWith(p + "-")) && d.sku.trim().length > 3;
+  const brandOpts = (c) => [...new Set([...(SVC_PART_BRANDS[c] || []), ...brands, ...(typeof SQ_BRANDS !== "undefined" ? SQ_BRANDS : [])])].sort();
+  const supplierOpts = useMemo(() => [...new Set(offers.map(o => o.supplier).filter(Boolean))].sort(), [offers]);
+
+  // ── bulk edit ──
+  const [selected, setSelected] = useState(new Set());
+  const [bulkMode, setBulkMode] = useState("set");   // set | pct_up | pct_down | kd_up | kd_down | margin
+  const [bulkVal, setBulkVal] = useState("");
+  const [bulkSpecKey, setBulkSpecKey] = useState("");
+  const [bulkSpecVal, setBulkSpecVal] = useState("");
+  const toggleSel = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const selProducts = products.filter(p => selected.has(p.id));
+  const selCats = [...new Set(selProducts.map(p => p.category))];
+  const round3 = (x) => Math.round((Number(x) || 0) * 1000) / 1000;
+
+  const bulkApplyRows = async (rows, label) => {
+    // rows: [{id, patch}]
+    setSaving(true);
+    try {
+      await Promise.all(rows.map(r =>
+        supabase.from("service_products").update({ ...r.patch, updated_at: new Date().toISOString() }).eq("id", r.id)));
+      setProducts(prev => prev.map(p => { const r = rows.find(x => x.id === p.id); return r ? { ...p, ...r.patch } : p; }));
+      showToast(`${label} — ${rows.length} product${rows.length === 1 ? "" : "s"} updated`);
+    } catch (e) { showToast("⚠ Bulk update failed"); }
+    setSaving(false);
+  };
+  const bulkPrice = () => {
+    const v = Number(bulkVal);
+    if (!(v > 0) && bulkMode !== "set") { showToast("Enter a value first"); return; }
+    let skipped = 0;
+    const rows = selProducts.map(p => {
+      const cur = Number(p.selling_price) || 0;
+      let np = null;
+      if (bulkMode === "set") np = v;
+      else if (bulkMode === "pct_up") np = cur * (1 + v / 100);
+      else if (bulkMode === "pct_down") np = cur * (1 - v / 100);
+      else if (bulkMode === "kd_up") np = cur + v;
+      else if (bulkMode === "kd_down") np = cur - v;
+      else if (bulkMode === "margin") {
+        const bc = bestCost(p.id);
+        if (bc == null) { skipped++; return null; }
+        np = bc * (1 + v / 100);
+      }
+      return { id: p.id, patch: { selling_price: round3(Math.max(0, np)) } };
+    }).filter(Boolean);
+    if (!rows.length) { showToast("No selected products have a cost to price from"); return; }
+    bulkApplyRows(rows, "Prices updated" + (skipped ? ` (${skipped} skipped — no cost)` : ""));
+  };
+  const bulkActive = (on) => bulkApplyRows(selProducts.map(p => ({ id: p.id, patch: { active: on } })), on ? "Activated" : "Deactivated");
+  const bulkSpec = () => {
+    if (!bulkSpecKey) { showToast("Pick a spec field first"); return; }
+    bulkApplyRows(selProducts.map(p => ({ id: p.id, patch: { specs: { ...(p.specs || {}), [bulkSpecKey]: bulkSpecVal } } })), `${bulkSpecKey} set`);
+  };
+
+  const saveProduct = async () => {
+    const d = form.d;
+    if (!d.brand.trim()) { showToast("Pick a brand first"); return; }
+    if (!d.sku.trim() || !d.name.trim()) { showToast("SKU and name are required"); return; }
+    if (!skuOk(d)) { showToast(`SKU must start with ${SVC_CATEGORIES[d.category].prefixes.map(p => p + "-").join(" or ")}`); return; }
+    setSaving(true);
+    const row = { category: d.category, sku: d.sku.trim().toUpperCase(), brand: d.brand.trim(), name: d.name.trim(), specs: d.specs, unit: d.unit, selling_price: d.selling_price === "" ? null : Number(d.selling_price), notes: d.notes || "", active: d.active !== false, updated_at: new Date().toISOString() };
+    try {
+      let saved;
+      if (form.mode === "add") {
+        const { data, error } = await supabase.from("service_products").insert(row).select().single();
+        if (error) throw error;
+        saved = data;
+        setProducts(prev => [...prev, data]);
+      } else {
+        const { error } = await supabase.from("service_products").update(row).eq("id", d.id);
+        if (error) throw error;
+        saved = { ...d, ...row };
+        setProducts(prev => prev.map(p => p.id === d.id ? { ...p, ...row } : p));
+      }
+      // supplier cost entered in the same form → becomes that supplier's live offer
+      if (Number(d.cost) > 0 && d.supplier.trim()) {
+        const { data: off } = await supabase.from("service_product_offers")
+          .upsert({ product_id: saved.id, supplier: d.supplier.trim(), cost: Number(d.cost), updated_at: new Date().toISOString() }, { onConflict: "product_id,supplier" })
+          .select().single();
+        if (off) setOffers(prev => [off, ...prev.filter(o => !(o.product_id === saved.id && o.supplier === d.supplier.trim()))]);
+      }
+      showToast(`${form.mode === "add" ? "Added" : "Saved"} ${row.sku}`);
+      setForm(null);
+    } catch (e) { showToast(`⚠ ${String(e.message || e).includes("duplicate") ? "SKU already exists" : "Save failed"}`); }
+    setSaving(false);
+  };
+
+  // ── offers: one live offer per supplier — re-adding refreshes cost + freshness ──
+  const saveOffer = async (pid) => {
+    const sup = offerDraft.supplier.trim();
+    const cost = Number(offerDraft.cost);
+    if (!sup || !(cost > 0)) { showToast("Supplier and cost are required"); return; }
+    setSaving(true);
+    try {
+      const { data, error } = await supabase.from("service_product_offers")
+        .upsert({ product_id: pid, supplier: sup, cost, updated_at: new Date().toISOString() }, { onConflict: "product_id,supplier" })
+        .select().single();
+      if (error) throw error;
+      setOffers(prev => [data, ...prev.filter(o => !(o.product_id === pid && o.supplier === sup))]);
+      setOfferDraft({ supplier: "", cost: "" });
+      showToast(`${sup} · KWD ${cost.toFixed(3)} saved`);
+    } catch (e) { showToast("⚠ Offer save failed"); }
+    setSaving(false);
+  };
+  const deleteOffer = async (o) => {
+    if (!window.confirm(`Remove ${o.supplier}'s offer?`)) return;
+    try {
+      const { error } = await supabase.from("service_product_offers").delete().eq("id", o.id);
+      if (error) throw error;
+      setOffers(prev => prev.filter(x => x.id !== o.id));
+    } catch (e) { showToast("⚠ Delete failed"); }
+  };
+
+  const chip = (key, label, n) => (
+    <button key={key} onClick={() => setCat(key)} className="seg"
+      style={{ ...S.seg, ...(cat === key ? S.segOn : {}), fontSize: 12.5 }}>
+      {label}{n != null ? ` (${n})` : ""}
+    </button>
+  );
+  const inp = { ...S.input, padding: "9px 11px", fontSize: 13.5 };
+  const th = { textAlign: "left", fontSize: 10.5, fontWeight: 800, color: "#8A8A7A", padding: "8px 10px", textTransform: "uppercase", letterSpacing: 0.4 };
+  const td = { fontSize: 13, padding: "9px 10px", borderTop: "1px solid #ECECE4", verticalAlign: "top" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 19, fontWeight: 800 }}>Services Catalog</div>
+          <div style={{ fontSize: 12.5, color: "#6B6B6B" }}>Batteries, oils, fluids, filters, brakes — canonical SKUs, multi-supplier costs.</div>
+        </div>
+        <button onClick={openAdd} style={{ ...S.loginBtn, width: "auto", marginTop: 0, padding: "10px 16px", display: "flex", alignItems: "center", gap: 6 }}>
+          <Plus size={15} /> Add product
+        </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {chip("all", "All", products.filter(p => showInactive || p.active !== false).length)}
+        {SVC_CAT_KEYS.map(k => chip(k, SVC_CATEGORIES[k].label, products.filter(p => p.category === k && (showInactive || p.active !== false)).length))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}>
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search SKU, brand, name, spec…" style={{ ...inp, flex: "1 1 220px" }} className="inp" />
+        <select value={brandF} onChange={e => setBrandF(e.target.value)} style={{ ...inp, flex: "0 0 auto" }}>
+          <option value="all">All brands</option>
+          {brands.map(b => <option key={b}>{b}</option>)}
+        </select>
+        <label style={{ fontSize: 12.5, color: "#6B6B6B", display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
+          <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} /> show inactive
+        </label>
+      </div>
+
+      {/* ── add / edit form — selections everywhere, auto name + SKU ── */}
+      {form && (
+        <div style={{ background: "#fff", border: "1.5px solid #0F2419", borderRadius: 14, padding: 16, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>{form.mode === "add" ? "Add product" : `Edit ${form.d.sku}`}</div>
+            <button onClick={() => setForm(null)} style={{ background: "none", border: "none", cursor: "pointer" }}><X size={17} /></button>
+          </div>
+
+          {/* category chips */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {SVC_CAT_KEYS.map(k => (
+              <button key={k} disabled={form.mode === "edit"} onClick={() => setForm(f => ({ ...f, d: { ...blankFor(k), brand: f.d.brand, selling_price: f.d.selling_price, cost: f.d.cost, supplier: f.d.supplier } }))}
+                className="seg" style={{ ...S.seg, ...(form.d.category === k ? S.segOn : {}), fontSize: 12, opacity: form.mode === "edit" && form.d.category !== k ? 0.35 : 1 }}>
+                {SVC_CATEGORIES[k].label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6B6B6B", marginBottom: 3 }}>Brand</div>
+              <SqCombo value={form.d.brand} onChange={v => setD({ brand: v })} options={brandOpts(form.d.category)} placeholder="Varta / Porsche / MANN…" />
+            </div>
+            {SVC_CATEGORIES[form.d.category].specs.map(([k, label, def]) => (
+              <div key={k}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#6B6B6B", marginBottom: 3 }}>{label}</div>
+                {def.opts ? (
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    {def.opts.map(o => (
+                      <button key={o} onClick={() => setSpec(k, form.d.specs[k] === o ? "" : o)} className="seg"
+                        style={{ ...S.seg, ...(form.d.specs[k] === o ? S.segOn : {}), fontSize: 12, padding: "7px 11px" }}>{o}</button>
+                    ))}
+                  </div>
+                ) : def.combo ? (
+                  <SqCombo value={form.d.specs[k] || ""} onChange={v => setSpec(k, v)} options={def.combo} placeholder={def.combo[0]} />
+                ) : (
+                  <input value={form.d.specs[k] || ""} onChange={e => setSpec(k, e.target.value)} placeholder={def.free} style={inp} className="inp" />
+                )}
+              </div>
+            ))}
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6B6B6B", marginBottom: 3 }}>Selling price (KWD / {form.d.unit})</div>
+              <input type="number" step="0.001" value={form.d.selling_price} onChange={e => setD({ selling_price: e.target.value })} style={inp} className="inp" />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6B6B6B", marginBottom: 3 }}>Supplier cost (KWD / {form.d.unit})</div>
+              <input type="number" step="0.001" value={form.d.cost} onChange={e => setD({ cost: e.target.value })} style={inp} className="inp" />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6B6B6B", marginBottom: 3 }}>Supplier</div>
+              <SqCombo value={form.d.supplier} onChange={v => setD({ supplier: v })} options={supplierOpts} placeholder="Al Babtain / GRIP Autos…" />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6B6B6B", marginBottom: 3 }}>Unit</div>
+              <div style={{ display: "flex", gap: 5 }}>
+                {["pc", "litre", "set"].map(u => (
+                  <button key={u} onClick={() => setD({ unit: u })} className="seg" style={{ ...S.seg, ...(form.d.unit === u ? S.segOn : {}), fontSize: 12, padding: "7px 11px" }}>{u}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#6B6B6B", marginBottom: 3 }}>Notes</div>
+              <input value={form.d.notes || ""} onChange={e => setD({ notes: e.target.value })} style={inp} className="inp" />
+            </div>
+          </div>
+
+          {/* auto-generated identity — editable on tap */}
+          <div style={{ background: "#F6F8F6", border: "1px dashed #D8D8D0", borderRadius: 10, padding: "9px 12px", marginTop: 12, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 10.5, fontWeight: 800, color: "#8A8A7A" }}>NAME (auto{svcIsCarBrand(form.d.brand) ? " · Genuine" : ""}) <span onClick={() => setD({ _nameEdit: true })} style={{ cursor: "pointer" }}>✏️</span></div>
+              {form.d._nameEdit
+                ? <input value={form.d.name} onChange={e => setD({ name: e.target.value, _nameEdit: true })} style={{ ...inp, marginTop: 3 }} className="inp" />
+                : <div style={{ fontSize: 13, fontWeight: 700, marginTop: 2 }}>{form.d.name || <span style={{ color: "#C0392B", fontWeight: 600 }}>pick brand + specs…</span>}</div>}
+            </div>
+            <div>
+              <div style={{ fontSize: 10.5, fontWeight: 800, color: "#8A8A7A" }}>SKU (auto · {SVC_CATEGORIES[form.d.category].prefixes.map(p => p + "-").join(" / ")}) <span onClick={() => setD({ _skuEdit: true })} style={{ cursor: "pointer" }}>✏️</span></div>
+              {form.d._skuEdit
+                ? <input value={form.d.sku} onChange={e => setD({ sku: e.target.value.toUpperCase(), _skuEdit: true })} style={{ ...inp, marginTop: 3, borderColor: form.d.sku && !skuOk(form.d) ? "#C0392B" : "#D8D8D0" }} className="inp" />
+                : <div style={{ fontSize: 13, fontWeight: 700, marginTop: 2, fontFamily: "monospace" }}>{form.d.sku || "—"}</div>}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
+            <button onClick={saveProduct} disabled={saving} style={{ ...S.loginBtn, width: "auto", marginTop: 0, padding: "10px 18px" }}>{saving ? "Saving…" : form.mode === "add" ? "Add product" : "Save changes"}</button>
+            {form.mode === "edit" && (
+              <label style={{ fontSize: 12.5, color: "#6B6B6B", display: "flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
+                <input type="checkbox" checked={form.d.active !== false} onChange={e => setD({ active: e.target.checked })} /> active
+              </label>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── bulk edit bar ── */}
+      {selected.size > 0 && (
+        <div style={{ background: "#0F2419", color: "#fff", borderRadius: 12, padding: "10px 14px", marginBottom: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 800 }}>{selected.size} selected</span>
+          <select value={bulkMode} onChange={e => setBulkMode(e.target.value)} style={{ ...inp, padding: "7px 9px", fontSize: 12.5, width: "auto" }}>
+            <option value="set">Price → set to (KD)</option>
+            <option value="pct_up">Price → increase %</option>
+            <option value="pct_down">Price → decrease %</option>
+            <option value="kd_up">Price → add KD</option>
+            <option value="kd_down">Price → subtract KD</option>
+            <option value="margin">Price = best cost + margin %</option>
+          </select>
+          <input type="number" step="0.25" value={bulkVal} onChange={e => setBulkVal(e.target.value)} placeholder="value" style={{ ...inp, padding: "7px 9px", fontSize: 12.5, width: 84 }} className="inp" />
+          <button onClick={bulkPrice} disabled={saving} className="seg" style={{ ...S.seg, fontSize: 12 }}>Apply</button>
+          {selCats.length === 1 && (
+            <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <select value={bulkSpecKey} onChange={e => setBulkSpecKey(e.target.value)} style={{ ...inp, padding: "7px 9px", fontSize: 12.5, width: "auto" }}>
+                <option value="">Set spec…</option>
+                {SVC_CATEGORIES[selCats[0]].specs.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+              </select>
+              <input value={bulkSpecVal} onChange={e => setBulkSpecVal(e.target.value)} placeholder="value" style={{ ...inp, padding: "7px 9px", fontSize: 12.5, width: 100 }} className="inp" />
+              <button onClick={bulkSpec} disabled={saving} className="seg" style={{ ...S.seg, fontSize: 12 }}>Apply</button>
+            </span>
+          )}
+          <button onClick={() => bulkActive(true)} disabled={saving} className="seg" style={{ ...S.seg, fontSize: 12 }}>Activate</button>
+          <button onClick={() => bulkActive(false)} disabled={saving} className="seg" style={{ ...S.seg, fontSize: 12 }}>Deactivate</button>
+          <button onClick={() => setSelected(new Set())} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, textDecoration: "underline" }}>clear</button>
+        </div>
+      )}
+
+      {/* ── product table ── */}
+      <div style={{ background: "#fff", border: "1px solid #ECECE4", borderRadius: 14, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+            <thead><tr>
+              <th style={{ ...th, width: 46 }}>
+                <input type="checkbox"
+                  checked={shown.length > 0 && shown.every(p => selected.has(p.id))}
+                  onChange={e => setSelected(e.target.checked ? new Set(shown.map(p => p.id)) : new Set())} />
+              </th><th style={th}>SKU</th><th style={th}>Brand</th><th style={th}>Product</th><th style={th}>Specs</th>
+              <th style={{ ...th, textAlign: "right" }}>Best cost</th><th style={{ ...th, textAlign: "right" }}>Price</th><th style={{ ...th, textAlign: "right" }}>Margin</th>
+            </tr></thead>
+            <tbody>
+              {loading && <tr><td style={td} colSpan={8}>Loading…</td></tr>}
+              {!loading && shown.length === 0 && <tr><td style={{ ...td, color: "#8A8A7A" }} colSpan={8}>No products yet{cat !== "all" ? ` in ${SVC_CATEGORIES[cat]?.label}` : ""} — use “Add product” to start the catalog.</td></tr>}
+              {shown.map(p => {
+                const os = offersOf(p.id);
+                const bc = bestCost(p.id);
+                const price = Number(p.selling_price) || 0;
+                const marginPct = price && bc != null ? Math.round(((price - bc) / price) * 100) : null;
+                const open = expanded === p.id;
+                return (
+                  <React.Fragment key={p.id}>
+                    <tr onClick={() => { setExpanded(open ? null : p.id); setOfferDraft({ supplier: "", cost: "" }); }} style={{ cursor: "pointer", opacity: p.active === false ? 0.45 : 1 }}>
+                      <td style={{ ...td, width: 46, whiteSpace: "nowrap" }} onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggleSel(p.id)} style={{ marginRight: 5 }} />
+                        <span onClick={() => { setExpanded(open ? null : p.id); setOfferDraft({ supplier: "", cost: "" }); }} style={{ cursor: "pointer" }}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+                      </td>
+                      <td style={{ ...td, fontWeight: 700, whiteSpace: "nowrap" }}>{p.sku}{p.active === false && <span style={{ fontSize: 10, color: "#C0392B", marginLeft: 6 }}>inactive</span>}</td>
+                      <td style={td}>{p.brand}</td>
+                      <td style={td}>{p.name}<div style={{ fontSize: 11, color: "#8A8A7A" }}>{SVC_CATEGORIES[p.category]?.label} · per {p.unit}</div></td>
+                      <td style={{ ...td, fontSize: 12, color: "#555" }}>{specSummary(p)}</td>
+                      <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>{bc != null ? `KWD ${bc.toFixed(3)}` : <span style={{ color: "#C0392B", fontSize: 12 }}>no cost</span>}<div style={{ fontSize: 10.5, color: "#8A8A7A" }}>{(() => { const b = os.filter(o => Number(o.cost) > 0).sort((x, y) => Number(x.cost) - Number(y.cost))[0]; return b ? `${b.supplier} · ` : ""; })()}{os.length} supplier{os.length === 1 ? "" : "s"}</div></td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 700, whiteSpace: "nowrap" }}>{price ? `KWD ${price.toFixed(3)}` : "—"}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 700, color: marginPct == null ? "#8A8A7A" : marginPct >= 30 ? "#1D7A45" : marginPct >= 15 ? "#8A6A00" : "#C0392B" }}>{marginPct == null ? "—" : `${marginPct}%`}</td>
+                    </tr>
+                    {open && (
+                      <tr><td style={{ ...td, background: "#FAFAF7" }} colSpan={8}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                          <div style={{ fontSize: 12, fontWeight: 800, color: "#6B6B6B" }}>SUPPLIER OFFERS — same item, different suppliers</div>
+                          <button onClick={(e) => { e.stopPropagation(); openEdit(p); }} style={{ background: "none", border: "1px solid #D8D8D0", borderRadius: 8, padding: "5px 10px", fontSize: 12, cursor: "pointer", display: "flex", gap: 5, alignItems: "center" }}><Edit3 size={12} /> Edit product</button>
+                        </div>
+                        {os.length === 0 && <div style={{ fontSize: 12.5, color: "#8A8A7A", marginBottom: 8 }}>No supplier costs yet.</div>}
+                        {os.map(o => {
+                          const ts = o.updated_at ? new Date(o.updated_at).getTime() : null;
+                          const tier = freshnessTier(ts);
+                          return (
+                            <div key={o.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: "1px solid #ECECE4", flexWrap: "wrap" }}>
+                              <div style={{ fontWeight: 700, fontSize: 13 }}>{o.supplier}</div>
+                              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                                <span style={{ fontSize: 11.5, fontWeight: 600, color: FRESH_COLOR[tier] || "#8A8A7A" }}>{freshnessLabel(ts)}</span>
+                                <span style={{ fontWeight: 800, fontSize: 13.5 }}>KWD {Number(o.cost).toFixed(3)}</span>
+                                {bc != null && Number(o.cost) === bc && os.length > 1 && <span style={{ fontSize: 10, fontWeight: 800, color: "#1D7A45", background: "#E8F4EC", borderRadius: 5, padding: "2px 6px" }}>BEST</span>}
+                                <button onClick={(e) => { e.stopPropagation(); deleteOffer(o); }} style={{ background: "none", border: "none", cursor: "pointer", color: "#C0392B" }}><Trash2 size={13} /></button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }} onClick={e => e.stopPropagation()}>
+                          <input value={offerDraft.supplier} onChange={e => setOfferDraft(d => ({ ...d, supplier: e.target.value }))} placeholder="Supplier" style={{ ...inp, flex: "1 1 140px" }} className="inp" />
+                          <input type="number" step="0.001" value={offerDraft.cost} onChange={e => setOfferDraft(d => ({ ...d, cost: e.target.value }))} placeholder={`Cost / ${p.unit}`} style={{ ...inp, flex: "0 1 120px" }} className="inp" />
+                          <button onClick={() => saveOffer(p.id)} disabled={saving} style={{ ...S.loginBtn, width: "auto", marginTop: 0, padding: "9px 14px", fontSize: 13 }}>Save cost</button>
+                          <span style={{ fontSize: 11, color: "#8A8A7A" }}>re-entering a supplier refreshes their cost + freshness</span>
+                        </div>
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══ SERVICE QUOTE — car-first, MULTI-SERVICE quoting ═════════════════════════
+// 1) Car → 2) add one or more services (tier/sides per service) → 3) items → quote.
+// Labor tables + Major Service template are exact ports of the Scheduling New Order
+// popup (keep in sync). Battery quotes with ONLY a battery = options mode (per-option totals).
+
+// Shared car dataset — identical to the Scheduling system (keep in sync)
+const SQ_CAR_DATA = {
   "Toyota": ["Land Cruiser", "Prado", "Camry", "Corolla", "Hilux", "Fortuner", "RAV4", "Avalon", "Yaris", "FJ Cruiser", "Sequoia", "Tundra", "Highlander", "Rush", "Land Cruiser 70"],
   "Lexus": ["LX", "GX", "RX", "ES", "LS", "NX", "IS", "LC", "UX", "RC"],
   "Nissan": ["Patrol", "Altima", "Maxima", "X-Trail", "Pathfinder", "Sunny", "Sentra", "Kicks", "Armada", "Patrol Safari", "Navara", "Murano"],
@@ -1311,11 +4476,28 @@ const CAR_DATA = {
   "Jetour": ["X70", "X90", "Dashing", "T2"],
   "Geely": ["Coolray", "Azkarra", "Emgrand", "Tugella", "Monjaro"],
 };
-const CAR_BRANDS = Object.keys(CAR_DATA).sort();
-const modelsFor = (brand) => CAR_DATA[brand] || [];
-
-// Optional sub-model (trim) per brand|model — ComboBox allows custom entries for gaps.
-const SUB_MODELS = {
+const SQ_BRANDS = Object.keys(SQ_CAR_DATA).sort();
+const sqModelsFor = (brand) => SQ_CAR_DATA[brand] || [];
+const SQ_SUB_MODELS = {
+  "Honda|Accord": ["LX", "Sport", "EX", "EX-L", "Touring"],
+  "Honda|Civic": ["LX", "Sport", "EX", "RS", "Type R"],
+  "Honda|CR-V": ["LX", "EX", "EX-L", "Touring"],
+  "Honda|Pilot": ["EX", "EX-L", "Touring", "Elite"],
+  "Honda|City": ["DX", "LX", "EX"],
+  "Honda|HR-V": ["LX", "EX", "EX-L"],
+  "Toyota|Corolla": ["XLI", "GLI", "SE", "XSE"],
+  "Toyota|Hilux": ["GL", "GLX", "SR5", "Adventure", "GR Sport"],
+  "Toyota|Fortuner": ["EXR", "GXR", "VXR", "Legender"],
+  "Nissan|Altima": ["S", "SV", "SR", "SL"],
+  "Hyundai|Sonata": ["GL", "GLS", "Limited", "N Line"],
+  "Hyundai|Tucson": ["GL", "GLS", "Limited", "N Line"],
+  "Kia|Sportage": ["LX", "EX", "GT-Line", "X-Line"],
+  "Lexus|LX": ["LX570", "LX600", "F Sport", "VIP"],
+  "Lexus|GX": ["GX460", "GX550", "Premium", "Luxury"],
+  "Lexus|RX": ["RX350", "RX450h", "F Sport"],
+  "Lexus|ES": ["ES250", "ES300h", "ES350", "F Sport"],
+  "Mitsubishi|Pajero": ["GLS", "GLS Signature", "Platinum"],
+  "Infiniti|QX80": ["Luxe", "Premium Select", "Sensory", "Autograph"],
   "Porsche|911": ["Carrera","Carrera S","Carrera 4","Carrera 4S","Carrera GTS","Carrera 4 GTS","Targa 4","Targa 4S","Turbo","Turbo S","GT3","GT3 RS","GT3 Touring","Dakar","S/T"],
   "Porsche|Cayenne": ["Base","S","E-Hybrid","GTS","Turbo","Turbo GT","Coupe","S Coupe","GTS Coupe","Turbo Coupe"],
   "Porsche|Macan": ["Base","T","S","GTS","Turbo","4 Electric","Turbo Electric"],
@@ -1369,6878 +4551,956 @@ const SUB_MODELS = {
   "Tesla|Model 3": ["RWD","Long Range","Performance"],
   "Tesla|Model Y": ["RWD","Long Range","Performance"],
 };
-const subModelsFor = (brand, model) => SUB_MODELS[`${brand}|${model}`] || [];
-// Live shared car catalog (car_catalog table, owned by the Tire System).
-// Dropdown options = curated lists ∪ DB entries, so both systems stay in sync
-// and agent-registered trims/models appear here automatically.
-let CAR_CATALOG_DB = [];
-async function fetchCarCatalog() {
-  try { CAR_CATALOG_DB = (await sbAll("/car_catalog?select=brand,model,sub_model")) || []; } catch { CAR_CATALOG_DB = []; }
-}
-const carBrandOpts = () => [...new Set([...CAR_BRANDS, ...CAR_CATALOG_DB.map(r => r.brand)])].sort();
-const carModelOpts = (brand) => [...new Set([...modelsFor(brand), ...CAR_CATALOG_DB.filter(r => r.brand === brand && r.model).map(r => r.model)])].sort();
-const carSubModelOpts = (brand, model) => [...new Set([...subModelsFor(brand, model), ...CAR_CATALOG_DB.filter(r => r.brand === brand && r.model === model && r.sub_model).map(r => r.sub_model)])];
-const carYears = (() => { const y = []; const now = new Date().getFullYear() + 1; for (let v = now; v >= 1990; v--) y.push(String(v)); return y; })();
+const sqSubModelsFor = (brand, model) => SQ_SUB_MODELS[`${brand}|${model}`] || [];
+const SQ_YEARS = (() => { const y = []; const now = new Date().getFullYear() + 1; for (let v = now; v >= 1990; v--) y.push(String(v)); return y; })();
 
-// ─── Mock Data ───────────────────────────────────────────────────────────────
-const MOCK_CUSTOMERS = [
-  { id: "mc-1", name: "Ahmad Al-Salem",   mobile: "99001234", area: "Salmiya",    notes: "VIP — Porsche fleet" },
-  { id: "mc-2", name: "Sara Al-Rashidi",  mobile: "66778899", area: "Rumaithiya", notes: "" },
-  { id: "mc-3", name: "Khalid Al-Mutairi",mobile: "55443322", area: "Hawalli",    notes: "Prefers morning slots" },
-];
-const MOCK_CARS = [
-  { id: "mcar-1", customer_id: "mc-1", brand: "Toyota",  model: "Land Cruiser", year: "2022", plate: "Kuwait · 12345 · Private" },
-  { id: "mcar-2", customer_id: "mc-1", brand: "Porsche", model: "Cayenne",      year: "2023", plate: "Kuwait · 84000 · Private" },
-  { id: "mcar-3", customer_id: "mc-2", brand: "Porsche", model: "Cayenne",      year: "2023", plate: "Kuwait · 77321 · Private" },
-  { id: "mcar-4", customer_id: "mc-3", brand: "GMC",     model: "Yukon",        year: "2021", plate: "Kuwait · 33210 · Private" },
-];
-const MOCK_ADDRESSES = [
-  { id: "ma-1", customer_id: "mc-1", label: "Home", area: "Salmiya", governorate: "Hawalli", block: "12", street: "Hamad Al-Mubarak", house: "14", map_link: "https://maps.google.com/?q=29.3375,48.0838" },
-  { id: "ma-2", customer_id: "mc-1", label: "Office", area: "Sharq", block: "3", street: "Ahmad Al-Jaber", lane: "5", house: "Tower 5", map_link: "" },
-  { id: "ma-3", customer_id: "mc-2", label: "Home", area: "Rumaithiya", governorate: "Hawalli", block: "3", street: "Al-Khaleej", house: "7A", map_link: "" },
-  { id: "ma-4", customer_id: "mc-3", label: "Home", area: "Hawalli", block: "5", street: "Tunis", house: "22", map_link: "" },
-];
-const MOCK_JOBS = [
-  {
-    id: "mock-1", customer_id: "mc-1",
-    customer_name: "Ahmad Al-Salem", customer_mobile: "99001234",
-    area: "Salmiya", block: "12", street: "Hamad Al-Mubarak", house: "14",
-    map_link: "https://maps.google.com/?q=29.3375,48.0838",
-    car_brand: "Toyota", car_model: "Land Cruiser", car_year: "2022", car_plate: "Kuwait · 12345 · Private",
-    service_type: "Tire Change & Balancing", service_details: "215/60R16 Michelin Pilot Sport 4", qty: 4, total: 172,
-    items: [
-      { id: "i1a", kind: "tire", tire_id: "mt-1", brand: "Michelin", pattern: "Pilot Sport 4", size: "215/60R16", year: "2025", cost: 28, supplier: "Kuwait Automotive", qty: 4, unit_price: 38 },
-      { id: "i1b", kind: "service", name: "Wheel Alignment", qty: 1, unit_price: 20 },
-    ],
-    assigned_truck: "T2", assigned_technician: "Fahad", status: "assigned", parts_released: true, techs_released: true,
-    scheduled_at: new Date().toISOString(), lead_from: "WhatsApp", sales_agent: "Hussain",
-    xero_ref: "PO-2026-0041", payment_through: "Link", payment_status: "paid",
-    checks: [true, false, false, false], notes: "Tesla wall charger — park carefully",
-    created_at: new Date().toISOString(),
-  },
-  {
-    id: "mock-2", customer_id: "mc-2",
-    customer_name: "Sara Al-Rashidi", customer_mobile: "66778899",
-    area: "Rumaithiya", block: "3", street: "Al-Khaleej", house: "7A", map_link: "",
-    car_brand: "Porsche", car_model: "Cayenne", car_year: "2023", car_plate: "Kuwait · 77321 · Private",
-    service_type: "Tire Change & Balancing", service_details: "295/40R21 Pirelli P Zero", qty: 2, total: 190,
-    items: [
-      { id: "i2a", kind: "tire", tire_id: "mt-2", brand: "Pirelli", pattern: "P Zero", size: "295/40R21", year: "2025", cost: 70, supplier: "Behbehani (Pirelli)", qty: 2, unit_price: 95 },
-    ],
-    assigned_truck: "T4", assigned_technician: "Omar", status: "booked", parts_released: true, techs_released: false,
-    scheduled_at: new Date(Date.now() + 3600000 * 3).toISOString(), lead_from: "Signal", sales_agent: "Alaa",
-    xero_ref: "", payment_through: "Tabby", payment_status: "pending", payment_link: "https://pay.bnchr.com/abc123",
-    checks: [false, false, false, false], notes: "",
-    created_at: new Date().toISOString(),
-  },
-  {
-    id: "mock-3", customer_id: "mc-1",
-    customer_name: "Ahmad Al-Salem", customer_mobile: "99001234",
-    area: "Salmiya", block: "12", street: "Hamad Al-Mubarak", house: "14", map_link: "",
-    car_brand: "Porsche", car_model: "Cayenne", car_year: "2023", car_plate: "Kuwait · 84000 · Private",
-    service_type: "Oil & Filter", service_details: "Mobil 1 5W-40 Full Synthetic", qty: 1, total: 25,
-    items: [ { id: "i3a", kind: "service", name: "Oil & Filter (Mobil 1 5W-40)", qty: 1, unit_price: 25 } ],
-    assigned_truck: "T1", assigned_technician: "Fahad", status: "paid",
-    scheduled_at: new Date(Date.now() - 86400000 * 5).toISOString(), lead_from: "WhatsApp", sales_agent: "Hussain",
-    xero_ref: "PO-2026-0038", payment_through: "Link", payment_status: "paid",
-    checks: [true, true, true, true], notes: "",
-    created_at: new Date(Date.now() - 86400000 * 5).toISOString(),
-  },
-  {
-    id: "mock-4", customer_id: "mc-3",
-    customer_name: "Khalid Al-Mutairi", customer_mobile: "55443322",
-    area: "Hawalli", block: "5", street: "Tunis", house: "22", map_link: "",
-    car_brand: "GMC", car_model: "Yukon", car_year: "2021", car_plate: "Kuwait · 33210 · Private",
-    service_type: "Tire Change & Balancing", service_details: "275/55R20 Michelin Primacy", qty: 4, total: 220,
-    items: [
-      { id: "i4a", kind: "tire", tire_id: "mt-3", brand: "Michelin", pattern: "Primacy", size: "275/55R20", year: "2024", cost: 42, supplier: "Kuwait Automotive", qty: 4, unit_price: 55 },
-    ],
-    assigned_truck: "T5", assigned_technician: "Saad", status: "paid",
-    scheduled_at: new Date(Date.now() - 86400000 * 12).toISOString(), lead_from: "WhatsApp", sales_agent: "Yousef",
-    xero_ref: "PO-2026-0031", payment_through: "Link", payment_status: "paid",
-    checks: [true, true, true, true], notes: "",
-    created_at: new Date(Date.now() - 86400000 * 12).toISOString(),
-  },
-];
-
-// ─── DB Layer ─────────────────────────────────────────────────────────────────
-async function fetchJobs() {
-  try { const d = await sbAll("/jobs?select=*&order=scheduled_at.desc,id.asc"); return d || []; }
-  catch { return MOCK_JOBS; }
-}
-async function fetchCustomers() {
-  try { const d = await sbAll("/customers?select=*&order=name.asc,id.asc"); return d || []; }
-  catch { return MOCK_CUSTOMERS; }
-}
-async function fetchCars() {
-  try { const d = await sbAll("/customer_cars?select=*&order=id.asc"); return d || []; }
-  catch { return MOCK_CARS; }
-}
-async function createJob(job) {
-  try { const r = await sb("/jobs", { method: "POST", body: JSON.stringify(job) }); return r?.[0] || { ...job, id: `local-${Date.now()}` }; }
-  catch (e) {
-    console.error("Order create FAILED:", e?.message || e);
-    alert("⚠ Could not save the new order to the server — it will disappear on refresh.\n\n" + String(e?.message || e).slice(0, 300));
-    return { ...job, id: `local-${Date.now()}` };
-  }
-}
-// Real columns on the jobs table — every PATCH is filtered to these, so a
-// stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date","no_products_reason","paid_date","review_rating"]);
-// Merge a refetched jobs list over local state: a fetched row wins only if
-// strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
-// → keep the local optimistic row (kills the check→uncheck→check flicker).
-function mergeJobs(prev, fresh) {
-  const byId = new Map(prev.map(p => [p.id, p]));
-  return fresh.map(f => {
-    const p = byId.get(f.id);
-    if (!p) return f;
-    const pt = new Date(p.updated_at || 0).getTime();
-    const ft = new Date(f.updated_at || 0).getTime();
-    return ft > pt ? f : p;
-  });
-}
-async function updateJob(id, patch) {
-  const clean = { updated_at: new Date().toISOString() }; // every save stamps "last action"
-  Object.keys(patch || {}).forEach(k => { if (JOB_COLUMNS.has(k)) clean[k] = patch[k]; });
-  try {
-    await sb(`/jobs?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(clean) });
-    return true;
-  } catch (e) {
-    console.error("Order save FAILED:", e?.message || e);
-    alert("⚠ Could not save to the server — this change will be lost on refresh.\n\n" + String(e?.message || e).slice(0, 300));
-    return false;
-  }
-}
-async function createCustomer(c) {
-  try { const r = await sb("/customers", { method: "POST", body: JSON.stringify(c) }); return r?.[0] || { ...c, id: `lc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
-  catch { return { ...c, id: `lc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
-}
-async function createCar(car) {
-  try { const r = await sb("/customer_cars", { method: "POST", body: JSON.stringify(car) }); return r?.[0] || { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
-  catch { return { ...car, id: `lcar-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
-}
-async function fetchCatalogItems() {
-  // SINGLE SOURCE: the Tire System's service_products (+ offers for best cost).
-  // Adapted to the CatalogPicker shape; the legacy catalog_items table is retired.
-  try {
-    const [p, o] = await Promise.all([
-      sbAll("/service_products?select=*&active=eq.true&order=sku.asc"),
-      sbAll("/service_product_offers?select=*"),
-    ]);
-    const best = {};
-    (o || []).forEach(x => {
-      const c = Number(x.cost) || 0;
-      if (c > 0 && (!best[x.product_id] || c < best[x.product_id].cost)) best[x.product_id] = { cost: c, supplier: x.supplier };
-    });
-    const CATMAP = { engine_oil: "EO", battery: "BT", filter: "FT", fluid: "FL", brake: "BP", spark_plug: "SP", other: "PT" };
-    return (p || []).map(x => ({
-      id: x.id, category: CATMAP[x.category] || "PT", sku: x.sku,
-      description: x.name, price: x.selling_price,
-      cost: best[x.id] ? best[x.id].cost : 0, supplier: best[x.id] ? best[x.id].supplier : "",
-    }));
-  } catch { return []; }
-}
-
-// ─── Upsell leads (technician-spotted opportunities) ──────────────────────────
-async function fetchUpsellLeads() {
-  try { const d = await sbAll("/upsell_leads?select=*&order=created_at.desc"); return d || []; }
-  catch { return []; }
-}
-async function createUpsellLead(lead) {
-  try { const r = await sb("/upsell_leads", { method: "POST", body: JSON.stringify(lead) }); return r?.[0] || { ...lead, id: `lu-${Date.now()}`, status: "open", created_at: new Date().toISOString() }; }
-  catch (e) {
-    console.error("Upsell lead create FAILED:", e?.message || e);
-    alert("⚠ Could not save the upsell to the server.\n\n" + String(e?.message || e).slice(0, 300));
-    return null;
-  }
-}
-async function updateUpsellLead(id, patch) {
-  try { await sb(`/upsell_leads?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }) }); return true; }
-  catch (e) { console.error("Upsell lead save FAILED:", e?.message || e); return false; }
-}
-// Walk a thread up to its root order (revisits/upsells always link to the root).
-function rootJobId(job, all) {
-  let cur = job, guard = 0;
-  while (cur && cur.parent_job_id && guard++ < 10) {
-    const p = (all || []).find(x => x.id === cur.parent_job_id);
-    if (!p) return cur.parent_job_id;
-    cur = p;
-  }
-  return cur ? cur.id : null;
-}
-const leadAgeDays = (l) => Math.floor((Date.now() - new Date(l.created_at || Date.now()).getTime()) / 86400000);
-const leadAgeColor = (d) => d >= 7 ? "#DC2626" : d >= 3 ? "#B45309" : "var(--muted)";
-const LINK_BADGE = { revisit: { t: "🔁 Revisit", c: "#1D4ED8", bg: "#EFF6FF" }, upsell: { t: "⬆ Upsell", c: "#15803D", bg: "#F0FDF4" } };
-async function fetchAddresses() {
-  try { const d = await sbAll("/customer_addresses?select=*&order=id.asc"); return d || []; }
-  catch { return MOCK_ADDRESSES; }
-}
-async function createAddress(a) {
-  try { const r = await sb("/customer_addresses", { method: "POST", body: JSON.stringify(a) }); return r?.[0] || { ...a, id: `laddr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
-  catch { return { ...a, id: `laddr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}` }; }
-}
-async function updateCustomer(id, patch) {
-  try { await sb(`/customers?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
-}
-async function updateCar(id, patch) {
-  try { await sb(`/customer_cars?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
-}
-async function deleteCar(id) {
-  try { await sb(`/customer_cars?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
-}
-// Append a mileage reading to a car's log + update its latest reading.
-async function appendCarMileage(carId, entry) {
-  try {
-    const rows = await sb(`/customer_cars?id=eq.${carId}&select=mileage_log`);
-    const log = (rows && rows[0] && Array.isArray(rows[0].mileage_log)) ? rows[0].mileage_log : [];
-    // de-dupe by job so re-completing doesn't double-log
-    const next = [...log.filter(e => e.job_id !== entry.job_id), entry].sort((a, b) => new Date(b.date) - new Date(a.date));
-    await sb(`/customer_cars?id=eq.${carId}`, { method: "PATCH", prefer: "return=minimal",
-      body: JSON.stringify({ mileage_log: next, last_mileage: entry.km, last_mileage_unit: entry.unit }) });
-  } catch (e) { /* non-blocking */ }
-}
-async function updateAddress(id, patch) {
-  try { await sb(`/customer_addresses?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch {}
-}
-async function deleteAddress(id) {
-  try { await sb(`/customer_addresses?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }); } catch {}
-}
-
-// ─── CSS ─────────────────────────────────────────────────────────────────────
-const css = `
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { max-width: 100%; overflow-x: hidden; -webkit-text-size-adjust: 100%; }
-  :root {
-    --bg: #F0F2F5; --surface: #FFFFFF; --card: #FFFFFF; --border: #D8DCE6;
-    --accent: #D4840A; --accent2: #C13A06; --text: #0F1117; --muted: #5A6278;
-    --success: #15803D; --danger: #DC2626; --radius: 10px;
-    --font-head: 'Space Grotesk', sans-serif; --font-body: 'Inter', sans-serif;
-  }
-  body { background: var(--bg); color: var(--text); font-family: var(--font-body); font-size: 14px; line-height: 1.5; min-height: 100vh; }
-
-  /* Login */
-  .login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); }
-  .login-box { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 36px 28px; width: 320px; max-width: calc(100vw - 32px); box-shadow: 0 4px 24px rgba(0,0,0,.08); }
-  .login-box h1 { font-family: var(--font-head); font-size: 22px; font-weight: 700; margin-bottom: 4px; }
-  .login-box h1 span { color: var(--accent); }
-  .login-box p { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
-  .login-box input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 14px; color: var(--text); font-size: 16px; margin-bottom: 12px; outline: none; }
-  .login-box input:focus { border-color: var(--accent); }
-  .login-error { color: var(--danger); font-size: 12px; margin-bottom: 10px; }
-  .role-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 20px; }
-  .role-btn { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 8px; color: var(--muted); font-size: 13px; cursor: pointer; text-align: center; transition: all .15s; }
-  .role-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-
-  /* Layout */
-  .app { display: flex; flex-direction: column; min-height: 100vh; }
-  .topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 20px; height: 56px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
-  .topbar-left { display: flex; align-items: center; gap: 12px; }
-  .logo { font-family: var(--font-head); font-size: 17px; font-weight: 700; letter-spacing: -.3px; }
-  .logo span { color: var(--accent); }
-  .badge-role { background: var(--border); border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
-  .nav-tabs { display: flex; gap: 2px; }
-  .nav-tab { background: none; border: none; color: var(--muted); font-size: 13px; font-weight: 500; padding: 8px 14px; border-radius: 8px; cursor: pointer; transition: all .15s; }
-  .nav-tab.active { background: var(--bg); color: var(--text); font-weight: 600; }
-  .nav-tab:hover:not(.active) { color: var(--text); }
-  .topbar-right { display: flex; align-items: center; gap: 10px; }
-  .btn-logout { background: none; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; padding: 6px 12px; cursor: pointer; }
-  .btn-logout:hover { border-color: var(--danger); color: var(--danger); }
-  .main { flex: 1; padding: 24px 20px; max-width: 1200px; margin: 0 auto; width: 100%; }
-
-  /* Buttons */
-  .btn { border: none; border-radius: var(--radius); padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; display: inline-flex; align-items: center; gap: 6px; }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover { background: #b86e08; }
-  .btn-ghost { background: var(--card); border: 1px solid var(--border); color: var(--text); }
-  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
-  .btn-danger { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
-  .btn-success { background: var(--success); color: #fff; }
-  .btn-sm { padding: 5px 12px; font-size: 12px; }
-
-  /* Cards */
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-  .card-header { padding: 14px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-  .card-header h3 { font-family: var(--font-head); font-size: 15px; font-weight: 600; }
-  .card-body { padding: 16px; }
-
-  /* Tags & Pills */
-  .tag { border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
-  .tag-truck { background: #DBEAFE; color: #1D4ED8; }
-  .tag-time  { background: #DCFCE7; color: #15803D; font-size: 12px; }
-  .tag-total { background: #FEF3C7; color: var(--accent); }
-  .status-pill { border-radius: 20px; padding: 3px 10px; font-size: 11px; font-weight: 700; letter-spacing: .3px; }
-
-  /* Search input */
-  .search-wrap { position: relative; }
-  .search-input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px 9px 34px; font-size: 14px; color: var(--text); outline: none; }
-  .search-input:focus { border-color: var(--accent); }
-  .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; pointer-events: none; }
-  .search-dropdown { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.1); z-index: 50; max-height: 260px; overflow-y: auto; }
-  .search-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border); }
-  .search-item:last-child { border-bottom: none; }
-  .search-item:hover { background: var(--bg); }
-  .search-item-name { font-weight: 600; font-size: 14px; }
-  .search-item-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
-  .search-new { padding: 10px 14px; cursor: pointer; color: var(--accent); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-  .search-new:hover { background: var(--bg); }
-
-  /* Job list */
-  .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
-  .page-title { font-family: var(--font-head); font-size: 20px; font-weight: 700; }
-  .filters { display: flex; gap: 8px; flex-wrap: wrap; }
-  .filter-select { background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; padding: 7px 12px; cursor: pointer; outline: none; }
-  .filter-select:focus { border-color: var(--accent); }
-  .filter-input { background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; padding: 7px 12px; outline: none; }
-  .filter-input:focus { border-color: var(--accent); }
-
-  .job-cards { display: flex; flex-direction: column; gap: 10px; }
-  @media (min-width: 900px) {
-    .schedule-board-panel { position: sticky; top: 12px; max-height: calc(100vh - 40px); overflow-y: auto; }
-  }
-  .job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .15s, box-shadow .15s; overflow: hidden; min-width: 0; }
-  .job-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(212,132,10,.1); }
-  .job-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; } .job-card-top .status-pill { flex-shrink: 0; margin-left: auto; }
-  .job-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
-  .job-card-name { font-weight: 600; font-size: 15px; }
-  .job-card-service { color: var(--muted); font-size: 13px; margin-top: 2px; }
-
-  /* Stats */
-  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
-  .stat-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-  .stat-num { font-family: var(--font-head); font-size: 28px; font-weight: 700; }
-  .stat-lbl { color: var(--muted); font-size: 12px; margin-top: 2px; }
-
-  /* Detail */
-  .detail-back { background: none; border: none; color: var(--muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 0; }
-  .detail-back:hover { color: var(--text); }
-  .detail-hero { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-  .detail-hero-top { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
-  .detail-hero h2 { font-family: var(--font-head); font-size: 20px; font-weight: 700; }
-  .detail-hero-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
-  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .detail-field label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
-  .detail-field p { font-size: 14px; }
-  .detail-field a { color: var(--accent); text-decoration: none; }
-  .detail-field a:hover { text-decoration: underline; }
-
-  /* Checks */
-  .checks-list { display: flex; flex-direction: column; gap: 8px; }
-  .check-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: border-color .15s; }
-  .check-item.done { border-color: var(--success); background: #F0FDF4; }
-  .check-item.locked { opacity: .45; cursor: not-allowed; }
-  .check-circle { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; }
-  .check-circle.done { background: var(--success); border-color: var(--success); color: #fff; }
-  .check-text { font-size: 13px; }
-  .check-num { font-size: 11px; font-weight: 700; color: var(--muted); margin-right: 4px; }
-
-  /* Form */
-  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .form-field { display: flex; flex-direction: column; gap: 5px; }
-  .form-field label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
-  .form-field input, .form-field select, .form-field textarea { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 14px; font-family: var(--font-body); outline: none; width: 100%; }
-  .form-field input:focus, .form-field select:focus, .form-field textarea:focus { border-color: var(--accent); }
-  .form-field textarea { resize: vertical; min-height: 70px; }
-  .form-section-title { font-family: var(--font-head); font-size: 12px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .8px; margin-top: 4px; grid-column: 1/-1; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
-  .form-full { grid-column: 1/-1; }
-
-  /* Customer search in form */
-  .customer-found { background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; }
-  .customer-found-name { font-weight: 600; font-size: 14px; color: #1D4ED8; }
-  .customer-found-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
-  .car-picker { display: flex; flex-direction: column; gap: 6px; }
-  .car-option { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; background: var(--bg); transition: all .15s; }
-  .car-option.selected { border-color: var(--accent); background: #FEF9EE; }
-  .car-option-radio { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
-  .car-option-radio.selected { border-color: var(--accent); background: var(--accent); }
-  .car-option-radio.selected::after { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #fff; }
-
-  /* My Jobs */
-  .my-job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; cursor: pointer; transition: border-color .15s; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-  .my-job-card:hover { border-color: var(--accent); }
-  .my-job-num { font-family: var(--font-head); font-size: 28px; font-weight: 700; color: var(--accent); }
-  .map-btn { display: inline-flex; align-items: center; gap: 6px; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; color: #1D4ED8; font-size: 13px; font-weight: 600; padding: 8px 14px; text-decoration: none; margin-top: 10px; }
-
-  /* Distributor */
-  .dist-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-  .dist-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); }
-  .dist-row:last-child { border-bottom: none; }
-  .toggle-btn { width: 38px; height: 22px; border-radius: 11px; border: none; cursor: pointer; transition: background .2s; position: relative; flex-shrink: 0; }
-  .toggle-btn.on { background: var(--success); }
-  .toggle-btn.off { background: var(--border); }
-  .toggle-btn::after { content: ''; position: absolute; width: 16px; height: 16px; border-radius: 50%; background: #fff; top: 3px; transition: left .2s; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
-  .toggle-btn.on::after { left: 19px; }
-  .toggle-btn.off::after { left: 3px; }
-
-  /* Customer profile cards */
-  .customer-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; cursor: pointer; transition: border-color .15s, box-shadow .15s; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
-  .customer-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(212,132,10,.1); }
-  .customer-card-name { font-family: var(--font-head); font-size: 16px; font-weight: 700; margin-bottom: 4px; }
-  .customer-card-meta { font-size: 13px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-  .cars-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-  .car-chip { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; font-size: 12px; font-weight: 500; }
-  .history-mini { font-size: 12px; color: var(--muted); }
-
-  /* Profile detail */
-  .profile-section { margin-bottom: 16px; }
-  .profile-section-title { font-family: var(--font-head); font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 10px; }
-  .car-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
-  .car-card-info { font-size: 14px; font-weight: 600; }
-  .car-card-plate { font-size: 12px; color: var(--muted); margin-top: 2px; }
-
-  /* History view */
-  .history-job-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 8px; cursor: pointer; transition: border-color .15s; }
-  .history-job-card:hover { border-color: var(--accent); }
-
-  /* Modal */
-  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 200; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 40px 16px; }
-  .modal { background: var(--card); border: 1px solid var(--border); border-radius: 14px; width: 100%; max-width: 640px; box-shadow: 0 8px 40px rgba(0,0,0,.15); }
-  .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-  .modal-header h3 { font-family: var(--font-head); font-size: 17px; font-weight: 700; }
-  .modal-close { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; line-height: 1; }
-  .modal-close:hover { color: var(--text); }
-  .modal-body { padding: 20px; }
-  .modal-footer { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
-
-  /* Empty */
-  .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
-  .empty h3 { font-family: var(--font-head); font-size: 18px; margin-bottom: 8px; color: var(--text); }
-
-  /* Divider */
-  .job-detail { display: flex; flex-direction: column; gap: 14px; }
-
-  .bottom-nav { display: none; }
-  @media (max-width: 640px) {
-    /* iOS zooms in on focus when an input's font-size < 16px — force 16px on phones */
-    input, select, textarea,
-    .filter-input, .filter-select, .search-input,
-    .form-field input, .form-field select, .form-field textarea { font-size: 16px !important; }
-    .form-grid, .detail-grid { grid-template-columns: 1fr; }
-    .nav-tabs { display: none; }
-    .topbar { padding: 0 12px; }
-    .main { padding: 14px 12px 84px; }
-    .bottom-nav { display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 150;
-      background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -2px 10px rgba(0,0,0,.06);
-      padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); justify-content: space-around; }
-    .bottom-nav-item { flex: 1; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 2px;
-      padding: 6px 4px; border-radius: 10px; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 600; }
-    .bottom-nav-item.active { color: var(--accent); background: #FFF7EC; }
-    .bottom-nav-icon { font-size: 18px; line-height: 1; }
-  }
-`;
-
-function StyleTag() {
-  useEffect(() => {
-    // Ensure the mobile viewport is set so the app renders at device width (no zoom-in).
-    let vp = document.querySelector('meta[name="viewport"]');
-    const created = !vp;
-    if (!vp) { vp = document.createElement("meta"); vp.name = "viewport"; }
-    vp.setAttribute("content", "width=device-width, initial-scale=1, viewport-fit=cover");
-    if (created) document.head.appendChild(vp);
-
-    const el = document.createElement("style");
-    el.textContent = css;
-    document.head.appendChild(el);
-    return () => el.remove();
-  }, []);
-  return null;
-}
-
-// ─── Status Badge ─────────────────────────────────────────────────────────────
-function StatusPill({ status }) {
-  const m = statusMeta(status);
-  return <span className="status-pill" style={{ background: m.color + "18", color: m.color, border: `1px solid ${m.color}33` }}>{m.label}</span>;
-}
-
-// Distributor's item verification (checkpoint 2) → per-line "Collected" chip
-const itemOK = (job, itemId) => !!(job.item_checks || {})[itemId];
-
-// TEST ONLY — push an order through every stage in one shot, so a solo sales
-// tester can fill realistic history without switching into truck/distributor.
-// Builds the same check maps the real flow produces, so verification reads 4/4.
-function forceCompletePatch(job) {
-  const items = job.items || [];
-  const collectable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
-  const verifiable = items.filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
-  const now = new Date().toISOString();
-  const allTrue = (list) => { const m = {}; list.forEach(it => { m[it.id] = true; }); return m; };
-  return {
-    parts_released: true, techs_released: true, parts_received: true,
-    parts_status: "delivered", tech_arrival_match: true,
-    sales_match_confirmed: true,
-    item_checks: allTrue(collectable),
-    tech_checks_order: allTrue(verifiable),
-    tech_checks_car: allTrue(verifiable),
-    status: "done", truck_status: "completed",
-    started_at: job.started_at || now, completed_at: now,
-    payment_status: job.payment_status || "paid",
-    updated_at: now,
-  };
-}
-// hidden test-mode flag (owner flips it; persists on this device)
-const getTestMode = () => { try { return localStorage.getItem("bnchr_testmode") === "1"; } catch { return false; } };
-const setTestMode = (on) => { try { localStorage.setItem("bnchr_testmode", on ? "1" : "0"); } catch {} };
-function CollectedChip({ ok }) {
-  if (!ok) return null;
-  return <span style={{ fontSize: 9.5, fontWeight: 700, color: "#15803D", background: "#DCFCE7", border: "1px solid #BBF7D0", borderRadius: 5, padding: "1px 5px", whiteSpace: "nowrap", marginLeft: 5 }}>✓ Collected</span>;
-}
-
-// ─── ComboBox: autocomplete that suggests from a list but allows custom input ─
-function ComboBox({ value, onChange, options, placeholder, disabled }) {
+// Searchable dropdown with custom entry — same behavior as Scheduling's ComboBox
+function SqCombo({ value, onChange, options, placeholder, disabled }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const ref = useRef(null);
-
+  const ref = React.useRef(null);
   useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
   }, []);
-
   const typed = q !== "" ? q : (value || "");
   const filtered = (options || []).filter(o => o.toLowerCase().includes((q || "").toLowerCase())).slice(0, 60);
   const exact = (options || []).some(o => o.toLowerCase() === (typed || "").toLowerCase());
-
   const pick = (o) => { onChange(o); setQ(""); setOpen(false); };
-
   return (
-    <div ref={ref} className="search-wrap">
+    <div ref={ref} style={{ position: "relative" }}>
       <input
-        className="filter-input"
-        style={{ width: "100%" }}
-        placeholder={placeholder}
-        disabled={disabled}
+        style={{ ...S.input, padding: "9px 11px", fontSize: 13.5, width: "100%", boxSizing: "border-box" }}
+        className="inp" placeholder={placeholder} disabled={disabled}
         value={open ? q : (value || "")}
         onChange={(e) => { setQ(e.target.value); onChange(e.target.value); if (!open) setOpen(true); }}
         onFocus={() => { setQ(value || ""); setOpen(true); }}
       />
       {open && !disabled && (
-        <div className="search-dropdown" style={{ maxHeight: 220 }}>
-          {filtered.length === 0 && (
-            <div className="search-item"><div className="search-item-sub">No matches — your text will be saved as-is.</div></div>
-          )}
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 40, background: "#fff", border: "1px solid #D8D8D0", borderRadius: 10, marginTop: 4, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.12)" }}>
+          {filtered.length === 0 && <div style={{ padding: "8px 11px", fontSize: 12, color: "#8A8A7A" }}>No matches — your text will be saved as-is.</div>}
           {filtered.map(o => (
-            <div key={o} className="search-item" onClick={() => pick(o)}>
-              <div className="search-item-name" style={{ fontSize: 14 }}>{o}</div>
-            </div>
+            <div key={o} onClick={() => pick(o)} style={{ padding: "8px 11px", fontSize: 13.5, cursor: "pointer", borderBottom: "1px solid #F0F0EC" }}>{o}</div>
           ))}
           {typed && !exact && (
-            <div className="search-new" onClick={() => pick(typed)}>
-              + Use "{typed}" (custom)
-            </div>
+            <div onClick={() => pick(typed)} style={{ padding: "8px 11px", fontSize: 12.5, cursor: "pointer", color: "#0F2419", fontWeight: 700 }}>+ Use "{typed}" (custom)</div>
           )}
         </div>
       )}
     </div>
   );
 }
-
-// ─── Catalog Picker: searchable oils/batteries with custom-text fallback ──────
-function CatalogPicker({ items, value, placeholder, onPick, onCustom }) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  const ref = useRef(null);
-  useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-  const typed = open ? q : (value || "");
-  const filtered = (items || []).filter(x =>
-    `${x.description} ${x.sku}`.toLowerCase().includes((q || "").toLowerCase())).slice(0, 40);
-  return (
-    <div ref={ref} className="search-wrap" style={{ flex: 1 }}>
-      <input className="filter-input" style={{ width: "100%" }} placeholder={placeholder}
-        value={typed}
-        onChange={(e) => { setQ(e.target.value); if (!open) setOpen(true); }}
-        onFocus={() => { setQ(""); setOpen(true); }} />
-      {open && (
-        <div className="search-dropdown" style={{ maxHeight: 240 }}>
-          {filtered.map(x => (
-            <div key={x.sku} className="search-item" onClick={() => { onPick(x); setQ(""); setOpen(false); }}>
-              <div className="search-item-name" style={{ fontSize: 13.5 }}>{x.description}</div>
-              <div className="search-item-sub">{x.sku}{x.price ? ` · KD ${Number(x.price)} /u` : ""}{x.supplier ? ` · ${x.supplier}` : ""}</div>
-            </div>
-          ))}
-          {filtered.length === 0 && <div className="search-item"><div className="search-item-sub">No matches in the catalog.</div></div>}
-          {q && (
-            <div className="search-new" onClick={() => { onCustom(q); setQ(""); setOpen(false); }}>
-              ✏ Use "{q}" as custom text
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Customer Search Box ──────────────────────────────────────────────────────
-function CustomerSearchBox({ customers, onSelect, onCreateNew }) {
-  const [q, setQ] = useState("");
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const filtered = q.length < 2 ? [] : customers.filter(c =>
-    c.name.toLowerCase().includes(q.toLowerCase()) ||
-    c.mobile.includes(q)
-  );
-
-  return (
-    <div ref={ref} className="search-wrap">
-      <span className="search-icon">🔍</span>
-      <input
-        className="search-input"
-        placeholder="Search customer by name or mobile…"
-        value={q}
-        onChange={e => { setQ(e.target.value); setOpen(true); }}
-        onFocus={() => q.length >= 2 && setOpen(true)}
-      />
-      {open && q.length >= 2 && (
-        <div className="search-dropdown">
-          {filtered.map(c => (
-            <div key={c.id} className="search-item" onClick={() => { onSelect(c); setOpen(false); setQ(""); }}>
-              <div className="search-item-name">{c.name}</div>
-              <div className="search-item-sub">{c.mobile} · {c.area}</div>
-            </div>
-          ))}
-          <div className="search-new" onClick={() => { onCreateNew(q); setOpen(false); setQ(""); }}>
-            + Create new customer "{q}"
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Tire Catalog Picker ──────────────────────────────────────────────────────
-function TireCatalogPicker({ onPick }) {
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState([]);
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  useEffect(() => {
-    if (q.trim().length < 2) { setResults([]); return; }
-    setLoading(true);
-    const id = setTimeout(async () => {
-      const r = await searchTires(q);
-      setResults(r); setLoading(false); setOpen(true);
-    }, 250);
-    return () => clearTimeout(id);
-  }, [q]);
-
-  return (
-    <div ref={ref} className="search-wrap">
-      <span className="search-icon">🔍</span>
-      <input className="search-input" placeholder="Search catalog by size (215/60R18) or brand…"
-        value={q} onChange={e => { setQ(e.target.value); setOpen(true); }}
-        onFocus={() => results.length && setOpen(true)} />
-      {open && q.trim().length >= 2 && (
-        <div className="search-dropdown">
-          {loading && <div className="search-item"><div className="search-item-sub">Searching catalog…</div></div>}
-          {!loading && results.length === 0 && (
-            <div className="search-item"><div className="search-item-sub">No tires found — add a manual item instead.</div></div>
-          )}
-          {results.map(t => (
-            <div key={t.id} className="search-item" onClick={() => { onPick(t); setOpen(false); setQ(""); }}>
-              <div className="search-item-name">{t.brand}{t.pattern ? " " + t.pattern : ""}</div>
-              <div className="search-item-sub">
-                {tireSize(t)}{liSr(t.load_index, t.speed_rating)}{t.oem ? " · " + t.oem : ""}{t.year ? " · " + t.year : ""}{t.country ? " · " + t.country : ""}{t.sku ? " · " + t.sku : ""}{t.notes ? " · " + t.notes : ""}
-                {" · "}<strong style={{ color: "var(--accent)" }}>KWD {Number(t.price).toFixed(3)}</strong>
-                {t.in_stock ? <span style={{ color: "var(--success)", marginLeft: 6 }}>● in stock</span>
-                            : <span style={{ color: "var(--danger)", marginLeft: 6 }}>● out</span>}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Job Items Builder ────────────────────────────────────────────────────────
-function ItemsBuilder({ items, setItems }) {
-  const addTire = (t) => setItems(prev => [...prev, {
-    id: uid(), kind: "tire", tire_id: t.id,
-    brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`,
-    year: t.year, cost: t.cost, supplier: t.supplier,
-    qty: 4, unit_price: Number(t.price) || 0,
-  }]);
-  const addService = () => setItems(prev => [...prev, {
-    id: uid(), kind: "service", name: "", qty: 1, unit_price: 0,
-  }]);
-  const upd = (id, field, val) => setItems(prev => prev.map(it => it.id === id ? { ...it, [field]: val } : it));
-  const remove = (id) => setItems(prev => prev.filter(it => it.id !== id));
-
-  return (
-    <div className="form-full">
-      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
-        {items.length === 0 && (
-          <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>No items yet. Add a tire from the catalog or a manual service below.</div>
-        )}
-        {items.map(it => (
-          <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: it.kind === "tire" ? "#FEFBF3" : "var(--bg)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-              <div style={{ flex: 1 }}>
-                {it.kind === "tire" ? (
-                  <>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>🔗 {it.brand} {it.pattern}</div>
-                    <div style={{ fontSize: 12, color: "var(--muted)" }}>{it.size}{it.year ? " · " + it.year : ""} · catalog id {String(it.tire_id).slice(0, 8)}…</div>
-                  </>
-                ) : (
-                  <input className="filter-input" style={{ width: "100%" }} placeholder="Service name (Oil & Filter, Battery…)"
-                    value={it.name} onChange={e => upd(it.id, "name", e.target.value)} />
-                )}
-              </div>
-              <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", borderColor: "var(--border)" }} onClick={() => remove(it.id)}>✕</button>
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 8, alignItems: "center" }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Qty</label>
-                <input type="number" min={1} className="filter-input" style={{ width: 70 }} value={it.qty} onChange={e => upd(it.id, "qty", e.target.value)} />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Unit Price (KD)</label>
-                <input type="number" className="filter-input" style={{ width: 110 }} value={it.unit_price} onChange={e => upd(it.id, "unit_price", e.target.value)} />
-              </div>
-              <div style={{ marginLeft: "auto", textAlign: "right" }}>
-                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Line Total</div>
-                <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</div>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 220 }}>
-          <TireCatalogPicker onPick={addTire} />
-        </div>
-        <button className="btn btn-ghost btn-sm" onClick={addService}>+ Manual service</button>
-      </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-        <div style={{ textAlign: "right" }}>
-          <span style={{ fontSize: 12, color: "var(--muted)", marginRight: 10 }}>Job Total</span>
-          <span style={{ fontFamily: "var(--font-head)", fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>KWD {itemsTotal(items).toFixed(3)}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Discount helpers ─────────────────────────────────────────────────────────
-// A discount = { type: "pct"|"amt", value: number }. Applied to a base number.
-function applyDiscount(base, disc) {
-  const b = Number(base) || 0;
-  if (!disc || !disc.value) return b;
-  const v = Number(disc.value) || 0;
-  if (disc.type === "pct") return Math.max(0, b - (b * v) / 100);
-  return Math.max(0, b - v);
-}
-const blankDisc = () => ({ type: "pct", value: 0 });
-
-// One editable discount control (toggle %/amount + value), shows live result.
-function DiscountField({ base, disc, onChange, label }) {
-  const result = applyDiscount(base, disc);
-  const has = disc && Number(disc.value) > 0;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>{label} discount</label>
-      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
-          <button type="button" onClick={() => onChange({ ...disc, type: "pct" })}
-            style={{ border: "none", padding: "4px 8px", fontSize: 11, cursor: "pointer", background: disc.type === "pct" ? "var(--accent)" : "var(--card)", color: disc.type === "pct" ? "#fff" : "var(--muted)" }}>%</button>
-          <button type="button" onClick={() => onChange({ ...disc, type: "amt" })}
-            style={{ border: "none", padding: "4px 8px", fontSize: 11, cursor: "pointer", background: disc.type === "amt" ? "var(--accent)" : "var(--card)", color: disc.type === "amt" ? "#fff" : "var(--muted)" }}>KD</button>
-        </div>
-        <input type="number" min={0} className="filter-input" style={{ width: 64 }} value={disc.value || ""}
-          placeholder="0" onChange={e => onChange({ ...disc, value: e.target.value })} />
-        {has && <span style={{ fontSize: 11, color: "var(--success)", fontWeight: 600, whiteSpace: "nowrap" }}>→ {result.toFixed(3)}</span>}
-      </div>
-    </div>
-  );
-}
-
-// A single part row within an "other" service.
-const newPart = () => ({ id: uid(), name: "", supplier: "", qty: 1, price: 0, cost: 0 });
-
-// ─── Service item templates ───────────────────────────────────────────────────
-// Selecting these services pre-fills their parts. Every row stays editable,
-// deletable, and overridable; "+ Add part" still adds normal rows.
-// tpl keys: EO/BT = catalog pickers · others = option lists (brand-aware).
-const TPL_OPTIONS = {
-  oil_filter:  (b) => [...(b ? [`${b} Genuine Oil Filter`] : []), "Oil Filter", ...CAR_BRANDS.filter(x => x !== b).map(x => `${x} Genuine Oil Filter`)],
-  brake_pads:  (b) => [...(b ? [`${b} Genuine Front Brake Pads`, `${b} Genuine Rear Brake Pads`] : []), "Front Brake Pads", "Rear Brake Pads", ...CAR_BRANDS.filter(x => x !== b).flatMap(x => [`${x} Genuine Front Brake Pads`, `${x} Genuine Rear Brake Pads`])],
-  brake_disc:  (b) => [...(b ? [`${b} Genuine Front Brake Disc`, `${b} Genuine Rear Brake Disc`] : []), "Front Brake Disc", "Rear Brake Disc", ...CAR_BRANDS.filter(x => x !== b).flatMap(x => [`${x} Genuine Front Brake Disc`, `${x} Genuine Rear Brake Disc`])],
-  brake_sensor: () => ["Genuine Brake Sensor", "Brake Sensor"],
-  spark_plugs: (b) => [...(b ? [`${b} Genuine Spark Plugs`] : []), ...CAR_BRANDS.filter(x => x !== b).map(x => `${x} Genuine Spark Plugs`)],
-  air_filter:  () => ["Genuine Air Filter", "Air Filter"],
-  ac_filter:   () => ["Genuine AC Filter", "AC Filter"],
+const SQ_SERVICES = {
+  "Oil & Filter":  { variants: { tier: ["Normal", "Premium"] }, labor: { Normal: 10, Premium: 15 },
+    pickers: [{ tpl: "EO", label: "Engine Oil" }, { tpl: "oil_filter", label: "Oil Filter" }],
+    includes: "Engine oil + oil filter · Multi-point inspection · Home service" },
+  "Battery":       { variants: { tier: ["Normal", "Complex"] }, labor: { Normal: 10, Complex: 15 },
+    pickers: [{ tpl: "BT", label: "Battery" }],
+    includes: "Battery with installation · Home service · Computer reset if needed" },
+  "Brake Pads":    { variants: { tier: ["Normal", "Premium"], sides: ["Front", "Rear", "Front & Rear"] },
+    labor: { "Normal|Front": 15, "Normal|Rear": 15, "Normal|Front & Rear": 25, "Premium|Front": 20, "Premium|Rear": 20, "Premium|Front & Rear": 35 },
+    pickers: [{ tpl: "brake", label: "Brake Pads" }],
+    includes: "Brake Pads with installation · Brake test · Home service" },
+  "Brake Disc":    { variants: { tier: ["Normal", "Premium"], sides: ["Front", "Rear", "Front & Rear"] },
+    labor: { "Normal|Front": 15, "Normal|Rear": 15, "Normal|Front & Rear": 25, "Premium|Front": 20, "Premium|Rear": 20, "Premium|Front & Rear": 35 },
+    pickers: [{ tpl: "brake", label: "Brake Disc" }],
+    includes: "Brake Discs with installation · Brake test · Home service" },
+  "Major Service": { variants: { tier: ["Economy", "Normal", "Premium", "Top"] },
+    labor: { Economy: 40, Normal: 50, Premium: 60, Top: 80 },
+    pickers: [{ tpl: "EO", label: "Engine Oil" }, { tpl: "oil_filter", label: "Oil Filter" }, { tpl: "filter", label: "Filters" }],
+    // exact New Order template rows (agent deletes what the car doesn't need)
+    template: [
+      { _tpl: "oil_filter" }, { _tpl: "spark_plugs" }, { name: "Spark Plug Wires" },
+      { _tpl: "air_filter" }, { _tpl: "ac_filter" }, { name: "Injector Cleaner" }, { name: "Carburetor Tune-Up Conditioner" },
+    ],
+    includes: "Full tune up · Engine oil + filters · Multi-point inspection · Home service" },
+  "Disc Skimming": { variants: { sides: ["One side", "Two sides"] }, labor: { "One side": 10, "Two sides": 20 },
+    pickers: [],
+    includes: "On-car disc skimming · Brake test · Home service" },
+  "AC Gas Refill": { variants: {}, flatLabor: 20, pickers: [],
+    includes: "AC gas refill · Leak check · Home service" },
+  "Part Replacement": { variants: {}, labor: null, pickers: [],
+    includes: "Supply & installation · Home service" },
 };
-const SERVICE_TEMPLATES = {
-  "Oil & Filter": [
-    { tpl: "EO", qty: 4 },                       // engine oil from catalog, per litre
-    { tpl: "oil_filter", name: "Oil Filter" },
-  ],
-  "Battery": [
-    { tpl: "BT" },                                // battery from catalog
-  ],
-  "Major Service": [
-    { tpl: "EO", qty: 4 },
-    { tpl: "oil_filter", name: "Oil Filter" },
-    { tpl: "spark_plugs", name: "Spark Plugs" },
-    { name: "Spark Plug Wires" },
-    { tpl: "air_filter", name: "Air Filter" },
-    { tpl: "ac_filter", name: "AC Filter" },
-    { name: "Injector Cleaner" },
-    { name: "Carburetor Tune-Up Conditioner" },
-  ],
-};
-// When a car gets linked, template rows still holding option values switch to
-// that brand's genuine part automatically (Front/Rear preserved; custom text untouched).
-const rebrandPartName = (tpl, name, brand) => {
-  if (!brand) return name;
-  const isRear = /rear/i.test(name || "");
-  if (tpl === "oil_filter")  return `${brand} Genuine Oil Filter`;
-  if (tpl === "spark_plugs") return `${brand} Genuine Spark Plugs`;
-  if (tpl === "brake_pads")  return `${brand} Genuine ${isRear ? "Rear" : "Front"} Brake Pads`;
-  if (tpl === "brake_disc")  return `${brand} Genuine ${isRear ? "Rear" : "Front"} Brake Disc`;
-  return name;
-};
-const rebrandParts = (parts, brand) =>
-  (parts || []).map(p => p.tpl && !p.custom ? { ...p, name: rebrandPartName(p.tpl, p.name, brand) } : p);
-
-const buildTemplateParts = (serviceType, carBrand, sides = "both") => {
-  const mk = (row) => ({
-    ...newPart(),
-    name: row.tpl && carBrand ? rebrandPartName(row.tpl, row.name || "", carBrand) : (row.name || ""),
-    qty: row.qty || 1,
-    tpl: row.tpl || null,
-  });
-  if (serviceType === "Brake Pads") {
-    const rows = [];
-    if (sides !== "rear")  rows.push({ tpl: "brake_pads", name: "Front Brake Pads" });
-    if (sides !== "front") rows.push({ tpl: "brake_pads", name: "Rear Brake Pads" });
-    rows.push({ tpl: "brake_sensor", name: "Brake Sensor" });
-    return rows.map(mk);
+const sqLabor = (svcName, variant) => {
+  const s = SQ_SERVICES[svcName];
+  if (!s) return 0;
+  if (s.flatLabor != null) return s.flatLabor;
+  if (s.labor) {
+    const key = Object.keys(s.variants || {}).map(a => variant[a]).filter(Boolean).join("|");
+    return s.labor[key] != null ? s.labor[key] : 0;
   }
-  if (serviceType === "Brake Disc") {
-    const rows = [];
-    if (sides !== "rear")  rows.push({ tpl: "brake_disc", name: "Front Brake Disc" });
-    if (sides !== "front") rows.push({ tpl: "brake_disc", name: "Rear Brake Disc" });
-    return rows.map(mk);
-  }
-  const t = SERVICE_TEMPLATES[serviceType];
-  if (!t) return [newPart()];
-  return t.map(mk);
+  return 0;
 };
-const partsGross = (parts) => (parts || []).reduce((s, p) => s + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
-
-// Compute a single service block's totals.
-function serviceTotals(svc) {
-  const isTire = SERVICE_CATALOG[svc.service_type]?.kind === "tire";
-  let grossPrice;
-  if (isTire) {
-    if (svc.staggered) {
-      grossPrice = (Number(svc.unit_price) || 0) * (Number(svc.qty) || 2) + (Number(svc.rear_unit_price) || 0) * (Number(svc.rear_qty) || 2);
-    } else {
-      const qty = Number(svc.qty) || 4;
-      grossPrice = (Number(svc.unit_price) || 0) * qty;
-    }
-  } else {
-    // other services: parts subtotal = sum of item prices
-    grossPrice = partsGross(svc.parts);
-  }
-  const qty = Number(svc.qty) || (isTire ? 4 : 1);
-  const netPrice = applyDiscount(grossPrice, svc.price_disc);
-  const grossLabor = Number(svc.labor) || 0;
-  const netLabor = applyDiscount(grossLabor, svc.labor_disc);
-  return { qty, grossPrice, netPrice, grossLabor, netLabor, total: netPrice + netLabor };
-}
-const orderTotal = (services) => (services || []).reduce((s, svc) => s + serviceTotals(svc).total, 0);
-// A service carries a product if it has a real tire OR any priced part.
-const svcHasProduct = (s) => !!s.tire_id || !!s.rear_tire_id || (SERVICE_CATALOG[s.service_type]?.kind === "tire" ? (Number(s.unit_price) || 0) > 0 || (Number(s.rear_unit_price) || 0) > 0 : partsGross(s.parts) > 0 || (s.parts || []).some(p => p.name));
-const orderHasProducts = (services) => (services || []).some(svcHasProduct);
-
-// A fresh service block.
-const newService = (type = "Tire Change & Balancing") => {
-  const cat = SERVICE_CATALOG[type] || {};
-  const variant = {};
-  Object.entries(cat.variants || {}).forEach(([axis, opts]) => { variant[axis] = opts[0]; });
-  return {
-    id: uid(), service_type: type, kind: cat.kind || "other",
-    variant,
-    // tire fields (front when staggered)
-    tire_id: null, brand: "", pattern: "", size: "", year: "", cost: 0, supplier: "", load_index: "", speed_rating: "", country: "", oem: "", tire_note: "",
-    staggered: false,
-    rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_year: "", rear_cost: 0, rear_supplier: "", rear_unit_price: 0, rear_qty: 2, rear_load_index: "", rear_speed_rating: "", rear_country: "", rear_oem: "", rear_tire_note: "",
-    // other fields
-    description: "",
-    parts: cat.kind === "tire" ? [] : [newPart()], // itemized parts for other services
-    qty: cat.kind === "tire" ? 4 : 1,
-    unit_price: 0,
-    price_disc: blankDisc(),
-    labor: catalogLabor(type, variant, cat.kind === "tire" ? 4 : 1),
-    labor_disc: blankDisc(),
-    car_id: null,
-    _open: true,
-  };
+const SQ_TPL_CAT = { EO: "engine_oil", BT: "battery", oil_filter: "filter", filter: "filter", brake: "brake" };
+const sqLast8 = (m) => String(m || "").replace(/\D/g, "").slice(-8);
+const sqEOSpecLine = (specs = {}) => [specs.line, specs.viscosity, specs.type, specs.interval_km ? `${Number(specs.interval_km).toLocaleString()} KM` : ""].filter(Boolean).join(", ");
+// brand-aware genuine names for template + auto lines
+const sqTplName = (tpl, brand, pos) => {
+  const b = (brand || "").trim();
+  const P = b ? b + " " : "";
+  if (tpl === "oil_filter")  return `${P}Genuine Oil Filter`;
+  if (tpl === "spark_plugs") return `${P}Genuine Spark Plugs`;
+  if (tpl === "air_filter")  return `${P}Genuine Air Filter`;
+  if (tpl === "ac_filter")   return `${P}Genuine AC Filter`;
+  if (tpl === "pads")        return `${P}Genuine ${pos} Brake Pads`;
+  if (tpl === "sensor")      return `${P}Genuine ${pos} Brake Sensor`;
+  if (tpl === "disc")        return `${P}Genuine ${pos} Brake Discs`;
+  return "";
 };
-
-// ─── Service Builder: array of service blocks, each its own formula ───────────
-function ServiceBuilder({ services, setServices, customerCars, onSaveCar, catalog }) {
-  const upd = (id, patch) => setServices(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
-  const remove = (id) => setServices(prev => prev.filter(s => s.id !== id));
-  const addBlock = () => setServices(prev => prev.map(s => ({ ...s, _open: false })).concat(newService()));
-  // parts helpers (other services)
-  const addPart = (sid) => setServices(prev => prev.map(s => s.id === sid ? { ...s, parts: [...(s.parts || []), newPart()] } : s));
-  const updPart = (sid, pid, patch) => setServices(prev => prev.map(s => s.id === sid ? { ...s, parts: (s.parts || []).map(p => p.id === pid ? { ...p, ...patch } : p) } : s));
-  const removePart = (sid, pid) => setServices(prev => prev.map(s => s.id === sid ? { ...s, parts: (s.parts || []).filter(p => p.id !== pid) } : s));
-
-  // when service type changes, reset variant + auto-labor + kind/qty
-  const changeType = (id, type) => {
-    const cat = SERVICE_CATALOG[type] || {};
-    const variant = {};
-    Object.entries(cat.variants || {}).forEach(([axis, opts]) => { variant[axis] = opts[0]; });
-    const svcNow = (services || []).find(s => s.id === id);
-    const carBrand = svcNow && (customerCars || []).find(c => c.id === svcNow.car_id)?.brand;
-    const isBrake = type === "Brake Pads" || type === "Brake Disc";
-    if (isBrake && variant.sides) variant.sides = "Two sides"; // Front & Rear default
-    upd(id, {
-      service_type: type, kind: cat.kind || "other", variant,
-      sides: isBrake ? "both" : undefined,
-      qty: cat.kind === "tire" ? 4 : 1,
-      labor: catalogLabor(type, variant, cat.kind === "tire" ? 4 : 1),
-      // clear cross-formula fields + apply the service's item template
-      tire_id: null, brand: "", pattern: "", size: "", description: "",
-      unit_price: 0,
-      parts: cat.kind === "tire" ? [] : buildTemplateParts(type, carBrand, "both"),
-    });
-  };
-  const changeVariant = (id, axis, value, svc) => {
-    const variant = { ...svc.variant, [axis]: value };
-    const q = svc.staggered ? (Number(svc.qty) || 0) + (Number(svc.rear_qty) || 0) : svc.qty;
-    upd(id, { variant, labor: catalogLabor(svc.service_type, variant, q) });
-  };
-  const totalTireQty = (s, patch = {}) => {
-    const m = { ...s, ...patch };
-    return m.staggered ? (Number(m.qty) || 0) + (Number(m.rear_qty) || 0) : (Number(m.qty) || 4);
-  };
-  const pickTire = (id, t, svc, pos) => {
-    if (pos === "rear") {
-      upd(id, { rear_tire_id: t.id, rear_brand: t.brand, rear_pattern: t.pattern, rear_size: `${t.width}/${t.aspect}R${t.rim}`,
-        rear_year: t.year, rear_cost: t.cost, rear_supplier: t.supplier, rear_unit_price: Number(t.price) || 0, rear_sku: t.sku || "",
-        rear_load_index: t.load_index || "", rear_speed_rating: t.speed_rating || "", rear_country: t.country || "", rear_oem: t.oem || "", rear_tire_note: t.notes || "",
-        labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc)) });
-    } else if (svc.staggered) {
-      upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`, sku: t.sku || "",
-        load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "", oem: t.oem || "", tire_note: t.notes || "",
-        year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0,
-        labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc)) });
-    } else {
-      upd(id, { tire_id: t.id, brand: t.brand, pattern: t.pattern, size: `${t.width}/${t.aspect}R${t.rim}`, sku: t.sku || "",
-        load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "", oem: t.oem || "", tire_note: t.notes || "",
-        year: t.year, cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0, qty: 4,
-        labor: catalogLabor(svc.service_type, svc.variant, 4) });
-    }
-  };
-
-  const carLabel = (cid) => {
-    const c = (customerCars || []).find(x => x.id === cid);
-    return c ? `${c.brand} ${c.model} ${c.year}` : null;
-  };
-
-  return (
-    <div className="form-full">
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {(services || []).length === 0 && (
-          <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>No services yet. Add one below.</div>
-        )}
-        {(services || []).map((svc, idx) => {
-          const cat = SERVICE_CATALOG[svc.service_type] || {};
-          const t = serviceTotals(svc);
-          const isTire = cat.kind === "tire";
-          if (!svc._open) {
-            // collapsed summary row
-            return (
-              <div key={svc.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", background: "var(--card)", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}
-                onClick={() => upd(svc.id, { _open: true })}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>
-                    {idx + 1}. {svc.service_type}
-                    {Object.values(svc.variant || {}).filter(Boolean).length > 0 && <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}> · {Object.values(svc.variant).join(" / ")}</span>}
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
-                    {isTire ? (svc.staggered ? `Staggered · F ${svc.qty}× + R ${svc.rear_qty}×` : (svc.tire_id ? `${svc.brand} ${svc.pattern} · ${svc.qty}×` : `Labor only · ${svc.qty}×${svc.description ? " · " + svc.description.slice(0, 20) : ""}`)) : (svc.description ? svc.description.slice(0, 40) + (svc.description.length > 40 ? "…" : "") : "No description")}
-                    {carLabel(svc.car_id) ? ` · ${carLabel(svc.car_id)}` : ""}
-                  </div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {t.total.toFixed(3)}</div>
-                  <div style={{ fontSize: 11, color: "var(--muted)" }}>tap to edit</div>
-                </div>
-              </div>
-            );
-          }
-          return (
-            <div key={svc.id} style={{ border: "1px solid var(--accent)", borderRadius: 10, padding: "14px", background: isTire ? "#FEFBF3" : "var(--bg)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <strong style={{ fontFamily: "var(--font-head)" }}>Service {idx + 1}</strong>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {(services.length > 1) && <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { _open: false })}>Done</button>}
-                  <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => remove(svc.id)}>✕</button>
-                </div>
-              </div>
-
-              {/* Service type */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
-                <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Service type</label>
-                <select className="filter-input" value={svc.service_type} onChange={e => changeType(svc.id, e.target.value)}>
-                  {SERVICE_NAMES.map(n => <option key={n}>{n}</option>)}
-                </select>
-              </div>
-
-              {/* Variants */}
-              {Object.entries(cat.variants || {}).length > 0 && (
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                  {Object.entries(cat.variants).filter(([axis]) => !(axis === "sides" && (svc.service_type === "Brake Pads" || svc.service_type === "Brake Disc"))).map(([axis, opts]) => (
-                    <div key={axis} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>{axis === "mount" ? "Type" : axis === "tier" ? "Car tier" : axis}</label>
-                      <select className="filter-input" value={svc.variant[axis] || ""} onChange={e => changeVariant(svc.id, axis, e.target.value, svc)}>
-                        {opts.map(o => <option key={o}>{o}</option>)}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Formula 1: tire — search is optional (no tire = labor only) */}
-              {isTire ? (
-                <div style={{ marginBottom: 10 }}>
-                  <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, fontWeight: 600, marginBottom: 8, cursor: "pointer" }}>
-                    <input type="checkbox" checked={!!svc.staggered} onChange={e => {
-                      const st = e.target.checked;
-                      const patch = st
-                        ? { staggered: true, qty: 2, rear_qty: 2 }
-                        : { staggered: false, qty: 4, rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_unit_price: 0 };
-                      upd(svc.id, { ...patch, labor: catalogLabor(svc.service_type, svc.variant, st ? 4 : 4) });
-                    }} />
-                    Staggered — front and rear tires are different
-                  </label>
-
-                  {!svc.staggered ? (
-                    svc.tire_id ? (
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px" }}>
-                        <div>
-                          <div style={{ fontWeight: 600, fontSize: 14 }}>🔗 {svc.brand} {svc.pattern}</div>
-                          <div style={{ fontSize: 12, color: "var(--muted)" }}>{itemSpec(svc) || svc.size}</div>
-                        </div>
-                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { tire_id: null, brand: "", pattern: "", size: "", unit_price: 0 })}>Change</button>
-                      </div>
-                    ) : (
-                      <div>
-                        <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Search tire <span style={{ textTransform: "none", fontWeight: 500 }}>· optional (leave empty for labor only)</span></label>
-                        <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc)} />
-                        <textarea className="filter-input" style={{ minHeight: 40, resize: "vertical", width: "100%", marginTop: 6 }} value={svc.description}
-                          placeholder="Optional note (e.g. customer supplies tires, mounting + balancing only)"
-                          onChange={e => upd(svc.id, { description: e.target.value })} />
-                      </div>
-                    )
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {/* Front */}
-                      <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10 }}>
-                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 6 }}>Front tires</div>
-                        {svc.tire_id ? (
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", borderRadius: 8 }}>
-                            <div>
-                              <div style={{ fontWeight: 600, fontSize: 13 }}>🔗 {svc.brand} {svc.pattern}</div>
-                              <div style={{ fontSize: 12, color: "var(--muted)" }}>{itemSpec(svc) || svc.size}</div>
-                            </div>
-                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { tire_id: null, brand: "", pattern: "", size: "", unit_price: 0 })}>Change</button>
-                          </div>
-                        ) : (
-                          <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc)} />
-                        )}
-                        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "flex-end" }}>
-                          <div>
-                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Qty</label>
-                            <input type="number" min={1} className="filter-input" style={{ width: 56 }} value={svc.qty}
-                              onChange={e => upd(svc.id, { qty: e.target.value, labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc, { qty: e.target.value })) })} />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price/tire (KD)</label>
-                            <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price || ""} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
-                          </div>
-                        </div>
-                      </div>
-                      {/* Rear */}
-                      <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10 }}>
-                        <div style={{ fontSize: 10, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", marginBottom: 6 }}>Rear tires</div>
-                        {svc.rear_tire_id ? (
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--card)", borderRadius: 8 }}>
-                            <div>
-                              <div style={{ fontWeight: 600, fontSize: 13 }}>🔗 {svc.rear_brand} {svc.rear_pattern}</div>
-                              <div style={{ fontSize: 12, color: "var(--muted)" }}>{itemSpec({ size: svc.rear_size, load_index: svc.rear_load_index, speed_rating: svc.rear_speed_rating, year: svc.rear_year, country: svc.rear_country, oem: svc.rear_oem, tire_note: svc.rear_tire_note }) || svc.rear_size}</div>
-                            </div>
-                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => upd(svc.id, { rear_tire_id: null, rear_brand: "", rear_pattern: "", rear_size: "", rear_unit_price: 0 })}>Change</button>
-                          </div>
-                        ) : (
-                          <TireCatalogPicker onPick={(t) => pickTire(svc.id, t, svc, "rear")} />
-                        )}
-                        <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "flex-end" }}>
-                          <div>
-                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Qty</label>
-                            <input type="number" min={1} className="filter-input" style={{ width: 56 }} value={svc.rear_qty}
-                              onChange={e => upd(svc.id, { rear_qty: e.target.value, labor: catalogLabor(svc.service_type, svc.variant, totalTireQty(svc, { rear_qty: e.target.value })) })} />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price/tire (KD)</label>
-                            <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.rear_unit_price || ""} onChange={e => upd(svc.id, { rear_unit_price: e.target.value })} />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                // Formula 2: other — itemized parts (name + supplier + qty + price + optional cost)
-                <div style={{ marginBottom: 10 }}>
-                  {(svc.service_type === "Brake Pads" || svc.service_type === "Brake Disc") && (
-                    <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Sides</label>
-                      {[{ k: "both", label: "Front & Rear" }, { k: "front", label: "Front" }, { k: "rear", label: "Rear" }].map(o => (
-                        <button key={o.k} type="button" className={`btn btn-sm ${(svc.sides || "both") === o.k ? "btn-primary" : "btn-ghost"}`}
-                          onClick={() => {
-                            const brand = (customerCars || []).find(c => c.id === svc.car_id)?.brand;
-                            const tplKey = svc.service_type === "Brake Pads" ? "brake_pads" : "brake_disc";
-                            setServices(prev => prev.map(s => {
-                              if (s.id !== svc.id) return s;
-                              const kept = (s.parts || []).filter(p => p.tpl !== tplKey);
-                              const fresh = buildTemplateParts(s.service_type, brand, o.k).filter(p => p.tpl === tplKey);
-                              const variant = { ...s.variant, sides: o.k === "both" ? "Two sides" : "One side" };
-                              return { ...s, sides: o.k, variant, parts: [...fresh, ...kept], labor: catalogLabor(s.service_type, variant, s.qty) };
-                            }));
-                          }}>{o.label}</button>
-                      ))}
-                    </div>
-                  )}
-                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 6 }}>Parts / items — each from its supplier</label>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {(svc.parts || []).map((p, pi) => (
-                      <div key={p.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 8, background: "var(--card)" }}>
-                        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)" }}>{pi + 1}.</span>
-                          {p.tpl && !p.custom ? (
-                            (p.tpl === "EO" || p.tpl === "BT") ? (
-                              <CatalogPicker
-                                items={(catalog || []).filter(x => x.category === p.tpl)}
-                                value={p.name}
-                                placeholder={p.tpl === "EO" ? "🔍 Search engine oil (brand, grade, 5W30…)" : "🔍 Search battery (brand, warranty…)"}
-                                onPick={(it) => updPart(svc.id, p.id, { name: it.description, sku: it.sku, cost: Number(it.cost) || 0, price: Number(it.price) || 0, supplier: it.supplier || p.supplier || "" })}
-                                onCustom={(text) => updPart(svc.id, p.id, { name: text, sku: "", custom: true })}
-                              />
-                            ) : (
-                              <select className="filter-input" style={{ flex: 1 }} value={p.name}
-                                onChange={e => {
-                                  if (e.target.value === "__custom__") { updPart(svc.id, p.id, { custom: true }); return; }
-                                  updPart(svc.id, p.id, { name: e.target.value });
-                                }}>
-                                {(() => {
-                                  const carBrand = (customerCars || []).find(c => c.id === svc.car_id)?.brand;
-                                  const opts = TPL_OPTIONS[p.tpl] ? TPL_OPTIONS[p.tpl](carBrand) : [];
-                                  return (opts.includes(p.name) ? opts : [p.name, ...opts]).map(o => <option key={o}>{o}</option>);
-                                })()}
-                                <option value="__custom__">✏ Custom text…</option>
-                              </select>
-                            )
-                          ) : (
-                            <input className="filter-input" style={{ flex: 1 }} value={p.name} placeholder="Part (e.g. Total 20W50 5L, oil filter, drain bolt)"
-                              onChange={e => updPart(svc.id, p.id, { name: e.target.value })} />
-                          )}
-                          {(svc.parts.length > 1) && <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => removePart(svc.id, p.id)}>✕</button>}
-                        </div>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-end" }}>
-                          <div style={{ flex: "1 1 130px" }}>
-                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Supplier</label>
-                            <ComboBox value={p.supplier} onChange={v => updPart(svc.id, p.id, { supplier: v })} options={OTHER_SUPPLIERS} placeholder="Supplier" />
-                          </div>
-                          <div style={{ width: 48 }}>
-                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Qty</label>
-                            <input type="number" min={1} className="filter-input" style={{ width: "100%" }} value={p.qty} onChange={e => updPart(svc.id, p.id, { qty: e.target.value })} />
-                          </div>
-                          <div style={{ width: 76 }}>
-                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Price</label>
-                            <input type="number" min={0} className="filter-input" style={{ width: "100%" }} value={p.price || ""} onChange={e => updPart(svc.id, p.id, { price: e.target.value })} />
-                          </div>
-                          <div style={{ width: 76 }}>
-                            <label style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Cost <span style={{ textTransform: "none", fontWeight: 400 }}>opt</span></label>
-                            <input type="number" min={0} className="filter-input" style={{ width: "100%" }} value={p.cost || ""} onChange={e => updPart(svc.id, p.id, { cost: e.target.value })} />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => addPart(svc.id)}>+ Add part</button>
-                    {svc.service_type === "Oil & Filter" && !(svc.parts || []).some(p => /injector/i.test(p.name)) && (
-                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setServices(prev => prev.map(s => s.id === svc.id ? { ...s, parts: [...(s.parts || []), { ...newPart(), name: "Injector Cleaner" }] } : s))}>+ Injector Cleaner</button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Price row — tires use qty×unit price; other services use parts sum */}
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
-                {isTire && !svc.staggered && (
-                  <>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Qty</label>
-                      <input type="number" min={1} className="filter-input" style={{ width: 60 }} value={svc.qty} onChange={e => { const q = e.target.value; upd(svc.id, { qty: q, labor: catalogLabor(svc.service_type, svc.variant, q) }); }} />
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                      <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Price/tire (KD)</label>
-                      <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.unit_price || ""} onChange={e => upd(svc.id, { unit_price: e.target.value })} />
-                    </div>
-                  </>
-                )}
-                <DiscountField base={t.grossPrice} disc={svc.price_disc} onChange={(d) => upd(svc.id, { price_disc: d })} label="Price" />
-                <div style={{ marginLeft: "auto", textAlign: "right" }}>
-                  <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>{isTire ? "Tires subtotal" : "Parts subtotal"}</div>
-                  <div style={{ fontWeight: 700 }}>KWD {t.netPrice.toFixed(3)}</div>
-                </div>
-              </div>
-
-              {/* Labor (auto-filled) + labor discount */}
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 10 }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Labor (KD) · auto</label>
-                  <input type="number" min={0} className="filter-input" style={{ width: 90 }} value={svc.labor || ""} onChange={e => upd(svc.id, { labor: e.target.value })} />
-                </div>
-                <DiscountField base={t.grossLabor} disc={svc.labor_disc} onChange={(d) => upd(svc.id, { labor_disc: d })} label="Labor" />
-                <div style={{ marginLeft: "auto", textAlign: "right" }}>
-                  <div style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>Labor subtotal</div>
-                  <div style={{ fontWeight: 700 }}>KWD {t.netLabor.toFixed(3)}</div>
-                </div>
-              </div>
-
-              {/* Link car */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
-                <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase" }}>Link to car</label>
-                <select className="filter-input" value={svc.new_car ? "__new__" : (svc.car_id || "")}
-                  onChange={e => {
-                    if (e.target.value === "__new__") upd(svc.id, { car_id: null, new_car: { brand: "", model: "", year: "", plate: "" } });
-                    else {
-                      const cid = e.target.value || null;
-                      const brand = (customerCars || []).find(c => c.id === cid)?.brand;
-                      upd(svc.id, { car_id: cid, new_car: null, parts: rebrandParts(svc.parts, brand) });
-                    }
-                  }}>
-                  <option value="">— select car —</option>
-                  {(customerCars || []).map(c => <option key={c.id} value={c.id}>{c.brand} {c.model}{c.sub_model ? ` ${c.sub_model}` : ""} {c.year} {c.plate ? `· ${c.plate}` : ""}</option>)}
-                  <option value="__new__">+ Link a new car…</option>
-                </select>
-                {svc.new_car && (
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6, padding: 8, border: "1px dashed var(--border)", borderRadius: 8 }}>
-                    <ComboBox value={svc.new_car.brand} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, brand: v, model: "", sub_model: "" } })} options={carBrandOpts()} placeholder="Brand" />
-                    <ComboBox value={svc.new_car.model} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, model: v, sub_model: "" } })} options={carModelOpts(svc.new_car.brand)} placeholder="Model" />
-                    <ComboBox value={svc.new_car.sub_model || ""} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, sub_model: v } })} options={carSubModelOpts(svc.new_car.brand, svc.new_car.model)} placeholder="Sub-Model (optional)" />
-                    <ComboBox value={svc.new_car.year} onChange={(v) => upd(svc.id, { new_car: { ...svc.new_car, year: v } })} options={carYears} placeholder="Year" />
-                    <input className="filter-input" value={svc.new_car.plate} onChange={e => upd(svc.id, { new_car: { ...svc.new_car, plate: e.target.value } })} placeholder="VIN" />
-
-                    <div style={{ gridColumn: "1 / -1", display: "flex", gap: 8, alignItems: "center" }}>
-                      <button type="button" className="btn btn-primary btn-sm" disabled={!onSaveCar || !svc.new_car.brand || !svc.new_car.model} onClick={() => onSaveCar && onSaveCar(svc.id)}>💾 Save car to profile</button>
-                      <span style={{ fontSize: 11, color: "var(--muted)" }}>{onSaveCar ? "Saves to the customer's cars." : "Save or select the customer first — then cars attach to their profile."}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-                <span style={{ fontSize: 12, color: "var(--muted)", marginRight: 10 }}>Service total</span>
-                <span style={{ fontFamily: "var(--font-head)", fontSize: 16, fontWeight: 700, color: "var(--accent)" }}>KWD {t.total.toFixed(3)}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={addBlock}>+ Add another service</button>
-
-      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12, paddingTop: 12, borderTop: "2px solid var(--border)" }}>
-        <span style={{ fontSize: 13, color: "var(--muted)", marginRight: 10 }}>Order Total</span>
-        <span style={{ fontFamily: "var(--font-head)", fontSize: 20, fontWeight: 700, color: "var(--accent)" }}>KWD {orderTotal(services).toFixed(3)}</span>
-      </div>
-    </div>
-  );
-}
-
-// ─── Truck Slot Grid ──────────────────────────────────────────────────────────
-// One day, all active trucks as columns, 1h rows. Click a free slot to select a
-// start; the job spans `duration` consecutive hours. Shows booked slots.
-function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, onPick, onJobClick, excludeId }) {
-  const allHours = [];
-  activeTrucks().forEach(t => truckHours(t).forEach(h => { if (!allHours.includes(h)) allHours.push(h); }));
-  // include overtime rows for hours actually booked outside regular time on this date
-  const regularSet = new Set(allHours);
-  const otRowHours = new Set();
-  jobs.forEach(j => {
-    if (j.id === excludeId || j.status === "cancelled") return;
-    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
-    if (d !== dateStr) return;
-    jobHours(j).forEach(h => { if (!regularSet.has(h)) { otRowHours.add(h); if (!allHours.includes(h)) allHours.push(h); } });
-  });
-  allHours.sort((a, b) => a - b);
-
-  const canFit = (truck, hour) => {
-    const hrs = truckHours(truck);
-    for (let h = hour; h < hour + duration; h++) {
-      if (!hrs.includes(h)) return false;
-      if (slotTaken(jobs, truck, dateStr, h, excludeId)) return false;
-    }
-    return true;
-  };
-  const inSelection = (truck, hour) =>
-    selectedTruck === truck && selectedHour != null &&
-    hour >= selectedHour && hour < selectedHour + duration;
-  const jobAt = (truck, hour) => jobs.find(j => {
-    if (j.id === excludeId) return false;
-    if (j.status === "cancelled") return false; // a cancelled order must never shadow the live booking in its old slot
-    if (j.assigned_truck !== truck) return false;
-    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
-    if (d !== dateStr) return false;
-    return jobHours(j).includes(hour);
-  });
-  // a booked cell shows the start label only on the job's first hour, spanning visually
-  const isJobStart = (job, hour) => jobHours(job)[0] === hour;
-
-  const gridCols = `48px repeat(${activeTrucks().length}, 1fr)`;
-
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <div style={{ minWidth: 320 }}>
-        {/* Header row */}
-        <div style={{ display: "grid", gridTemplateColumns: gridCols, gap: 6, marginBottom: 6 }}>
-          <div />
-          {activeTrucks().map(t => {
-            const c = truckColor(t);
-            return (
-              <div key={t} style={{ borderRadius: 10, background: c.solid, color: "#fff", padding: "7px 4px", textAlign: "center", boxShadow: "0 1px 2px rgba(0,0,0,.08)" }}>
-                <div style={{ fontWeight: 700, fontSize: 13, letterSpacing: ".3px" }}>{t}</div>
-                <div style={{ fontSize: 9, opacity: .85, fontWeight: 500 }}>{hourLabel(TRUCK_CONFIG[t].start).replace(":00", "")}–{hourLabel(TRUCK_CONFIG[t].end).replace(":00", "")}</div>
-              </div>
-            );
-          })}
-        </div>
-        {/* Hour rows */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {allHours.map(hour => (
-            <div key={hour} style={{ display: "grid", gridTemplateColumns: gridCols, gap: 6, alignItems: "stretch" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 4, fontSize: 11, color: otRowHours.has(hour) ? "#B45309" : "var(--muted)", fontWeight: otRowHours.has(hour) ? 700 : 600 }}>
-                {otRowHours.has(hour) ? "⏱" : ""}{hourLabel(hour).replace(":00", "")}
-              </div>
-              {activeTrucks().map(truck => {
-                const c = truckColor(truck);
-                const works = truckHours(truck).includes(hour);
-                const otOcc = !works ? jobAt(truck, hour) : null; // overtime booking outside regular hours
-                if (!works && !otOcc) return <div key={truck} style={{ borderRadius: 8, background: "repeating-linear-gradient(45deg, #F4F5F7, #F4F5F7 6px, #EEF0F3 6px, #EEF0F3 12px)", minHeight: 38 }} />;
-                const taken = !works ? true : slotTaken(jobs, truck, dateStr, hour, excludeId);
-                const sel = inSelection(truck, hour);
-                const fits = canFit(truck, hour);
-                const occ = taken ? (otOcc || jobAt(truck, hour)) : null;
-
-                if (taken) {
-                  const start = occ ? isJobStart(occ, hour) : true;
-                  const isOT = !!occ && (occ.is_overtime || !works);
-                  const isDone = !!occ && jobSuccessful(occ); // successful slots recede: green edge, ✓, dimmed
-                  return (
-                    <div key={truck}
-                      onClick={() => { if (occ && onJobClick) onJobClick(occ); }}
-                      style={{
-                        borderRadius: 8, minHeight: 48, padding: "5px 7px",
-                        background: isDone ? "#86EFAC" : c.bg,
-                        borderLeft: `3px solid ${isDone ? "#16A34A" : isOT ? "#F59E0B" : c.solid}`,
-                        boxShadow: !isDone && isOT ? "inset 0 0 0 1px #FDE68A" : "none",
-                        color: isDone ? "#14532D" : c.text, cursor: onJobClick ? "pointer" : "default",
-                        display: "flex", flexDirection: "column", justifyContent: "center",
-                        overflow: "hidden",
-                      }}>
-                      {start && occ ? (
-                        <>
-                          <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isDone ? "✓ " : ""}{isOT ? "⏱ " : ""}{shortService(occ.service_type)}</div>
-                          <div style={{ fontSize: 9.5, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={occ.customer_name || ""}>{occ.customer_name || ""}</div>
-                          <div style={{ fontSize: 9, fontWeight: 600, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.customer_mobile || ""}</div>
-                          <div style={{ fontSize: 9, opacity: .8, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.area || ""}</div>
-                        </>
-                      ) : <div style={{ fontSize: 9, opacity: .5 }}>↑</div>}
-                    </div>
-                  );
-                }
-                let bg = "#fff", color = "var(--muted)", border = "1px solid var(--border)", label = "+", cursor = "pointer", weight = 500;
-                if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; label = "✓"; weight = 700; }
-                else if (!fits) { bg = "#FAFAF8"; color = "#D4B483"; border = "1px dashed #E8D9B5"; label = "·"; cursor = "not-allowed"; }
-                return (
-                  <div key={truck}
-                    onClick={() => { if (fits) onPick(truck, hour); }}
-                    title={fits ? `Book ${truck} at ${hourLabel(hour)}` : "Not enough consecutive free time"}
-                    style={{
-                      borderRadius: 8, minHeight: 38, border, background: bg, color, cursor,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: 15, fontWeight: weight, transition: "transform .08s, box-shadow .08s",
-                    }}>
-                    {label}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-        </div>
-        {/* Legend */}
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10, fontSize: 11, color: "var(--muted)" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, border: "1px solid var(--border)", background: "#fff" }} /> Free</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "var(--accent)" }} /> Selected</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: truckColor(activeTrucks()[0]).bg, borderLeft: `3px solid ${truckColor(activeTrucks()[0]).solid}` }} /> Booked</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, border: "1px dashed #E8D9B5", background: "#FAFAF8" }} /> Won't fit {duration}h</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "#FEF3C7", borderLeft: "3px solid #F59E0B" }} /> Overtime</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: "#86EFAC", borderLeft: "3px solid #16A34A" }} /> ✓ Done</span>
-        </div>
-        {onJobClick && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>Tap a booked slot to open it, or any free slot to start a new order.</div>}
-      </div>
-    </div>
-  );
-}
-
-// ─── New Order Modal (redesigned flow) ────────────────────────────────────────
-// 1) Mobile → autofill name + cars + addresses
-// 2) Service type → auto labor + items (with per-item match checkbox)
-// 3) Slot grid scheduling (truck + start hour, multi-hour duration)
-// 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog }) {
-  const isEdit = !!editJob;
-  // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
-  const hydrateServices = (job) => {
-    const base = (job.services && job.services.length) ? job.services : (job.items || []).map(it => ({
-      service_type: it.service_type || job.service_type, kind: it.kind || "other",
-      variant: it.variant || {}, tire_id: it.tire_id || null,
-      brand: it.brand || "", pattern: it.pattern || "", size: it.size || "",
-      cost: it.cost || 0, supplier: it.supplier || "", description: it.description || "",
-      qty: it.qty || 1, unit_price: it.unit_price || 0, car_id: it.car_id || null,
-      price_disc: blankDisc(), labor_disc: blankDisc(),
-      labor: catalogLabor(it.service_type || job.service_type, it.variant || {}, it.qty),
-    }));
-    return base.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: null, parts: s.kind !== "tire" ? (s.parts && s.parts.length ? s.parts.map(p => ({ ...p, id: p.id || uid() })) : [newPart()]) : (s.parts || []), price_disc: s.price_disc || blankDisc(), labor_disc: s.labor_disc || blankDisc() }));
-  };
-  const blank = isEdit ? {
-    ...editJob,
-    services: hydrateServices(editJob),
-    start_hour: editJob.start_hour ?? (editJob.scheduled_at ? new Date(editJob.scheduled_at).getHours() : null),
-    scheduled_date: editJob.scheduled_date || (editJob.scheduled_at ? new Date(editJob.scheduled_at).toISOString().split("T")[0] : today()),
-  } : {
-    customer_name: "", customer_mobile: "", customer_id: null,
-    area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "",
-    car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null,
-    services: [newService()], sales_match_confirmed: false,
-    assigned_truck: prefill?.truck || "T1", start_hour: prefill?.hour ?? null, duration: 1,
-    overtime: false, is_overtime: false,
-    scheduled_date: prefill?.date || today(),
-    lead_from: "WhatsApp", sales_agent: defaultAgent || "",
-    xero_ref: "", invoice_no: "", payment_through: "Link", payment_status: "pending", payment_link: "", notes: "",
-    status: "draft",
-    no_products_reason: null, // required choice when the order has no products: 'labor_only' | 'customer_parts'
-    checks: [false, false, false, false],
-  };
-  const [f, setF] = useState(blank);
-  const [mobileQ, setMobileQ] = useState("");
-  const [selectedCustomer, setSelectedCustomer] = useState(null);
-
-  // EDIT MODE: restore the customer link immediately so the per-service car selector
-  // and saved addresses show the order's actual selections (not "select car").
-  useEffect(() => {
-    if (!isEdit || selectedCustomer) return;
-    const c = customers.find(x => x.id === editJob.customer_id) ||
-              customers.find(x => last8(x.mobile) === last8(editJob.customer_mobile));
-    if (c) setSelectedCustomer(c);
-  }, [isEdit, customers]);
-  const [selectedCar, setSelectedCar] = useState(null);
-  const [selectedAddr, setSelectedAddr] = useState(null);
-  const [addrMode, setAddrMode] = useState("pick"); // pick | new
-  const [carMode, setCarMode] = useState("pick"); // pick | new
-  const [schedView, setSchedView] = useState("truck"); // truck | all
-  const [saving, setSaving] = useState(false);
-
-  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
-  const setServices = (updater) => setF(p => ({ ...p, services: typeof updater === "function" ? updater(p.services) : updater }));
-
-  // customer's cars for per-service linking
-  const formCustomerCars = selectedCustomer ? cars.filter(c => c.customer_id === selectedCustomer.id) : [];
-
-  const grandTotal = orderTotal(f.services);
-
-
-  const customerCars = selectedCustomer ? cars.filter(c => c.customer_id === selectedCustomer.id) : [];
-  const customerAddrs = selectedCustomer ? (addresses || []).filter(a => a.customer_id === selectedCustomer.id) : [];
-
-  // mobile lookup
-  const mobileMatches = mobileQ.length < 3 ? [] : customers.filter(c => (c.mobile || "").includes(mobileQ));
-
-  const selectCustomer = (c) => {
-    setSelectedCustomer(c); setSelectedCar(null); setSelectedAddr(null); setAddrMode("pick"); setCarMode("pick"); setMobileQ("");
-    setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, area: c.area || p.area,
-      car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null }));
-  };
-  const selectCar = (car) => {
-    setSelectedCar(car); setCarMode("pick");
-    setF(p => ({ ...p, car_id: car.id, car_brand: car.brand, car_model: car.model, car_year: car.year, car_plate: car.plate }));
-  };
-  const selectAddr = (a) => {
-    setSelectedAddr(a); setAddrMode("pick");
-    setF(p => ({ ...p, area: a.area, governorate: a.governorate || govFor(a.area), block: a.block, street: a.street, lane: a.lane || "", house: a.house, map_link: a.map_link || "" }));
-  };
-  // ── From quote: pull a confirmed Tire System quote into this order ──
-  const [quoteOpen, setQuoteOpen] = useState(false);
-  const [quoteMobileQ, setQuoteMobileQ] = useState("");
-  const [quoteResults, setQuoteResults] = useState(null); // null = not searched
-  const [quoteBusy, setQuoteBusy] = useState(false);
-  const [usedQuoteId, setUsedQuoteId] = useState(null); // quote that fed this order → stamped Success on submit
-  const searchQuotes = async () => {
-    const m = (quoteMobileQ || f.customer_mobile || "").trim();
-    if (!m) return;
-    setQuoteBusy(true);
-    const r = await fetchQuotes(m);
-    setQuoteResults(r); setQuoteBusy(false);
-  };
-  const applyQuoteLine = (q, line) => {
-    setUsedQuoteId(q.id);
-    const svc = quoteToService(q, line);
-    setServices(prev => {
-      const isEmptyTire = (s) => s.kind === "tire" && !s.tire_id && !s.staggered && !(Number(s.unit_price) > 0) && !(s.description || "").trim();
-      const others = prev.map(s => ({ ...s, _open: false }));
-      if (others.length === 1 && isEmptyTire(others[0])) return [{ ...svc, _open: true }];
-      return others.concat({ ...svc, _open: true });
-    });
-    // set the customer mobile from the quote; auto-select the customer if they exist
-    const digits = (s) => (s || "").replace(/\D/g, "");
-    const cust = customers.find(x => digits(x.mobile).slice(-8) === digits(q.customer_mobile).slice(-8));
-    if (cust && !selectedCustomer) {
-      setSelectedCustomer(cust);
-      setF(p => ({ ...p, customer_id: cust.id, customer_name: cust.name, customer_mobile: cust.mobile, area: cust.area || p.area }));
-    } else if (!f.customer_mobile) {
-      setF(p => ({ ...p, customer_mobile: q.customer_mobile }));
-    }
-    setQuoteOpen(false);
-  };
-
-  // Explicit inline saves — create on the SERVER first so the row gets a real id.
-  // (Previously a local "lcar-…" text id was POSTed into a uuid column — Supabase
-  // rejected the insert silently, so cars/addresses added here never persisted.)
-  const saveInlineCar = async (sid) => {
-    const s = f.services.find(x => x.id === sid);
-    if (!selectedCustomer || !s?.new_car?.brand || !s?.new_car?.model) return;
-    const car = await createCar({ ...s.new_car, customer_id: selectedCustomer.id, created_at: new Date().toISOString() });
-    if (onCarCreated) onCarCreated(car);                    // appears in profile + dropdowns
-    setServices(prev => prev.map(x => x.id === sid ? { ...x, car_id: car.id, new_car: null, parts: rebrandParts(x.parts, car.brand) } : x));
-  };
-  const saveInlineAddress = async () => {
-    if (!selectedCustomer || !f.area) return;
-    const a = await createAddress({ label: f.area, area: f.area, governorate: f.governorate || govFor(f.area), block: f.block, street: f.street, lane: f.lane, house: f.house, map_link: f.map_link || buildMapsLink({ ...f, governorate: f.governorate || govFor(f.area) }), customer_id: selectedCustomer.id, created_at: new Date().toISOString() });
-    if (onAddressCreated) onAddressCreated(a);              // appears in saved addresses
-    setSelectedAddr(a); setAddrMode("pick");
-  };
-  const [savingCustomer, setSavingCustomer] = useState(false);
-  const saveAsNewCustomer = async () => {
-    if (!f.customer_name || !f.customer_mobile) return;
-    setSavingCustomer(true);
-    const c = await createCustomer({ name: f.customer_name, mobile: f.customer_mobile, area: f.area || "", notes: "", created_at: new Date().toISOString() });
-    if (onCustomerCreated) onCustomerCreated(c);
-    setSelectedCustomer(c);
-    setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile }));
-    setSavingCustomer(false);
-  };
-  const clearCustomer = () => {
-    setSelectedCustomer(null); setSelectedCar(null);
-    setF(p => ({ ...p, customer_id: null, customer_name: "", customer_mobile: "", car_brand: "", car_model: "", car_year: "", car_plate: "", car_id: null }));
-  };
-  const pickSlot = (truck, hour) => setF(p => ({ ...p, assigned_truck: truck, start_hour: hour, is_overtime: isOTHour(truck, hour) }));
-
-  // In edit mode, resolve the customer so per-service car linking + address work
-  useEffect(() => {
-    if (isEdit && editJob.customer_id) {
-      const c = customers.find(x => x.id === editJob.customer_id);
-      if (c) setSelectedCustomer(c);
-    }
-  }, [isEdit]);
-
-  // Auto-generate the Google Maps link from address fields — unless the agent
-  // pasted a precise pin (manual links are preserved, never overwritten).
-  useEffect(() => {
-    setF(p => {
-      if (isManualPin(p.map_link)) return p; // keep precise pin
-      const gen = buildMapsLink({ area: p.area, governorate: p.governorate, block: p.block, street: p.street, lane: p.lane, house: p.house });
-      if (gen === p.map_link) return p;
-      return { ...p, map_link: gen };
-    });
-  }, [f.area, f.governorate, f.block, f.street, f.lane, f.house]);
-
-  // Apply prefill from customer profile: "New Order" (customer only) or "Reorder" (copy services)
-  useEffect(() => {
-    if (!prefillOrder) return;
-    if (prefillOrder.quoteId) setUsedQuoteId(prefillOrder.quoteId);
-    if (!prefillOrder.customer && prefillOrder.name) setF(p => ({ ...p, customer_name: p.customer_name || prefillOrder.name }));
-    const c = prefillOrder.customer;
-    if (c) {
-      setSelectedCustomer(c);
-      setF(p => ({ ...p, customer_id: c.id, customer_name: c.name, customer_mobile: c.mobile, area: c.area || p.area }));
-    }
-    // Deep link from the Tire System: prefilled service blocks (tire already picked)
-    if (prefillOrder.services && prefillOrder.services.length) {
-      const services = prefillOrder.services.map((s, i) => ({ ...s, id: s.id || uid(), _open: i === 0, new_car: s.new_car || null }));
-      setF(p => ({ ...p, services, ...(prefillOrder.mobile && !c ? { customer_mobile: prefillOrder.mobile } : {}) }));
-    }
-    // Revisit: carry over the customer + address from the original order, prime the
-    // feedback note — but start with a FRESH service (sales picks what's needed).
-    const rv = prefillOrder.revisitOf;
-    if (rv) {
-      setF(p => ({
-        ...p,
-        ...(c ? {} : { customer_name: p.customer_name || rv.customer_name || "", customer_mobile: p.customer_mobile || rv.customer_mobile || "" }),
-        area: rv.area || (c && c.area) || p.area, governorate: rv.governorate || "",
-        block: rv.block || "", street: rv.street || "", lane: rv.lane || "", house: rv.house || "", map_link: rv.map_link || "",
-        notes: p.notes || prefillOrder.noteHint || "",
-      }));
-    }
-    const src = prefillOrder.sourceJob;
-    if (src) {
-      // Rebuild service blocks from the source job (copy services/cars/prices/discounts;
-      // reset schedule + payment; ALWAYS leave the match checkbox unchecked).
-      const baseServices = (src.services && src.services.length)
-        ? src.services
-        : (src.items || []).map(it => ({
-            service_type: it.service_type || src.service_type, kind: it.kind || "other",
-            variant: it.variant || {}, tire_id: it.tire_id || null,
-            brand: it.brand || "", pattern: it.pattern || "", size: it.size || "",
-            cost: it.cost || 0, supplier: it.supplier || "", description: it.description || "",
-            qty: it.qty || 1, unit_price: it.unit_price || 0, car_id: it.car_id || null,
-            price_disc: blankDisc(), labor_disc: blankDisc(),
-            labor: catalogLabor(it.service_type || src.service_type, it.variant || {}, it.qty),
-          }));
-      const services = baseServices.map(s => ({
-        ...s, id: uid(), _open: false, new_car: null,
-        price_disc: s.price_disc || blankDisc(), labor_disc: s.labor_disc || blankDisc(),
-      }));
-      // open the first one for review
-      if (services[0]) services[0]._open = true;
-      setF(p => ({
-        ...p,
-        services,
-        ...(c ? {} : { customer_name: p.customer_name || src.customer_name || "", customer_mobile: p.customer_mobile || src.customer_mobile || "" }),
-        sales_match_confirmed: false,         // always re-verify
-        start_hour: null, assigned_truck: "T1", scheduled_date: today(),
-        payment_status: "pending", payment_link: "", payment_through: "Link",
-        xero_ref: "", invoice_no: "", status: "draft", notes: src.notes || "",
-        area: src.area || (c && c.area) || p.area, governorate: src.governorate || "",
-        block: src.block || "", street: src.street || "", lane: src.lane || "", house: src.house || "", map_link: src.map_link || "",
-      }));
-    }
-  }, [prefillOrder]);
-
-
-  const hasProducts = orderHasProducts(f.services);
-  // Collect reasons submit is blocked (shown to the agent)
-  const submitReasons = [];
-  if (!f.customer_name) submitReasons.push("Add a customer");
-  if (!f.customer_mobile) submitReasons.push("Add a customer mobile");
-  if (!f.area) submitReasons.push("Add the area");
-  if (!(f.services || []).length) submitReasons.push("Add at least one service");
-  else if (!f.services.every(s => s.kind === "tire" ? true : (partsGross(s.parts) > 0 || (s.parts || []).some(p => p.name) || s.labor)))
-    submitReasons.push("Each non-tire service needs a part or labor");
-  if (hasProducts && !f.sales_match_confirmed) submitReasons.push("Confirm the products match the customer's car");
-  if (!hasProducts && (f.services || []).length && !f.no_products_reason) submitReasons.push("Select: labor only, or parts/tires with customer");
-  if (f.start_hour == null) submitReasons.push("Pick a time slot");
-  const canSubmit = submitReasons.length === 0;
-
-  const save = async () => {
-    if (!canSubmit) return;
-    setSaving(true);
-    // Create any inline new cars first, link their ids back to the service blocks
-    let services = f.services;
-    const createdCars = [];
-    if (selectedCustomer) {
-      const withCars = [];
-      for (const s of services) {
-        if (s.new_car && (s.new_car.brand || s.new_car.model)) {
-          const car = await createCar({ ...s.new_car, customer_id: selectedCustomer.id, created_at: new Date().toISOString() });
-          if (onCarCreated) onCarCreated(car);
-          createdCars.push(car);
-          withCars.push({ ...s, car_id: car.id, new_car: null });
-        } else {
-          withCars.push(s);
-        }
-      }
-      services = withCars;
-    }
-    // Quote-sourced tires carry only brand/size/price — pull the full catalog
-    // spec (supplier, cost, LI/SR, SKU, notes) by id before saving, so the
-    // collect list and profitability reports never miss supplier or cost.
-    for (let i = 0; i < services.length; i++) {
-      const s = services[i];
-      if (s.kind !== "tire") continue;
-      if (s.tire_id && (!s.supplier || !s.sku)) {
-        const t = await fetchTireById(s.tire_id);
-        if (t) services[i] = { ...services[i],
-          supplier: s.supplier || t.supplier || "", cost: Number(s.cost) || Number(t.cost) || 0,
-          load_index: s.load_index || t.load_index || "", speed_rating: s.speed_rating || t.speed_rating || "",
-          country: s.country || t.country || "", year: s.year || t.year || "",
-          sku: s.sku || t.sku || "", tire_note: s.tire_note || t.notes || "" };
-      }
-      const s2 = services[i];
-      if (s2.rear_tire_id && (!s2.rear_supplier || !s2.rear_sku)) {
-        const t = await fetchTireById(s2.rear_tire_id);
-        if (t) services[i] = { ...services[i],
-          rear_supplier: s2.rear_supplier || t.supplier || "", rear_cost: Number(s2.rear_cost) || Number(t.cost) || 0,
-          rear_load_index: s2.rear_load_index || t.load_index || "", rear_speed_rating: s2.rear_speed_rating || t.speed_rating || "",
-          rear_country: s2.rear_country || t.country || "", rear_year: s2.rear_year || t.year || "",
-          rear_sku: s2.rear_sku || t.sku || "", rear_tire_note: s2.rear_tire_note || t.notes || "" };
-      }
-    }
-    // Cars available to this order: profile cars + any created inline just now
-    const allCars = [...formCustomerCars, ...createdCars];
-    // Top-level car snapshot for reporting — the first car linked on the order
-    const primaryCar = services.map(s => allCars.find(c => c.id === s.car_id)).find(Boolean) || null;
-    const scheduledAt = new Date(`${f.scheduled_date}T${String(f.start_hour).padStart(2, "0")}:00:00`);
-    const totalLabor = services.reduce((s, svc) => s + serviceTotals(svc).netLabor, 0);
-    const headline = [...new Set(services.map(s => s.service_type))].join(" + ");
-    const details = services.map(s => s.kind === "tire"
-      ? (s.staggered
-          ? [s.tire_id ? `F: ${s.size} ${s.brand} ×${s.qty}` : "", s.rear_tire_id ? `R: ${s.rear_size} ${s.rear_brand} ×${s.rear_qty}` : ""].filter(Boolean).join(" + ") || `${s.service_type} (labor only)`
-          : (s.tire_id ? `${s.size} ${s.brand}${s.pattern ? " " + s.pattern : ""} ×${s.qty}` : `${s.service_type} (labor only) ×${s.qty}`))
-      : (() => { const ps = (s.parts || []).filter(p => p.name); return ps.length ? `${s.service_type}: ${ps.map(p => p.name).join(", ")}` : `${s.service_type} (labor only)`; })()).filter(Boolean).join(" · ");
-    const totQtyOf = (s) => s.staggered ? (Number(s.qty) || 0) + (Number(s.rear_qty) || 0) : (Number(s.qty) || 4);
-    const carLabelFor = (cid) => {
-      const c = allCars.find(x => x.id === cid);
-      return c ? `${c.brand} ${c.model}${c.year ? " " + c.year : ""}`.trim() : "";
-    };
-    const items = services.flatMap(s => {
-      const car_label = carLabelFor(s.car_id);
-      if (s.kind === "tire") {
-        if (s.staggered) {
-          const out = [];
-          if (s.tire_id) out.push({
-            id: s.id + "-F", kind: "tire", tire_id: s.tire_id, position: "front",
-            brand: s.brand, pattern: s.pattern, size: s.size, year: s.year, load_index: s.load_index, speed_rating: s.speed_rating, country: s.country, oem: s.oem, tire_note: s.tire_note,
-            name: `${s.brand} ${s.pattern} (front)`,
-            supplier: s.supplier || "", sku: s.sku || "", qty: s.qty, unit_price: s.unit_price,
-            cost: s.cost, car_id: s.car_id, car_label,
-            service_type: s.service_type, service_id: s.id, variant: s.variant,
-          });
-          if (s.rear_tire_id) out.push({
-            id: s.id + "-R", kind: "tire", tire_id: s.rear_tire_id, position: "rear",
-            brand: s.rear_brand, pattern: s.rear_pattern, size: s.rear_size, year: s.rear_year, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note,
-            name: `${s.rear_brand} ${s.rear_pattern} (rear)`,
-            supplier: s.rear_supplier || "", sku: s.rear_sku || "", qty: s.rear_qty, unit_price: s.rear_unit_price,
-            cost: s.rear_cost, car_id: s.car_id, car_label,
-            service_type: s.service_type, service_id: s.id, variant: s.variant,
-          });
-          if (out.length === 0) out.push({
-            id: s.id, kind: "tire", labor_only: true, name: `${s.service_type} (labor only)`,
-            supplier: "", qty: totQtyOf(s), unit_price: 0, cost: 0, car_id: s.car_id, car_label,
-            service_type: s.service_type, service_id: s.id, variant: s.variant,
-          });
-          return out;
-        }
-        return [{
-          id: s.id, kind: "tire", tire_id: s.tire_id, labor_only: !s.tire_id,
-          brand: s.brand, pattern: s.pattern, size: s.size, year: s.year, load_index: s.load_index, speed_rating: s.speed_rating, country: s.country, oem: s.oem, tire_note: s.tire_note,
-          name: s.tire_id ? `${s.brand} ${s.pattern}` : `${s.service_type} (labor only)`,
-          supplier: s.supplier || "", sku: s.sku || "", qty: s.qty, unit_price: s.unit_price,
-          cost: s.cost, car_id: s.car_id, car_label,
-          service_type: s.service_type, service_id: s.id, variant: s.variant,
-        }];
-      }
-      // other service → one item per part (each collectable with its own supplier)
-      const parts = (s.parts || []).filter(p => p.name || Number(p.price) > 0);
-      if (parts.length === 0) {
-        // labor-only other service
-        return [{
-          id: s.id, kind: "other", labor_only: true, name: `${s.service_type} (labor only)`,
-          supplier: "", qty: 1, unit_price: 0, cost: 0, car_id: s.car_id, car_label,
-          service_type: s.service_type, service_id: s.id, variant: s.variant,
-        }];
-      }
-      return parts.map(p => ({
-        id: p.id, kind: "part", name: p.name || s.service_type,
-        supplier: p.supplier || "", sku: p.sku || "", qty: p.qty, unit_price: p.price, cost: p.cost,
-        car_id: s.car_id, car_label,
-        service_type: s.service_type, service_id: s.id, variant: s.variant,
-      }));
-    });
-    const common = {
-      ...f,
-      no_products_reason: hasProducts ? null : (f.no_products_reason || null),
-      paid_date: f.payment_status === "paid" ? ((editJob && editJob.paid_date) || today()) : null,
-      car_id: primaryCar ? primaryCar.id : (f.car_id || null),
-      car_brand: primaryCar ? (primaryCar.brand || "") : (f.car_brand || ""),
-      car_model: primaryCar ? (primaryCar.model || "") : (f.car_model || ""),
-      car_year: primaryCar ? (primaryCar.year || "") : (f.car_year || ""),
-      car_plate: primaryCar ? (primaryCar.plate || "") : (f.car_plate || ""),
-      ver_times: { ...(editJob?.ver_times || {}), c1: f.sales_match_confirmed ? ((editJob?.ver_times || {}).c1 || new Date().toISOString()) : null },
-      services,
-      service_type: headline,
-      items,
-      labor_charge: totalLabor,
-      total: grandTotal,
-      qty: services.reduce((s, svc) => s + (Number(svc.qty) || 0), 0),
-      service_details: details,
-      scheduled_at: scheduledAt.toISOString(),
-    };
-
-    if (isEdit) {
-      // Detect whether services/items materially changed (to decide re-verification)
-      const sig = (list) => JSON.stringify((list || []).map(s => ({
-        t: s.service_type, k: s.kind, v: s.variant, tire: s.tire_id, d: s.description,
-        q: Number(s.qty) || 0, p: Number(s.unit_price) || 0, car: s.car_id || null,
-      })));
-      const itemsChanged = sig(hydrateServices(editJob)) !== sig(services);
-      const settled = jobSuccessful(editJob); // completed orders are a historical record
-      const patch = { ...common };
-      delete patch.created_at; // preserve original
-      if (editJob.status === "cancelled") {
-        // Saving an edit on a cancelled order restores it into the pipeline
-        patch.status = "booked";
-        patch.cancel_reason = null;
-        patch.cancelled_at = null;
-        patch.truck_status = "scheduled";
-        patch.parts_status = "pending";
-        patch.parts_released = false;
-        patch.techs_released = false;
-      }
-      if (itemsChanged && !settled) {
-        // re-verification habit: clear all match confirmations + downstream per-item checks.
-        // NEVER on completed orders — corrections (e.g. linking the car afterwards) must
-        // not erase the verification history of work already delivered.
-        patch.sales_match_confirmed = false;
-        patch.tech_arrival_match = false;
-        patch.item_checks = {};
-        patch.tech_checks = {};
-        patch.tech_checks_order = {};
-        patch.tech_checks_car = {};
-        patch.ver_times = { c1: patch.sales_match_confirmed === false ? null : ((editJob.ver_times || {}).c1 || null), c2: null, c3: null, c4: null };
-        patch.items_edited_at = new Date().toISOString();
-      }
-      // Late car link on a completed order → back-fill the recorded mileage onto the
-      // car's own log. appendCarMileage de-dupes by job_id, so re-saving is harmless.
-      const backfills = [];
-      if (settled) {
-        const cm = editJob.car_mileages
-          || (Number(editJob.service_mileage) > 0 ? { primary: { km: Number(editJob.service_mileage), unit: editJob.service_mileage_unit || "KM" } } : null);
-        if (cm) {
-          const realIds = [...new Set([common.car_id, ...services.map(s => s.car_id)]
-            .filter(id => id && cars.some(c => c.id === id)))];
-          const fixedCm = { ...cm };
-          Object.entries(cm).forEach(([key, e]) => {
-            if (!(Number(e?.km) > 0)) return;
-            const target = (e.car_id && cars.some(c => c.id === e.car_id)) ? e.car_id
-              : (realIds.length === 1 ? realIds[0] : null); // single-car order → unambiguous
-            if (!target) return;
-            fixedCm[key] = { ...e, car_id: target };
-            backfills.push({ carId: target, entry: {
-              date: editJob.completed_at || new Date().toISOString(), km: Number(e.km), unit: e.unit || "KM",
-              service: editJob.service_type || "", job_id: editJob.id, mobile: common.customer_mobile || "",
-            } });
-          });
-          patch.car_mileages = fixedCm;
-        }
-      }
-      await updateJob(editJob.id, patch);
-      backfills.forEach(b => appendCarMileage(b.carId, b.entry)); // fire-and-forget, de-duped
-      onEdited({ ...editJob, ...patch });
-      setSaving(false);
-      onClose();
-      return;
-    }
-
-    const job = {
-      ...common,
-      ...(prefillOrder && prefillOrder.linkTo ? prefillOrder.linkTo : {}), // thread link: parent_job_id / link_type / upsell credit
-      sale_date: today(), // revenue is recognized the day the order is PLACED, not scheduled/completed
-      created_at: new Date().toISOString(),
-      parts_status: "pending",
-      truck_status: "scheduled",
-      parts_released: false,
-      techs_released: false,
-      tech_arrival_match: false,
-      item_checks: {},
-      tech_checks: {}, tech_checks_order: {}, tech_checks_car: {}, parts_received: false,
-    };
-    const created = await createJob(job);
-    onCreated(created, usedQuoteId);
-    setSaving(false);
-    onClose();
-  };
-
-  return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-header">
-          <h3>{isEdit ? `Edit Order — ${editJob.customer_name}` : "New Order"}</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
-        <div className="modal-body">
-          {!isEdit && prefillOrder?.linkTo && (
-            <div style={{ margin: "0 0 14px", padding: "8px 12px", background: prefillOrder.linkTo.link_type === "upsell" ? "#F0FDF4" : "#EFF6FF", border: `1px solid ${prefillOrder.linkTo.link_type === "upsell" ? "#BBF7D0" : "#BFDBFE"}`, borderRadius: 8, fontSize: 12.5, color: prefillOrder.linkTo.link_type === "upsell" ? "#166534" : "#1E40AF", fontWeight: 600 }}>
-              {prefillOrder.linkLabel || `🔗 This order will be linked to the original order as a ${prefillOrder.linkTo.link_type}.`}
-              {prefillOrder.linkTo.link_type === "upsell" && prefillOrder.linkTo.upsell_truck ? ` · credit: ${prefillOrder.linkTo.upsell_truck}` : ""}
-            </div>
-          )}
-          {isEdit && editJob.status === "cancelled" && (
-            <div style={{ margin: "10px 16px 0", padding: "8px 12px", background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12.5, color: "#92400E" }}>
-              ↺ This order is <strong>cancelled</strong>. Saving will restore it as <strong>Booked</strong> and it will go through parts &amp; verification again.
-            </div>
-          )}
-          {isEdit && (editJob.parts_released || editJob.techs_released || editJob.truck_status === "processing" || editJob.truck_status === "completed") && (
-            <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 8, padding: "10px 14px", margin: "0 0 14px", fontSize: 13, color: "#92400E" }}>
-              ⚠ Work has already started on this order ({editJob.parts_released ? "parts released" : ""}{editJob.parts_released && (editJob.techs_released || editJob.truck_status !== "scheduled") ? ", " : ""}{editJob.techs_released ? "shown to technicians" : ""}{editJob.truck_status && editJob.truck_status !== "scheduled" ? ` · truck ${editJob.truck_status}` : ""}). Editing services or items will reset the verification checks and the distributor/technician will need to re-verify. Proceed carefully.
-            </div>
-          )}
-          <div className="form-grid">
-
-            {/* 1 — Customer by mobile */}
-            <div className="form-section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>1 · Customer</span>
-              {!isEdit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setQuoteOpen(o => !o); if (!quoteOpen) { setQuoteMobileQ(f.customer_mobile || ""); setQuoteResults(null); } }}>📋 From quote</button>}
-            </div>
-            {quoteOpen && (
-              <div className="form-full" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--bg)", marginBottom: 10 }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
-                  <input type="tel" className="filter-input" style={{ flex: 1 }} value={quoteMobileQ} placeholder="Customer mobile from the quote…"
-                    onChange={e => setQuoteMobileQ(e.target.value)} onKeyDown={e => e.key === "Enter" && searchQuotes()} />
-                  <button type="button" className="btn btn-primary btn-sm" onClick={searchQuotes} disabled={quoteBusy}>{quoteBusy ? "…" : "Search"}</button>
-                </div>
-                {quoteResults && quoteResults.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>No quotes found for this mobile. Quotes appear here once sent from the Tire System.</div>}
-                {quoteResults && quoteResults.length > 0 && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 260, overflowY: "auto" }}>
-                    {quoteResults.map(q => {
-                      const st = quoteStatus(q, jobs);
-                      const isSuccess = st.status === "success";
-                      const isLost = st.status === "lost";
-                      return (
-                      <div key={q.id} style={{ background: isSuccess ? "#F0FDF4" : "var(--card)", border: `1px solid ${isSuccess ? "#BBF7D0" : "var(--border)"}`, borderRadius: 8, padding: "8px 10px" }}>
-                        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 5, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                          <span>{fmtDate(q.created_at)} {fmtTime(q.created_at)}{q.agent ? ` · ${q.agent}` : ""}{q.staggered ? " · staggered" : ` · qty ${q.qty || 4}`}{q.cash_pct ? ` · cash ${q.cash_pct}%` : ""}</span>
-                          {isSuccess && <span style={{ fontSize: 10, fontWeight: 700, color: "#15803D", background: "#DCFCE7", borderRadius: 5, padding: "1px 7px" }}>✓ Converted{st.job ? ` · ${fmtDate(st.job.scheduled_at)}` : ""}</span>}
-                          {isLost && <span style={{ fontSize: 10, fontWeight: 700, color: "#991B1B", background: "#FEE2E2", borderRadius: 5, padding: "1px 7px" }}>✕ Lost{q.lost_reason ? ` · ${q.lost_reason}` : ""}</span>}
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {q.staggered ? (
-                            staggeredOptions(q).map((opt, oi) => (
-                              <div key={oi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12.5, borderTop: oi ? "1px dashed var(--border)" : "none", paddingTop: oi ? 6 : 0 }}>
-                                <span>
-                                  <div><span style={{ color: "var(--muted)", fontWeight: 700 }}>Front</span> <strong>{opt.front?.brand} {opt.front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {opt.front?.size}{opt.front?.year ? ` · ${opt.front.year}` : ""}</span></div>
-                                  <div><span style={{ color: "var(--muted)", fontWeight: 700 }}>Rear</span> <strong>{opt.rear?.brand} {opt.rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {opt.rear?.size}{opt.rear?.year ? ` · ${opt.rear.year}` : ""}</span></div>
-                                  <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(opt.price).toFixed(0)} KD</span>
-                                </span>
-                                <button type="button" className={`btn btn-sm ${isSuccess ? "btn-ghost" : "btn-primary"}`} style={{ flexShrink: 0 }} onClick={() => applyQuoteLine(q, opt)}>{isSuccess ? "Use again" : "Use"}</button>
-                              </div>
-                            ))
-                          ) : (
-                            (q.lines || []).map((line, li) => (
-                              <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12.5 }}>
-                                <span>
-                                  <strong>{line.brand} {line.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {line.size}{line.year ? ` · ${line.year}` : ""}</span>
-                                  <span style={{ color: "var(--accent)", fontWeight: 700 }}> @ {Number(line.price).toFixed(0)} KD</span>
-                                </span>
-                                <button type="button" className={`btn btn-sm ${isSuccess ? "btn-ghost" : "btn-primary"}`} style={{ flexShrink: 0 }} onClick={() => applyQuoteLine(q, line)}>{isSuccess ? "Use again" : "Use"}</button>
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="form-full">
-              {!selectedCustomer ? (
-                <div className="search-wrap">
-                  <span className="search-icon">📱</span>
-                  <input className="search-input" placeholder="Type customer mobile…" value={mobileQ}
-                    onChange={e => setMobileQ(e.target.value)} inputMode="tel" />
-                  {mobileQ.length >= 3 && (
-                    <div className="search-dropdown">
-                      {mobileMatches.map(c => (
-                        <div key={c.id} className="search-item" onClick={() => selectCustomer(c)}>
-                          <div className="search-item-name">{c.name}</div>
-                          <div className="search-item-sub">{c.mobile} · {c.area}</div>
-                        </div>
-                      ))}
-                      <div className="search-new" onClick={() => onNewCustomer(mobileQ, selectCustomer)}>
-                        + New customer with mobile "{mobileQ}"
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="customer-found">
-                  <div>
-                    <div className="customer-found-name">{selectedCustomer.name}</div>
-                    <div className="customer-found-sub">{selectedCustomer.mobile} · {selectedCustomer.area}</div>
-                  </div>
-                  <button className="btn btn-ghost btn-sm" onClick={clearCustomer}>Change</button>
-                </div>
-              )}
-            </div>
-
-            {/* Manual name/mobile when no customer selected */}
-            {!selectedCustomer && (
-              <>
-                <div className="form-field"><label>Name *</label><input value={f.customer_name} onChange={set("customer_name")} placeholder="Ahmad Al-Salem" /></div>
-                <div className="form-field"><label>Mobile *</label><input value={f.customer_mobile} onChange={set("customer_mobile")} placeholder="99001234" /></div>
-                {(f.customer_name || f.customer_mobile) && (
-                  <div className="form-full" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <button type="button" className="btn btn-primary btn-sm" disabled={!f.customer_name || !f.customer_mobile || savingCustomer}
-                      onClick={saveAsNewCustomer}>
-                      {savingCustomer ? "Saving…" : "💾 Save as new customer"}
-                    </button>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>Creates their profile — then cars and addresses can be saved to it.</span>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Address */}
-            <div className="form-section-title">Location</div>
-            {/* Saved address picker (when customer has addresses) */}
-            {selectedCustomer && customerAddrs.length > 0 && addrMode === "pick" && (
-              <div className="form-full">
-                <label style={miniLabel}>Saved Addresses</label>
-                <div className="car-picker">
-                  {customerAddrs.map(a => (
-                    <div key={a.id} className={`car-option ${selectedAddr?.id === a.id ? "selected" : ""}`} onClick={() => selectAddr(a)}>
-                      <div className={`car-option-radio ${selectedAddr?.id === a.id ? "selected" : ""}`} />
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 14 }}>{a.label || "Address"} — {a.area}</div>
-                        <div style={{ fontSize: 12, color: "var(--muted)" }}>Block {a.block}, St {a.street}{a.lane ? ", Lane " + a.lane : ""}, {a.house}{a.map_link ? " · 📍" : ""}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => { setAddrMode("new"); setSelectedAddr(null); setF(p => ({ ...p, area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "" })); }}>+ Use a new address</button>
-              </div>
-            )}
-            {/* Manual address fields (no saved addrs, or adding new) */}
-            {(!selectedCustomer || customerAddrs.length === 0 || addrMode === "new") && (
-              <>
-                {selectedCustomer && customerAddrs.length > 0 && addrMode === "new" && (
-                  <div className="form-full" style={{ display: "flex", justifyContent: "flex-end" }}>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setAddrMode("pick")}>← Back to saved addresses</button>
-                  </div>
-                )}
-                <div className="form-field"><label>Area *</label><ComboBox value={f.area} onChange={(v) => setF(p => ({ ...p, area: v, governorate: govFor(v) || p.governorate }))} options={KW_AREA_NAMES} placeholder="Salmiya" /></div>
-                <div className="form-field"><label>Governorate</label><input value={f.governorate || govFor(f.area)} readOnly placeholder="auto" style={{ background: "#F3F4F6", color: "var(--muted)" }} /></div>
-                <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
-                <div className="form-field"><label>Street</label><ComboBox value={f.street} onChange={(v) => setF(p => ({ ...p, street: v }))} options={streetsForArea(f.area)} placeholder="33 or name" /></div>
-                <div className="form-field"><label>Lane (Jadda)</label><input value={f.lane} onChange={set("lane")} placeholder="optional" /></div>
-                <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
-                <div className="form-field form-full">
-                  <label>Google Map Link {!isManualPin(f.map_link) && f.map_link ? <span style={{ color: "var(--success)", fontWeight: 600 }}>· auto (block-level)</span> : isManualPin(f.map_link) ? <span style={{ color: "var(--accent)", fontWeight: 600 }}>· exact pin</span> : ""}</label>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <input value={f.map_link} onChange={set("map_link")} placeholder="Auto-fills to the block; paste customer's WhatsApp pin for exact" style={{ flex: 1 }} />
-                    {f.map_link && <a href={f.map_link} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm" style={{ whiteSpace: "nowrap" }}>📍 Open</a>}
-                  </div>
-                  {!isManualPin(f.map_link) && f.map_link && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>Rough block-level link. For pinpoint accuracy, paste the customer's shared location pin.</div>}
-                  {isManualPin(f.map_link) && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>Using exact pin. <button type="button" onClick={() => setF(p => ({ ...p, map_link: buildMapsLink(p) }))} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", padding: 0, fontSize: 11, textDecoration: "underline" }}>Reset to auto from address</button></div>}
-                  <PaciPinBuilder
-                    onUse={(link) => setF(p => ({ ...p, map_link: link }))}
-                    onFill={(a) => setF(p => ({ ...p,
-                      area: a.area || p.area,
-                      governorate: a.governorate || p.governorate,
-                      block: a.block || p.block,
-                      street: a.street || p.street,
-                      lane: a.lane || p.lane,
-                      house: a.house || p.house,
-                      map_link: a.mapLink || p.map_link,
-                    }))} />
-                </div>
-                {selectedCustomer && (
-                  <div className="form-full" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <button type="button" className="btn btn-primary btn-sm" disabled={!f.area} onClick={saveInlineAddress}>💾 Save address to profile</button>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>Saves to the customer's addresses for future orders.</span>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* 2 — Services (each its own formula) */}
-            <div className="form-section-title">2 · Services</div>
-            <ServiceBuilder services={f.services} setServices={setServices} customerCars={formCustomerCars} onSaveCar={selectedCustomer ? saveInlineCar : null} catalog={catalog} />
-
-            {/* Sales match confirmation gate — only when the order has products to verify */}
-            {hasProducts ? (
-              <label className="form-full" style={{ display: "flex", gap: 10, alignItems: "flex-start", background: f.sales_match_confirmed ? "#F0FDF4" : "var(--bg)", border: `1px solid ${f.sales_match_confirmed ? "var(--success)" : "var(--border)"}`, borderRadius: 8, padding: "10px 12px", cursor: "pointer" }}>
-                <input type="checkbox" checked={f.sales_match_confirmed} onChange={e => setF(p => ({ ...p, sales_match_confirmed: e.target.checked }))} style={{ marginTop: 2 }} />
-                <span style={{ fontSize: 13, fontWeight: 600 }}>I'm sure the tires / products match the customer's car. <span style={{ color: "var(--danger)" }}>*</span></span>
-              </label>
-            ) : (
-              <div className="form-full" style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 8, padding: "10px 12px" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1E40AF", marginBottom: 8 }}>No products on this order — tell the technicians exactly what to expect: <span style={{ color: "var(--danger)" }}>*</span></div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {[
-                    { v: "labor_only", icon: "🔧", t: "Labor only — no products for this order" },
-                    { v: "customer_parts", icon: "🛞", t: "Parts/tires with customer" },
-                  ].map(o => (
-                    <label key={o.v} style={{ display: "flex", gap: 9, alignItems: "center", background: f.no_products_reason === o.v ? "#DBEAFE" : "#fff", border: `1.5px solid ${f.no_products_reason === o.v ? "#2563EB" : "var(--border)"}`, borderRadius: 8, padding: "8px 11px", cursor: "pointer" }}>
-                      <input type="radio" name="no_products_reason" checked={f.no_products_reason === o.v} onChange={() => setF(p => ({ ...p, no_products_reason: o.v }))} />
-                      <span style={{ fontSize: 15 }}>{o.icon}</span>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: "#1E40AF" }}>{o.t}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 3 — Scheduling slot grid */}
-            <div className="form-section-title">3 · Scheduling</div>
-            <div className="form-full" style={{ display: "flex", gap: 6, marginBottom: 4 }}>
-              <button type="button" className={`btn btn-sm ${schedView === "truck" ? "btn-primary" : "btn-ghost"}`} onClick={() => setSchedView("truck")}>Per-truck</button>
-              <button type="button" className={`btn btn-sm ${schedView === "all" ? "btn-primary" : "btn-ghost"}`} onClick={() => setSchedView("all")}>All trucks</button>
-            </div>
-            {schedView === "truck" && (
-              <div className="form-full">
-                <label style={miniLabel}>Truck</label>
-                <TruckPills value={f.assigned_truck} onChange={(t) => setF(p => ({ ...p, assigned_truck: t, start_hour: null }))} />
-              </div>
-            )}
-            {schedView === "truck" && (
-              <div className="form-full" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: f.overtime ? "#B45309" : "var(--text)" }}>
-                  <input type="checkbox" checked={!!f.overtime} onChange={e => setF(p => ({ ...p, overtime: e.target.checked, start_hour: null }))} />
-                  ⏱ Overtime — unlock early/late slots (3h before, 4h after)
-                </label>
-              </div>
-            )}
-            <div className="form-field">
-              <label>Date</label>
-              <input type="date" value={f.scheduled_date} onChange={e => setF(p => ({ ...p, scheduled_date: e.target.value, start_hour: null }))} />
-            </div>
-            <div className="form-field">
-              <label>Duration (hours)</label>
-              <select value={f.duration} onChange={e => setF(p => ({ ...p, duration: Number(e.target.value), start_hour: null }))}>
-                {[1, 2, 3].map(d => <option key={d} value={d}>{d} hour{d > 1 ? "s" : ""}</option>)}
-              </select>
-            </div>
-            <div className="form-full">
-              {schedView === "truck" ? (
-                <TruckDayView jobs={jobs} truck={f.assigned_truck} dateStr={f.scheduled_date} duration={f.duration}
-                  selectedHour={f.start_hour} onPick={pickSlot} excludeId={null} overtime={f.overtime} />
-              ) : (
-                <TruckSlotGrid jobs={jobs} dateStr={f.scheduled_date} duration={f.duration}
-                  selectedTruck={f.start_hour != null ? f.assigned_truck : null} selectedHour={f.start_hour}
-                  onPick={pickSlot} excludeId={null} />
-              )}
-              {f.start_hour != null && (
-                <div style={{ marginTop: 6, fontSize: 13, fontWeight: 600, color: f.is_overtime ? "#B45309" : "var(--success)" }}>
-                  ✓ {f.assigned_truck} · {hourLabel(f.start_hour)}–{hourLabel(f.start_hour + f.duration)} on {f.scheduled_date}
-                  {f.is_overtime && <span style={{ fontSize: 11, background: "#F59E0B", color: "#fff", padding: "1px 6px", borderRadius: 4, marginLeft: 6 }}>OVERTIME</span>}
-                </div>
-              )}
-            </div>
-
-            {/* 4 — Admin */}
-            <div className="form-section-title">4 · Admin</div>
-            <div className="form-field"><label>Lead From</label><select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select></div>
-            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Taly","Sparts","Warranty","Cash","KNET"].map(s => <option key={s}>{s}</option>)}</select></div>
-            <div className="form-field"><label>Sales Agent</label>
-              <select value={f.sales_agent} onChange={set("sales_agent")}>
-                <option value="">Select agent…</option>
-                {SALES_AGENTS.map(a => <option key={a}>{a}</option>)}
-              </select>
-            </div>
-            <div className="form-field"><label>Xero PO Ref</label><input value={f.xero_ref} onChange={set("xero_ref")} placeholder="PO-2026-0041" /></div>
-            <div className="form-field"><label>Invoice No</label><input value={f.invoice_no} onChange={set("invoice_no")} placeholder="INV-… (optional)" /></div>
-            <div className="form-field form-full"><label>Payment Link</label><input value={f.payment_link} onChange={set("payment_link")} placeholder="https://… (paste link to share with customer)" /></div>
-            <div className="form-field form-full"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="Gate code, special instructions…" /></div>
-          </div>
-        </div>
-        <div className="modal-footer">
-          {!canSubmit && (
-            <span style={{ fontSize: 12, color: "var(--danger)", marginRight: "auto", alignSelf: "center" }}>
-              Can't submit yet: {submitReasons.join(" · ")}
-            </span>
-          )}
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={() => { if (!canSubmit) { alert("Can't submit yet:\n\n• " + submitReasons.join("\n• ")); return; } save(); }} disabled={saving}>{saving ? "Saving…" : isEdit ? "Save Changes" : "Submit as Draft"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Mini editors: cars + addresses (used in New Customer + profile) ──────────
-function CarRowsEditor({ rows, setRows }) {
-  const add = () => setRows(p => [...p, { _tmp: uid(), brand: "", model: "", year: "", plate: "" }]);
-  const upd = (i, k, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, [k]: v } : r));
-  const updBrand = (i, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, brand: v, model: "" } : r));
-  const del = (i) => setRows(p => p.filter((_, idx) => idx !== i));
-  return (
-    <div className="form-full">
-      <label style={miniLabel}>Vehicles</label>
-      {rows.map((r, i) => (
-        <div key={r._tmp || r.id || i} style={{ display: "grid", gridTemplateColumns: "1fr 80px 1fr 1fr 32px", gap: 6, marginBottom: 6 }}>
-          <ComboBox value={r.brand} onChange={(v) => updBrand(i, v)} options={carBrandOpts()} placeholder="Brand" />
-          <ComboBox value={r.year} onChange={(v) => upd(i, "year", v)} options={carYears} placeholder="Year" />
-          <ComboBox value={r.model} onChange={(v) => upd(i, "model", v)} options={modelsFor(r.brand)} placeholder="Model" />
-          <input className="filter-input" placeholder="VIN" value={r.plate} onChange={e => upd(i, "plate", e.target.value)} />
-          <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => del(i)}>✕</button>
-        </div>
-      ))}
-      <button className="btn btn-ghost btn-sm" onClick={add}>+ Add vehicle</button>
-    </div>
-  );
-}
-
-function AddressRowsEditor({ rows, setRows }) {
-  const add = () => setRows(p => [...p, { _tmp: uid(), label: "Home", area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "" }]);
-  const upd = (i, k, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, [k]: v } : r));
-  const updArea = (i, v) => setRows(p => p.map((r, idx) => idx === i ? { ...r, area: v, governorate: govFor(v) || r.governorate } : r));
-  const del = (i) => setRows(p => p.filter((_, idx) => idx !== i));
-  return (
-    <div className="form-full">
-      <label style={miniLabel}>Addresses</label>
-      {rows.map((r, i) => (
-        <div key={r._tmp || r.id || i} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-            <input className="filter-input" placeholder="Label (Home, Office…)" value={r.label} onChange={e => upd(i, "label", e.target.value)} style={{ width: 160 }} />
-            <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => del(i)}>✕</button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 6 }}>
-            <ComboBox value={r.area} onChange={(v) => updArea(i, v)} options={KW_AREA_NAMES} placeholder="Area" />
-            <input className="filter-input" placeholder="Governorate (auto)" value={r.governorate || govFor(r.area)} readOnly style={{ background: "#F3F4F6", color: "var(--muted)" }} />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "60px 1fr 70px 60px", gap: 6, marginBottom: 6 }}>
-            <input className="filter-input" placeholder="Block" value={r.block} onChange={e => upd(i, "block", e.target.value)} />
-            <div style={{ gridColumn: "span 1" }}><ComboBox value={r.street} onChange={(v) => upd(i, "street", v)} options={streetsForArea(r.area)} placeholder="Street" /></div>
-            <input className="filter-input" placeholder="Lane" value={r.lane || ""} onChange={e => upd(i, "lane", e.target.value)} />
-            <input className="filter-input" placeholder="House" value={r.house} onChange={e => upd(i, "house", e.target.value)} />
-          </div>
-          <input className="filter-input" style={{ width: "100%" }} placeholder="Google Map link" value={r.map_link} onChange={e => upd(i, "map_link", e.target.value)} />
-        </div>
-      ))}
-      <button className="btn btn-ghost btn-sm" onClick={add}>+ Add address</button>
-    </div>
-  );
-}
-
-// ─── New Customer Modal (with cars + addresses) ───────────────────────────────
-function NewCustomerModal({ initialName, initialMobile, onClose, onCreated }) {
-  const [f, setF] = useState({ name: initialName || "", mobile: initialMobile || "", notes: "" });
-  const [carRows, setCarRows] = useState([]);
-  const [addrRows, setAddrRows] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const set = (k) => (e) => setF(p => ({ ...p, [k]: e.target.value }));
-
-  const save = async () => {
-    if (!f.name || !f.mobile) return;
-    setSaving(true);
-    // primary area = first address area (back-compat with customer.area)
-    const primaryArea = addrRows[0]?.area || "";
-    const c = await createCustomer({ ...f, area: primaryArea, created_at: new Date().toISOString() });
-    // save cars
-    const savedCars = [];
-    for (const r of carRows) {
-      if (!r.brand && !r.model) continue;
-      const car = await createCar({ brand: r.brand, model: r.model, year: r.year, plate: r.plate, customer_id: c.id, created_at: new Date().toISOString() });
-      savedCars.push(car);
-    }
-    // save addresses
-    const savedAddrs = [];
-    for (const r of addrRows) {
-      if (!r.area) continue;
-      const a = await createAddress({ label: r.label, area: r.area, governorate: r.governorate || govFor(r.area), block: r.block, street: r.street, lane: r.lane, house: r.house, map_link: r.map_link || buildMapsLink({ ...r, governorate: r.governorate || govFor(r.area) }), customer_id: c.id, created_at: new Date().toISOString() });
-      savedAddrs.push(a);
-    }
-    onCreated(c, savedCars, savedAddrs);
-    setSaving(false);
-    onClose();
-  };
-
-  return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
-        <div className="modal-header">
-          <h3>New Customer</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
-        <div className="modal-body">
-          <div className="form-grid">
-            <div className="form-field"><label>Full Name *</label><input value={f.name} onChange={set("name")} placeholder="Ahmad Al-Salem" /></div>
-            <div className="form-field"><label>Mobile *</label><input value={f.mobile} onChange={set("mobile")} placeholder="99001234" /></div>
-            <div className="form-field form-full"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="VIP, fleet client…" /></div>
-            <div className="form-section-title">Vehicles</div>
-            <CarRowsEditor rows={carRows} setRows={setCarRows} />
-            <div className="form-section-title">Addresses</div>
-            <AddressRowsEditor rows={addrRows} setRows={setAddrRows} />
-          </div>
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Create Customer"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Status helpers for the new model ─────────────────────────────────────────
-const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
-
-// ─── Job Detail (with order actions) ─────────────────────────────────────────
-// ─── Threads: revisits & upsells linked to an original order ──────────────────
-function UpsellLeadCard({ lead, role, onConvert, onDismiss, showCustomer }) {
-  const [dismissing, setDismissing] = useState(false);
-  const [reason, setReason] = useState("Customer declined");
-  const age = leadAgeDays(lead);
-  const open = lead.status === "open";
-  const photos = Array.isArray(lead.photo_urls) ? lead.photo_urls : [];
-  return (
-    <div style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${open ? leadAgeColor(age) : "var(--border)"}`, borderRadius: 8, padding: "10px 12px", background: "var(--card)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <div style={{ fontWeight: 700, fontSize: 13 }}>
-          ⬆ {lead.service_type || "Service"}
-          {showCustomer && lead.customer_name ? <span style={{ fontWeight: 500, color: "var(--muted)" }}> · {lead.customer_name}{lead.customer_mobile ? ` · ${lead.customer_mobile}` : ""}</span> : null}
-        </div>
-        <div style={{ fontSize: 11.5, fontWeight: 700, color: open ? leadAgeColor(age) : "var(--muted)" }}>
-          {open ? (age === 0 ? "today" : `${age} day${age > 1 ? "s" : ""} old`) : lead.status === "converted" ? "✓ converted" : "✕ dismissed"}
-        </div>
-      </div>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>
-        Spotted by <strong style={{ color: "var(--text)" }}>{lead.truck || "—"}</strong>{lead.technician ? ` · ${lead.technician}` : ""} · {fmtDate(lead.created_at)}
-        {lead.car_label ? <> · 🚗 <strong style={{ color: "var(--text)" }}>{lead.car_label}</strong></> : null}
-      </div>
-      {lead.note && <div style={{ fontSize: 12.5, marginTop: 6 }}>{lead.note}</div>}
-      {photos.length > 0 && (
-        <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-          {photos.map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)" }} /></a>)}
-        </div>
-      )}
-      {lead.status === "dismissed" && lead.dismiss_reason && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>Reason: {lead.dismiss_reason}</div>}
-      {open && role === "sales" && (onConvert || onDismiss) && (
-        !dismissing ? (
-          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-            {onConvert && <button type="button" className="btn btn-primary btn-sm" onClick={() => onConvert(lead)}>✓ Convert to order</button>}
-            {onDismiss && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDismissing(true)}>✕ Dismiss</button>}
-          </div>
-        ) : (
-          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <select className="filter-select" value={reason} onChange={e => setReason(e.target.value)}>
-              {["Customer declined", "Not needed after check", "Too expensive for customer", "Customer will do elsewhere", "Duplicate", "Other"].map(r => <option key={r}>{r}</option>)}
-            </select>
-            <button type="button" className="btn btn-sm" style={{ background: "var(--danger)", color: "#fff" }} onClick={() => { onDismiss(lead, reason); setDismissing(false); }}>Confirm dismiss</button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDismissing(false)}>Back</button>
-          </div>
-        )
-      )}
-    </div>
-  );
-}
-
-function TechUpsellForm({ job, onCreate, autoOpen, onDone, onCancel }) {
-  const [open, setOpen] = useState(!!autoOpen);
-  const [svc, setSvc] = useState(SERVICE_NAMES[0]);
-  const [note, setNote] = useState("");
-  const [pics, setPics] = useState([]); // File[]
-  const [busy, setBusy] = useState(false);
-  // Distinct cars on this order (same pattern as mileage capture)
-  const jobCars = (() => {
-    const m = new Map();
-    (job.items || []).forEach(it => {
-      const key = it.car_id || it.car_label || "primary";
-      if (!m.has(key)) m.set(key, { key, car_id: it.car_id || (key === "primary" ? job.car_id : null), label: it.car_label || `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "Car" });
-    });
-    if (!m.size) m.set("primary", { key: "primary", car_id: job.car_id, label: `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "Car" });
-    return [...m.values()];
-  })();
-  const [carKey, setCarKey] = useState(jobCars[0].key);
-  const [uploading, setUploading] = useState(0);
-  // Photos upload the moment they're picked — no waiting at submit, × to remove
-  const addPics = async (e) => {
-    const files = Array.from(e.target.files || []).slice(0, Math.max(0, 3 - pics.length)); e.target.value = "";
-    for (const f of files) {
-      setUploading(u => u + 1);
-      try { const u = await uploadJobPhoto(f, `upsell-${job.id}`); setPics(p => p.length < 3 ? [...p, u] : p); }
-      catch { alert("⚠ Photo upload failed — please try again."); }
-      setUploading(u => u - 1);
-    }
-  };
-  const submit = async () => {
-    setBusy(true);
-    const car = jobCars.find(c => c.key === carKey) || jobCars[0];
-    const ok = await onCreate({
-      job_id: job.id, truck: job.assigned_truck || null, technician: job.assigned_technician || null,
-      customer_name: job.customer_name || "", customer_mobile: job.customer_mobile || "",
-      car_id: car.car_id || null, car_label: car.label || "",
-      service_type: svc, note: note.trim(), photo_urls: pics, status: "open",
-    });
-    setBusy(false);
-    if (ok) { setOpen(false); setNote(""); setPics([]); if (onDone) onDone(); }
-  };
-  const cancel = () => { if (onCancel) onCancel(); else setOpen(false); };
-  if (!open) return <button type="button" className="btn btn-primary btn-sm" onClick={() => setOpen(true)}>⬆ Upsell</button>;
-  return (
-    <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: 10, marginTop: 8, width: "100%" }}>
-      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>⬆ New upsell — {job.assigned_truck}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {jobCars.length > 1 ? (
-          <select className="filter-select" value={carKey} onChange={e => setCarKey(e.target.value)}>
-            {jobCars.map(c => <option key={c.key} value={c.key}>🚗 {c.label}</option>)}
-          </select>
-        ) : (
-          <div style={{ fontSize: 12, color: "var(--muted)" }}>🚗 {jobCars[0].label}</div>
-        )}
-        <select className="filter-select" value={svc} onChange={e => setSvc(e.target.value)}>
-          {SERVICE_NAMES.map(n => <option key={n}>{n}</option>)}
-        </select>
-        <textarea className="filter-input" rows={2} placeholder="What did you notice? (e.g., front pads at 20%, tires cracking)" value={note} onChange={e => setNote(e.target.value)} style={{ resize: "vertical" }} />
-        {(pics.length > 0 || uploading > 0) && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {pics.map((u, i) => (
-              <span key={i} style={{ position: "relative", display: "inline-block" }}>
-                <a href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ height: 52, borderRadius: 6, border: "1px solid var(--border)", objectFit: "cover" }} /></a>
-                <button type="button" onClick={(e) => { e.preventDefault(); setPics(p => p.filter(x => x !== u)); }}
-                  style={{ position: "absolute", top: -6, right: -6, width: 17, height: 17, borderRadius: "50%", border: "none", background: "var(--danger)", color: "#fff", fontSize: 10, fontWeight: 800, lineHeight: 1, cursor: "pointer", padding: 0 }}>×</button>
-              </span>
-            ))}
-            {uploading > 0 && <span style={{ fontSize: 11.5, color: "var(--muted)" }}>⏳ uploading{uploading > 1 ? ` ×${uploading}` : ""}…</span>}
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer", opacity: pics.length >= 3 ? .5 : 1 }}>📷 Add photo<input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={addPics} disabled={pics.length >= 3} /></label>
-          {pics.length >= 3 && <span style={{ fontSize: 10.5, color: "var(--muted)" }}>max 3 photos</span>}
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button type="button" className="btn btn-primary btn-sm" disabled={busy || uploading > 0} onClick={submit}>{busy ? "Saving…" : uploading > 0 ? "Uploading photos…" : "Send to sales"}</button>
-          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={cancel}>Cancel</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Upsells page: the technician-generated funnel, with its own simple report ──
-function UpsellsView({ upsellLeads, jobs, role, onConvert, onDismiss, onSelectJob }) {
-  const [filter, setFilter] = useState("open"); // open | converted | dismissed | all
-  const [truckF, setTruckF] = useState("all");
-  const [q, setQ] = useState("");
-
-  const leads = upsellLeads || [];
-  const jobOf = (l) => l.converted_job_id ? jobs.find(j => j.id === l.converted_job_id) : null;
-
-  // ── KPIs ──
-  const open = leads.filter(l => l.status === "open");
-  const converted = leads.filter(l => l.status === "converted");
-  const dismissed = leads.filter(l => l.status === "dismissed");
-  const decided = converted.length + dismissed.length;
-  const convRate = decided ? Math.round((converted.length / decided) * 100) : null;
-  const convJobs = converted.map(jobOf).filter(Boolean);
-  const convKD = convJobs.reduce((s, j) => s + (Number(j.total) || 0), 0);
-  const completedKD = convJobs.filter(j => jobSuccessful(j)).reduce((s, j) => s + (Number(j.total) || 0), 0);
-
-  // ── Per truck (the incentive view: credit stays with the spotting truck) ──
-  const trucks = {};
-  leads.forEach(l => {
-    const t = l.truck || "—";
-    trucks[t] = trucks[t] || { t, spotted: 0, open: 0, converted: 0, completed: 0, kd: 0 };
-    trucks[t].spotted++;
-    if (l.status === "open") trucks[t].open++;
-    if (l.status === "converted") {
-      trucks[t].converted++;
-      const cj = jobOf(l);
-      if (cj && jobSuccessful(cj)) { trucks[t].completed++; trucks[t].kd += Number(cj.total) || 0; }
-    }
-  });
-  const truckRows = Object.values(trucks).sort((a, b) => b.kd - a.kd || b.converted - a.converted);
-
-  // ── List ──
-  const ql = q.trim().toLowerCase();
-  const shown = leads
-    .filter(l => filter === "all" ? true : l.status === filter)
-    .filter(l => truckF === "all" ? true : l.truck === truckF)
-    .filter(l => !ql || [l.customer_name, l.customer_mobile, l.service_type, l.car_label, l.truck, l.technician].some(v => String(v || "").toLowerCase().includes(ql)))
-    .sort((a, b) => filter === "open" ? new Date(a.created_at) - new Date(b.created_at) : new Date(b.created_at) - new Date(a.created_at));
-
-  const chip = (label, val, sub, color) => (
-    <div style={{ flex: "1 1 120px", minWidth: 120, border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--card)" }}>
-      <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 800, color: color || "var(--text)", marginTop: 2 }}>{val}</div>
-      {sub && <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 1 }}>{sub}</div>}
-    </div>
-  );
-  const th = { textAlign: "left", fontSize: 10.5, fontWeight: 800, color: "var(--muted)", padding: "6px 8px", textTransform: "uppercase" };
-  const td = { fontSize: 12.5, padding: "7px 8px", borderTop: "1px solid var(--border)" };
-
-  return (
-    <>
-      <div className="page-title">Upsells</div>
-      <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>Opportunities spotted by the trucks. Credit always stays with the truck that spotted it — whoever completes the order.</div>
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-        {chip("Open", open.length, open.length ? "oldest first below" : "all handled 🎉", open.some(l => leadAgeDays(l) >= 7) ? "#DC2626" : open.some(l => leadAgeDays(l) >= 3) ? "#B45309" : undefined)}
-        {chip("Converted", converted.length, decided ? `${convRate}% of decided` : null, "#15803D")}
-        {chip("Dismissed", dismissed.length, null)}
-        {chip("Converted value", `KWD ${convKD.toFixed(0)}`, "all converted orders")}
-        {chip("Completed value", `KWD ${completedKD.toFixed(0)}`, "counts for incentives", "#15803D")}
-      </div>
-
-      {truckRows.length > 0 && (
-        <div className="card" style={{ marginBottom: 14 }}>
-          <div className="card-header"><h3>Per truck</h3><span style={{ fontSize: 11.5, color: "var(--muted)" }}>completed = converted order finished (official incentive count)</span></div>
-          <div className="card-body" style={{ padding: 0, overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><th style={th}>Truck</th><th style={th}>Spotted</th><th style={th}>Open</th><th style={th}>Converted</th><th style={th}>Completed</th><th style={{ ...th, textAlign: "right" }}>KD (completed)</th></tr></thead>
-              <tbody>
-                {truckRows.map(r => (
-                  <tr key={r.t}>
-                    <td style={{ ...td, fontWeight: 700 }}>{r.t}</td>
-                    <td style={td}>{r.spotted}</td>
-                    <td style={{ ...td, color: r.open ? "#B45309" : "var(--muted)", fontWeight: r.open ? 700 : 400 }}>{r.open}</td>
-                    <td style={td}>{r.converted}</td>
-                    <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{r.completed}</td>
-                    <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{r.kd.toFixed(0)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
-        {["open", "converted", "dismissed", "all"].map(f => (
-          <button key={f} type="button" className={`btn btn-sm ${filter === f ? "btn-primary" : "btn-ghost"}`} onClick={() => setFilter(f)} style={{ textTransform: "capitalize" }}>
-            {f}{f === "open" && open.length ? ` (${open.length})` : ""}
-          </button>
-        ))}
-        <select className="filter-select" value={truckF} onChange={e => setTruckF(e.target.value)}>
-          <option value="all">All trucks</option>
-          {[...new Set(leads.map(l => l.truck).filter(Boolean))].sort().map(t => <option key={t}>{t}</option>)}
-        </select>
-        <input className="filter-input" placeholder="Search name, mobile, service…" value={q} onChange={e => setQ(e.target.value)} style={{ flex: "1 1 180px" }} />
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {shown.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "18px 4px" }}>No upsells here{filter !== "all" ? ` — try another filter` : " yet. They'll appear when technicians spot opportunities on completed jobs."}</div>}
-        {shown.map(l => {
-          const cj = jobOf(l);
-          return (
-            <div key={l.id}>
-              <UpsellLeadCard lead={l} role={role} showCustomer onConvert={onConvert} onDismiss={onDismiss} />
-              {cj && (
-                <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "4px 0 0 12px", fontSize: 12 }}>
-                  <span style={{ color: "var(--muted)" }}>↳ order:</span>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSelectJob && onSelectJob(cj)}>
-                    {fmtDate(cj.scheduled_at)} · {cj.assigned_truck} · KWD {Number(cj.total || 0).toFixed(3)}
-                  </button>
-                  <StatusPill status={cj.status} />
-                  {jobSuccessful(cj) && <span style={{ fontSize: 11, fontWeight: 700, color: "#15803D" }}>✓ counts for {l.truck}</span>}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </>
-  );
-}
-
-function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, onDismissLead }) {
-  const parent = j.parent_job_id ? (jobs || []).find(x => x.id === j.parent_job_id) : null;
-  const children = (jobs || []).filter(x => x.parent_job_id === j.id);
-  const leads = (upsellLeads || []).filter(l => l.job_id === j.id);
-  if (!parent && !j.parent_job_id && children.length === 0 && leads.length === 0) return null;
-  const linkRow = (job, badgeKey) => {
-    const b = LINK_BADGE[badgeKey] || { t: "🔗 Linked", c: "var(--muted)", bg: "var(--bg)" };
-    return (
-      <div key={job.id} onClick={() => onOpenJob && onOpenJob(job)} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, cursor: onOpenJob ? "pointer" : "default", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <span style={{ fontSize: 10.5, fontWeight: 800, color: b.c, background: b.bg, border: `1px solid ${b.c}33`, borderRadius: 5, padding: "2px 7px" }}>{b.t}</span>
-          <span style={{ fontSize: 12.5, fontWeight: 600 }}>{job.service_type}</span>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(job.scheduled_at)} · {job.assigned_truck}{badgeKey === "upsell" && job.upsell_truck ? ` · credit ${job.upsell_truck}` : ""}</span>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--accent)" }}>KWD {Number(job.total || 0).toFixed(3)}</span>
-          <StatusPill status={job.status} />
-        </div>
-      </div>
-    );
-  };
-  return (
-    <div className="card">
-      <div className="card-body" style={{ padding: "12px 16px" }}>
-        <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>🧵 Thread</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {j.parent_job_id && (parent
-            ? (
-              <div onClick={() => onOpenJob && onOpenJob(parent)} style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 8, cursor: onOpenJob ? "pointer" : "default", background: "var(--bg)", flexWrap: "wrap" }}>
-                <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--muted)" }}>ORIGINAL</span>
-                <span style={{ fontSize: 12.5, fontWeight: 600 }}>{parent.service_type}</span>
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtDate(parent.scheduled_at)} · {parent.assigned_truck}{parent.invoice_no ? ` · ${parent.invoice_no}` : ""}</span>
-                {j.link_type && LINK_BADGE[j.link_type] && <span style={{ fontSize: 11, color: LINK_BADGE[j.link_type].c, fontWeight: 700, marginLeft: "auto" }}>this order is a {LINK_BADGE[j.link_type].t.replace(/^\S+ /, "")}</span>}
-              </div>
-            )
-            : <div style={{ fontSize: 12, color: "var(--muted)" }}>🔗 Linked to an original order (not loaded)</div>
-          )}
-          {children.map(ch => linkRow(ch, ch.link_type || "revisit"))}
-          {leads.map(l => <UpsellLeadCard key={l.id} lead={l} role={role} onConvert={onConvertLead} onDismiss={onDismissLead} />)}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
-function IncentiveReport({ jobs, enabled, onToggle }) {
-  const [mo, setMo] = useState(0); // 0 = this month, -1 = last…
-  const [truckFilter, setTruckFilter] = useState("all");
-  const ref = new Date();
-  ref.setMonth(ref.getMonth() + mo);
-  const { target, rows: allRows, trucksActive } = computeIncentives(jobs, ref);
-  const rows = truckFilter === "all" ? allRows : allRows.filter(r => r.truck === truckFilter);
-  const monthName = ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-  const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
-  return (
-    <div className="card" style={{ marginTop: 14 }}>
-      <div className="card-body" style={{ padding: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontSize: 15, fontWeight: 800 }}>🎯 Technician Incentive — {monthName}</div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setMo(m => m - 1)}>‹</button>
-            <button className="btn btn-ghost btn-sm" disabled={mo >= 0} onClick={() => setMo(m => m + 1)}>›</button>
-            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: enabled ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
-              <input type="checkbox" checked={enabled} onChange={e => onToggle(e.target.checked)} />
-              {enabled ? "LIVE — technicians see their dashboard" : "OFF — test mode (only you see this)"}
-            </label>
-          </div>
-        </div>
-        <div style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 10px" }}>
-          Target {target}/truck ({trucksActive} truck{trucksActive === 1 ? "" : "s"} active) · 0.250/order · upsell ×4 · revisited orders void · pot unlocks at target · KWD 5 bonuses per person
-        </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-          {["all", ...allRows.map(r => r.truck)].map(t => (
-            <button key={t} className="btn btn-sm" onClick={() => setTruckFilter(t)}
-              style={{ fontWeight: 700, background: truckFilter === t ? "var(--ink)" : "var(--card)", color: truckFilter === t ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>
-              {t === "all" ? "All trucks" : t}
-            </button>
-          ))}
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table className="rep-table" style={{ width: "100%", fontSize: 12.5 }}>
-            <thead><tr>
-              <th style={{ textAlign: "left" }}>Truck</th><th>Orders</th><th>vs target</th><th>Upsells ×4</th><th>Voided</th>
-              <th>★ Review</th><th>Revisits caused</th><th>Profit</th><th>Bonuses</th><th style={{ textAlign: "right" }}>Payout / person</th>
-            </tr></thead>
-            <tbody>
-              {rows.map(r => {
-                const badges = [r.bonusOrders && "🥇 orders", r.bonusReview && "⭐ review", r.bonusProfit && "💰 profit", r.bonusZeroRevisit && "✨ zero-revisit"].filter(Boolean);
-                const bonusKD = badges.length * INCENT.bonusKD;
-                const payout = (r.unlocked ? r.pot : 0) + bonusKD;
-                return (
-                  <tr key={r.truck}>
-                    <td style={{ fontWeight: 800 }}>{r.truck}</td>
-                    <td style={{ textAlign: "center" }}>{r.orders}</td>
-                    <td style={{ textAlign: "center", fontWeight: 700, color: r.unlocked ? "var(--success)" : "#B45309" }}>{Math.round((r.orders / target) * 100)}%{r.unlocked ? " ✓" : ""}</td>
-                    <td style={{ textAlign: "center" }}>{r.ups}</td>
-                    <td style={{ textAlign: "center", color: r.voided ? "var(--danger)" : "var(--muted)" }}>{r.voided}</td>
-                    <td style={{ textAlign: "center" }}>{r.avgReview ? `${r.avgReview} (${r.nReviews})` : "—"}</td>
-                    <td style={{ textAlign: "center", color: r.revisitsCaused ? "var(--danger)" : "var(--success)" }}>{r.revisitsCaused}</td>
-                    <td style={{ textAlign: "center" }}>{kd(r.profit)}</td>
-                    <td style={{ fontSize: 11.5 }}>{badges.join(" · ") || "—"}</td>
-                    <td style={{ textAlign: "right", fontWeight: 800 }}>{kd(payout)}<div style={{ fontSize: 10.5, fontWeight: 500, color: "var(--muted)" }}>{r.unlocked ? "" : `pot ${kd(r.pot)} locked · `}bonuses {bonusKD}</div></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Payout = unlocked pot + KWD 5 per bonus (per person). Bonus winners are provisional until month end.</div>
-      </div>
-    </div>
-  );
-}
-
-// ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
-function TechTargetView({ jobs, truck, owner }) {
-  const trucksAll = activeTrucks();
-  const [viewTruck, setViewTruck] = useState(truck || trucksAll[0] || "");
-  const now = new Date();
-  const { target, rows } = computeIncentives(jobs, now);
-  const activeTruckKey = owner ? viewTruck : truck;
-  const me = rows.find(r => r.truck === activeTruckKey) || { orders: 0, base: 0, ups: 0, voided: 0, pot: 0, unlocked: false, avgReview: null, nReviews: 0, revisitsCaused: 0, profit: 0 };
-  const day = now.getDate();
-  const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const pace = day > 0 ? Math.round((me.orders / day) * daysIn) : 0;
-  const pct = Math.min(100, Math.round((me.orders / target) * 100));
-  const monthName = now.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-  const bonuses = [
-    { label: "Most orders", won: me.bonusOrders, hint: `${me.orders} orders` },
-    { label: "Best reviews", won: me.bonusReview, hint: me.avgReview ? `★ ${me.avgReview} (${me.nReviews})` : "no reviews yet" },
-    { label: "Highest profit", won: me.bonusProfit, hint: `KWD ${(me.profit || 0).toFixed(0)}` },
-    { label: "Zero revisits", won: me.bonusZeroRevisit, hint: me.revisitsCaused === 0 ? "clean so far ✨" : `${me.revisitsCaused} caused` },
-  ];
-  return (
-    <div style={{ maxWidth: 560, margin: "0 auto" }}>
-      {owner && (
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-          {trucksAll.map(t => (
-            <button key={t} className="btn btn-sm" onClick={() => setViewTruck(t)}
-              style={{ fontWeight: 700, background: viewTruck === t ? "var(--ink)" : "var(--card)", color: viewTruck === t ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>
-              {t}
-            </button>
-          ))}
-          <span style={{ fontSize: 11.5, color: "var(--muted)", alignSelf: "center" }}>viewing as this truck's technicians</span>
-        </div>
-      )}
-      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
-          <div style={{ fontSize: 17, fontWeight: 800 }}>🎯 {activeTruckKey} — {monthName}</div>
-          <div style={{ fontSize: 12, color: "var(--muted)" }}>target adjusts with active trucks</div>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 12 }}>
-          <div style={{ fontSize: 34, fontWeight: 800 }}>{me.orders}<span style={{ fontSize: 15, color: "var(--muted)", fontWeight: 600 }}> / {target} orders</span></div>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: pace >= target ? "var(--success)" : "#B45309" }}>pace: ~{pace} by month end</div>
-        </div>
-        <div style={{ background: "var(--border)", borderRadius: 99, height: 14, marginTop: 8, overflow: "hidden" }}>
-          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 99, background: me.unlocked ? "var(--success)" : "linear-gradient(90deg,#F59E0B,#FBBF24)", transition: "width .4s" }} />
-        </div>
-        <div style={{ marginTop: 14, background: me.unlocked ? "#E8F4EC" : "#FFFBEB", border: `1.5px solid ${me.unlocked ? "#BFDFC9" : "#FCD34D"}`, borderRadius: 12, padding: "12px 14px" }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: me.unlocked ? "#1D7A45" : "#92400E" }}>
-            {me.unlocked ? "✅ INCENTIVE UNLOCKED — every order keeps paying" : `🔒 ACCRUED — unlocks at ${target} orders (${target - me.orders} to go)`}
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4, color: me.unlocked ? "#1D7A45" : "#92400E" }}>
-            KWD {(me.pot || 0).toFixed(3)} <span style={{ fontSize: 13, fontWeight: 600 }}>per technician</span>
-          </div>
-          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
-            {me.base}× orders @ 0.250 · {me.ups}× upsell orders @ 1.000{me.voided ? ` · ${me.voided} voided by revisit` : ""}
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>🏆 KWD 5 bonuses — live standings</div>
-        {bonuses.map(b => (
-          <div key={b.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>{b.won ? "🥇" : "▫️"} {b.label}</div>
-            <div style={{ fontSize: 12.5, color: b.won ? "var(--success)" : "var(--muted)", fontWeight: b.won ? 800 : 500 }}>{b.won ? "LEADING — " : ""}{b.hint}</div>
-          </div>
-        ))}
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Winners are decided at month end. Upsells pay ×4 — spot them, report them, win.</div>
-      </div>
-
-      <div className="card" style={{ padding: 16 }}>
-        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Trucks this month</div>
-        {rows.map(r => (
-          <div key={r.truck} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 13, fontWeight: r.truck === activeTruckKey ? 800 : 500 }}>
-            <span>{r.truck === activeTruckKey ? "→ " : ""}{r.truck}</span>
-            <span>{r.orders} orders · {r.ups} upsells{r.avgReview ? ` · ★${r.avgReview}` : ""}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onRevisit, jobs, upsellLeads, onOpenJob, onCreateUpsell, onConvertLead, onDismissLead, role }) {
-  const [j, setJ] = useState(job);
-  useEffect(() => { setJ(job); }, [job]); // follow live updates (edits, realtime sync)
-  const [showCancel, setShowCancel] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
-
-  const patchJob = async (patch) => {
-    const next = { ...j, ...patch };
-    setJ(next);
-    await updateJob(j.id, patch);
-    onUpdate(next);
-  };
-
-  const confirmCancel = () => {
-    const patch = { status: "cancelled", cancel_reason: cancelReason.trim() || "—", cancelled_at: new Date().toISOString() };
-    const next = { ...j, ...patch };
-    setJ(next);
-    onUpdate(next);           // reflect in list immediately
-    setShowCancel(false);
-    setCancelReason("");
-    updateJob(j.id, patch);   // persist in background (non-blocking)
-  };
-
-  const isPaid = j.payment_status === "paid";
-  const isCancelled = j.status === "cancelled";
-  const [verOpen, setVerOpen] = useState(false);
-  const checks = deriveChecks(j);
-  const passed = checks.filter(Boolean).length;
-  const mismEntries = Object.values(j.tech_mismatch || {});
-  const c4Override = checks[3] && mismEntries.some(m => m.resolution === "approved" || m.resolution === "dont_fit");
-
-  const misBad = (id) => { const m = (j.tech_mismatch || {})[id]; return m && m.resolution !== "approved"; };
-  // group services by their linked car for the Service Details section
-  const svcCarLabel = (s) => {
-    const it = (j.items || []).find(x => x.service_id === s.id && x.car_label);
-    return (it && it.car_label) || `${j.car_brand || ""} ${j.car_model || ""}`.trim() || "—";
-  };
-  const svcGroups = {};
-  (j.services || []).forEach(s => { const car = svcCarLabel(s); (svcGroups[car] = svcGroups[car] || []).push(s); });
-
-  const Row = ({ icon, children, right }) => (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 13 }}>
-      <span style={{ color: "var(--muted)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{icon} {children}</span>
-      {right}
-    </div>
-  );
-
-  return (
-    <div className="job-detail">
-      <button className="detail-back" onClick={onBack}>← Back</button>
-
-      {isCancelled && (
-        <div style={{ background: "#FEE2E2", border: "1px solid #FCA5A5", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#991B1B" }}>
-          ✕ This order is <strong>cancelled</strong>{j.cancel_reason && j.cancel_reason !== "—" ? ` — ${j.cancel_reason}` : ""}.
-        </div>
-      )}
-      {j.partial_completion && j.status !== "incomplete" && (
-        <div style={{ background: "#FFFBEB", border: "1px solid #F59E0B", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#92400E" }}>
-          ◐ <strong>Partially completed</strong> — not fitted: {j.unfitted_items || "see verification"}. Schedule a follow-up job for the remaining items.
-        </div>
-      )}
-      {j.status === "incomplete" && (
-        <div style={{ background: "#FFFBEB", border: "1px solid #F59E0B", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#92400E" }}>
-          ⚠ This order is <strong>incomplete</strong> — {j.incomplete_reason || "stopped in the field"}. Office confirmed stop{j.incomplete_at ? ` · ${fmtDate(j.incomplete_at)} ${fmtTime(j.incomplete_at)}` : ""}.
-        </div>
-      )}
-
-      {/* ── Customer info — one calm card ── */}
-      <div className="detail-hero">
-        <div className="detail-hero-top" style={{ marginBottom: 10 }}>
-          <div>
-            <h2 style={{ marginBottom: 2 }}>{j.customer_name}</h2>
-            <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
-              {fmtDate(j.scheduled_at)} · <strong style={{ color: "var(--text)" }}>{fmtTime(j.scheduled_at)}</strong>{j.duration ? ` · ${j.duration}h` : ""}
-              {" · "}<span style={{ color: truckColor(j.assigned_truck).text, fontWeight: 700 }}>{j.assigned_truck}</span>
-              {j.is_overtime ? <span style={{ fontSize: 10, background: "#F59E0B", color: "#fff", padding: "1px 6px", borderRadius: 4, marginLeft: 6, fontWeight: 700 }}>⏱ OT</span> : ""}
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            <StatusPill status={j.status} />
-            <div style={{ fontFamily: "var(--font-head)", fontSize: 20, fontWeight: 700, color: "var(--accent)", marginLeft: 4 }}>KWD {Number(j.total || 0).toFixed(3)}</div>
-          </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <Row icon="📞" right={<a href={`tel:${j.customer_mobile}`} className="btn btn-ghost btn-sm" style={{ textDecoration: "none", flexShrink: 0 }}>Call</a>}>
-            <a href={`tel:${j.customer_mobile}`} style={{ color: "var(--accent)", fontWeight: 600 }}>{j.customer_mobile}</a>
-            <span style={{ marginLeft: 8, color: "var(--muted)", fontSize: 12 }}>lead: {j.lead_from || "—"}</span>
-          </Row>
-          <Row icon="📍" right={j.map_link ? <a href={j.map_link} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm" style={{ textDecoration: "none", flexShrink: 0 }}>🧭 Navigate</a> : null}>
-            {j.area}{(j.governorate || govFor(j.area)) ? ` (${j.governorate || govFor(j.area)})` : ""}, Blk {j.block}{j.street ? `, St ${j.street}` : ""}{j.lane ? `, Ln ${j.lane}` : ""}{j.house ? `, ${j.house}` : ""}
-          </Row>
-          {j.notes && <div style={{ fontSize: 12.5, color: "#B45309", fontWeight: 500 }}>⚠ {j.notes}</div>}
-        </div>
-        {role === "sales" && !isCancelled && (
-          <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(j)}>✏ Edit</button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onReschedule(j)}>↻ Reschedule</button>
-            {jobSuccessful(j) && onRevisit && <button type="button" className="btn btn-ghost btn-sm" style={{ color: "#1D4ED8" }} onClick={() => onRevisit(j)}>🔁 Revisit / Follow-up</button>}
-            <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", marginLeft: "auto" }} onClick={() => setShowCancel(true)}>✕ Cancel</button>
-          </div>
-        )}
-        {role === "sales" && isCancelled && (
-          <div style={{ display: "flex", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)", alignItems: "center" }}>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(j)}>✏ Edit &amp; Restore</button>
-            {onReorder && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onReorder(j)}>↻ Reorder</button>}
-            <span style={{ fontSize: 11.5, color: "var(--muted)", marginLeft: "auto" }}>Restore this order, or start a fresh one from it</span>
-          </div>
-        )}
-      </div>
-
-      {/* ── Thread: original / revisits / upsells linked to this order ── */}
-      <ThreadSection j={j} jobs={jobs} upsellLeads={upsellLeads} role={role} onOpenJob={onOpenJob} onConvertLead={onConvertLead} onDismissLead={onDismissLead} />
-
-      {/* ── Technician: spot an upsell on a completed job ── */}
-      {role === "technician" && jobSuccessful(j) && !isCancelled && onCreateUpsell && (
-        <div className="card">
-          <div className="card-body" style={{ padding: "12px 16px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Spotted something the car needs?</div>
-                <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>Send it to sales — if it converts, the credit counts for {j.assigned_truck}.</div>
-              </div>
-              <TechUpsellForm job={j} onCreate={onCreateUpsell} />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Order actions — one slim card ── */}
-      {(role === "sales" || role === "purchaser") && (
-        <div className="card">
-          <div className="card-body" style={{ padding: "12px 16px" }}>
-            <OrderActions job={j} onAction={(patch) => patchJob(patch)} />
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10, fontSize: 12 }}>
-              <PaymentLinkEditor value={j.payment_link} onSave={(link) => patchJob({ payment_link: link })} compact />
-              <span style={{ flex: "1 1 100%" }}><AccountingEditor xeroRef={j.xero_ref} invoiceNo={j.invoice_no} onSave={(patch) => patchJob(patch)} /></span>
-            </div>
-            <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--muted)" }}>
-              Payment: <span style={{ color: isPaid ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{j.payment_status}</span>
-              {" · "}Parts: {j.parts_status || "pending"} · Truck: {j.truck_status || "scheduled"}
-              {jobDurationMin(j) != null && <>{" · "}⏱ Job time: <strong>{fmtDuration(jobDurationMin(j))}</strong></>}
-              {Number(j.service_mileage) > 0 && <>{" · "}🧭 Mileage: <strong>{Number(j.service_mileage).toLocaleString()} {j.service_mileage_unit || "KM"}</strong></>}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ⭐ customer review — sales asks after completion; feeds the review bonus */}
-      {jobSuccessful(j) && !["technician", "distributor"].includes(role) && (
-        <div className="card">
-          <div className="card-body" style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-            <span style={{ fontSize: 12.5, fontWeight: 700 }}>⭐ Customer review</span>
-            <span style={{ display: "flex", alignItems: "center" }}>
-              {[1, 2, 3, 4, 5].map(n => (
-                <span key={n} onClick={() => onUpdate(job.id, { review_rating: Number(j.review_rating) === n ? null : n })}
-                  style={{ cursor: "pointer", fontSize: 23, lineHeight: 1, color: (Number(j.review_rating) || 0) >= n ? "#F59E0B" : "var(--border)", padding: "0 2px" }}>★</span>
-              ))}
-              {Number(j.review_rating) > 0
-                ? <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginLeft: 6 }}>{j.review_rating}/5</span>
-                : <span style={{ fontSize: 11.5, color: "var(--muted)", marginLeft: 6 }}>ask the customer</span>}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* ── Verification — segmented progress bar, tap for detail ── */}
-      <div className="card">
-        <div className="card-body" style={{ padding: "12px 16px", cursor: "pointer" }} onClick={() => setVerOpen(o => !o)}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <span style={{ fontSize: 12.5, fontWeight: 700 }}>Verification</span>
-            <span style={{ fontSize: 12, fontWeight: 700, color: passed === 4 ? "var(--success)" : "var(--muted)" }}>{passed}/4 {passed === 4 ? "✓" : ""} <span style={{ fontWeight: 500, color: "var(--muted)" }}>{verOpen ? "▲" : "▼"}</span></span>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
-            {checks.map((done, i) => (
-              <div key={i} title={CHECK_LABELS[i]} style={{ height: 8, borderRadius: 5, background: done ? (i === 3 && c4Override ? "#D97706" : "var(--success)") : "var(--border)", transition: "background .2s" }} />
-            ))}
-          </div>
-          {verOpen && (
-            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 5 }}>
-              {CHECK_LABELS.map((label, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
-                  <span style={{ width: 16, height: 16, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, background: checks[i] ? "var(--success)" : "var(--bg)", color: checks[i] ? "#fff" : "var(--muted)", border: checks[i] ? "none" : "1px solid var(--border)", flexShrink: 0 }}>{checks[i] ? "✓" : i + 1}</span>
-                  <span style={{ color: checks[i] ? "var(--text)" : "var(--muted)", flex: 1 }}>{label}</span>
-                  {checks[i] && (j.ver_times || {})[`c${i + 1}`] && (
-                    <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{fmtDate((j.ver_times)[`c${i + 1}`])} {fmtTime((j.ver_times)[`c${i + 1}`])}</span>
-                  )}
-                </div>
-              ))}
-              {mismEntries.length > 0 && (
-                <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
-                  {mismEntries.map((m, i) => (
-                    <div key={i} style={{ fontSize: 11.5, color: m.resolution === "approved" ? "#92400E" : "#991B1B", fontWeight: 600 }}>
-                      {m.resolution === "approved" ? "✓ Office-approved despite mismatch" : m.resolution === "dont_fit" ? "⛔ Office confirmed — not fitted" : "⚠ Mismatch reported"} — {m.reason}{m.at ? ` · ${fmtDate(m.at)} ${fmtTime(m.at)}` : ""}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div style={{ fontSize: 11, color: "var(--muted)" }}>Auto-filled as each party verifies. Not manually editable.</div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Service details — Car → services → items ── */}
-      <div className="card">
-        <div className="card-header"><h3>Service Details</h3></div>
-        <div className="card-body" style={{ padding: "12px 16px" }}>
-          {Object.keys(svcGroups).length ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {Object.entries(svcGroups).map(([car, svcs]) => (
-                <div key={car}>
-                  <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>🚗 {car}</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingLeft: 12, borderLeft: "2px solid var(--border)" }}>
-                    {svcs.map(s => {
-                      const t = serviceTotals(s);
-                      const isTire = SERVICE_CATALOG[s.service_type]?.kind === "tire";
-                      const variantStr = s.variant && Object.values(s.variant).filter(Boolean).join(" / ");
-                      return (
-                        <div key={s.id} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px" }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
-                            <span style={{ fontSize: 13, fontWeight: 700 }}>
-                              {s.service_type}{variantStr ? <span style={{ color: "var(--muted)", fontWeight: 500 }}> · {variantStr}</span> : ""}
-                            </span>
-                            <span style={{ fontFamily: "var(--font-head)", fontWeight: 700, color: "var(--accent)", whiteSpace: "nowrap" }}>KWD {t.total.toFixed(3)}</span>
-                          </div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12 }}>
-                            {isTire ? (<>
-                              {s.tire_id && (
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span style={misBad(s.staggered ? s.id + "-F" : s.id) ? { color: "#DC2626", fontWeight: 700 } : undefined}>{misBad(s.staggered ? s.id + "-F" : s.id) ? "⚠ " : ""}<span style={{ color: misBad(s.staggered ? s.id + "-F" : s.id) ? "#DC2626" : "var(--accent)", fontWeight: 700 }}>{s.qty}×</span> {s.brand} {s.pattern}{s.staggered ? " (front)" : ""} <span style={{ color: "var(--muted)" }}>· {itemSpec(s)}</span><CollectedChip ok={itemOK(j, s.staggered ? s.id + "-F" : s.id)} /></span>
-                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.qty) || 0) * (Number(s.unit_price) || 0)).toFixed(3)}</span></span>
-                                </div>
-                              )}
-                              {s.staggered && s.rear_tire_id && (
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span style={misBad(s.id + "-R") ? { color: "#DC2626", fontWeight: 700 } : undefined}>{misBad(s.id + "-R") ? "⚠ " : ""}<span style={{ color: misBad(s.id + "-R") ? "#DC2626" : "var(--accent)", fontWeight: 700 }}>{s.rear_qty}×</span> {s.rear_brand} {s.rear_pattern} (rear) <span style={{ color: "var(--muted)" }}>· {itemSpec({ size: s.rear_size, load_index: s.rear_load_index, speed_rating: s.rear_speed_rating, year: s.rear_year, country: s.rear_country, oem: s.rear_oem, tire_note: s.rear_tire_note })}</span><CollectedChip ok={itemOK(j, s.id + "-R")} /></span>
-                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(s.rear_unit_price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(s.rear_qty) || 0) * (Number(s.rear_unit_price) || 0)).toFixed(3)}</span></span>
-                                </div>
-                              )}
-                              {!s.tire_id && !s.rear_tire_id && <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — tires with customer{s.description ? ` · ${s.description}` : ""}</div>}
-                            </>) : (
-                              (s.parts || []).filter(p => p.name || Number(p.price) > 0).length ? (s.parts || []).filter(p => p.name || Number(p.price) > 0).map(p => (
-                                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                  <span style={misBad(p.id) ? { color: "#DC2626", fontWeight: 700 } : undefined}>{misBad(p.id) ? "⚠ " : ""}<span style={{ color: misBad(p.id) ? "#DC2626" : "var(--accent)", fontWeight: 700 }}>{p.qty}×</span> {p.name || "—"}{p.supplier ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "1px 6px", marginLeft: 6 }}>{p.supplier}</span> : ""}<CollectedChip ok={itemOK(j, p.id)} /></span>
-                                  <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>@ {Number(p.price).toFixed(3)} <span style={{ color: "var(--text)", fontWeight: 600 }}>= {((Number(p.qty) || 1) * (Number(p.price) || 0)).toFixed(3)}</span></span>
-                                </div>
-                              )) : <div style={{ color: "#1E40AF", fontWeight: 600 }}>🔧 Labor only — parts with customer{s.description ? ` · ${s.description}` : ""}</div>
-                            )}
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, color: "var(--muted)", borderTop: "1px dashed var(--border)", paddingTop: 3, marginTop: 2 }}>
-                              <span>Labor{s.labor_disc && Number(s.labor_disc.value) ? ` (disc ${s.labor_disc.type === "pct" ? s.labor_disc.value + "%" : "KD " + s.labor_disc.value})` : ""}{s.price_disc && Number(s.price_disc.value) ? ` · parts disc ${s.price_disc.type === "pct" ? s.price_disc.value + "%" : "KD " + s.price_disc.value}` : ""}</span>
-                              <span>KWD {t.netLabor.toFixed(3)}</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            /* legacy orders without service blocks */
-            (j.items && j.items.length) ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {j.items.map(it => (
-                  <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
-                    <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span><CollectedChip ok={itemOK(j, it.id)} /></span>
-                    <span style={{ whiteSpace: "nowrap" }}><span style={{ color: "var(--muted)", fontWeight: 500 }}>@ {Number(it.unit_price || 0).toFixed(3)} · </span><span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</span></span>
-                  </div>
-                ))}
-              </div>
-            ) : <p style={{ fontSize: 13, color: "var(--muted)" }}>{j.service_details || "—"}</p>
-          )}
-        </div>
-      </div>
-
-      {Array.isArray(j.check_notes) && j.check_notes.length > 0 && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <div className="card-header"><h3>Technician Notes</h3></div>
-          <div style={{ padding: "12px 16px" }}>
-            {j.check_notes.map(n => (
-              <div key={n.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", marginBottom: 8, background: n.phase === "pre" ? "#FFFBEB" : "#F0FDF4" }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: n.phase === "pre" ? "#B45309" : "#15803D" }}>
-                  {n.phase === "pre" ? "🔍 Pre-check" : "✅ Post-service"} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· {fmtDate(n.at)}</span>
-                </div>
-                {n.text && <div style={{ fontSize: 13, marginTop: 4 }}>{n.text}</div>}
-                {(n.photos || []).length > 0 && (
-                  <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-                    {n.photos.map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ height: 64, borderRadius: 6, border: "1px solid var(--border)", objectFit: "cover" }} /></a>)}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {showCancel && (
-        <div className="overlay" onClick={e => e.target === e.currentTarget && setShowCancel(false)}>
-          <div className="modal" style={{ maxWidth: 420 }}>
-            <div className="modal-header">
-              <h3>Cancel Order — {j.customer_name}</h3>
-              <button className="modal-close" onClick={() => setShowCancel(false)}>×</button>
-            </div>
-            <div className="modal-body">
-              {(j.parts_released || j.techs_released || (j.truck_status && j.truck_status !== "scheduled")) && (
-                <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#92400E", marginBottom: 12 }}>
-                  ⚠ This order already has work in progress. Cancelling will remove it from the distributor/technician dashboards.
-                </div>
-              )}
-              <label style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", display: "block", marginBottom: 6 }}>Reason for cancellation (kept for records)</label>
-              <textarea className="filter-input" style={{ width: "100%", minHeight: 70, resize: "vertical" }} value={cancelReason}
-                placeholder="e.g. Customer rescheduled to next week / changed their mind / duplicate order"
-                onChange={e => setCancelReason(e.target.value)} autoFocus />
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-ghost" onClick={() => setShowCancel(false)}>Keep Order</button>
-              <button className="btn btn-primary" style={{ background: "var(--danger)", borderColor: "var(--danger)" }} onClick={confirmCancel}>Cancel Order</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Schedule View ────────────────────────────────────────────────────────────
-// ─── Accounting editor: Xero PO Ref + Invoice No, editable after submission ────
-function AccountingEditor({ xeroRef, invoiceNo, onSave }) {
-  const [xero, setXero] = useState(xeroRef || "");
-  const [inv, setInv] = useState(invoiceNo || "");
-  const [saved, setSaved] = useState(false);
-  useEffect(() => { setXero(xeroRef || ""); setInv(invoiceNo || ""); }, [xeroRef, invoiceNo]);
-  const dirty = xero !== (xeroRef || "") || inv !== (invoiceNo || "");
-  const save = () => { onSave({ xero_ref: xero, invoice_no: inv }); setSaved(true); setTimeout(() => setSaved(false), 1500); };
-  return (
-    <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-      <div style={{ flex: 1, minWidth: 140 }}>
-        <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Xero PO Ref</label>
-        <input className="filter-input" style={{ width: "100%" }} value={xero} placeholder="PO-2026-0041" onChange={e => setXero(e.target.value)} />
-      </div>
-      <div style={{ flex: 1, minWidth: 140 }}>
-        <label style={{ fontSize: 10, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", display: "block", marginBottom: 4 }}>Invoice No</label>
-        <input className="filter-input" style={{ width: "100%" }} value={inv} placeholder="INV-…" onChange={e => setInv(e.target.value)} />
-      </div>
-      <button className="btn btn-ghost btn-sm" disabled={!dirty} onClick={save}>{saved ? "✓ Saved" : "Save"}</button>
-    </div>
-  );
-}
-
-// ─── Payment Link editor: paste + copy, used in detail and row ────────────────
-function PaymentLinkEditor({ value, onSave, compact }) {
-  const [link, setLink] = useState(value || "");
-  const [copied, setCopied] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [editing, setEditing] = useState(false);
-  useEffect(() => { setLink(value || ""); }, [value]);
-  const copy = async () => {
-    if (!link) return;
-    try { await navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
-  };
-  const save = () => { onSave(link); setSaved(true); setTimeout(() => setSaved(false), 1500); if (compact) setEditing(false); };
-  const chip = (active) => ({
-    display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer",
-    border: `1px solid ${active ? "#BBF7D0" : "var(--border)"}`, borderRadius: 8, padding: "3px 10px",
-    background: active ? "#F0FDF4" : "var(--bg)", color: active ? "#15803D" : "var(--muted)",
-    fontSize: 12, fontWeight: 600, userSelect: "none",
-  });
-  if (compact && !editing) {
-    return value ? (
-      <span style={{ display: "inline-flex", gap: 6 }} onClick={e => e.stopPropagation()}>
-        <span style={chip(true)} onClick={copy}>🔗 {copied ? "✓ Copied" : "Copy link"}</span>
-        <span style={chip(false)} onClick={() => setEditing(true)}>✎</span>
-      </span>
-    ) : (
-      <span style={chip(false)} onClick={(e) => { e.stopPropagation(); setEditing(true); }}>+ Payment link</span>
-    );
-  }
-  return (
-    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }} onClick={e => e.stopPropagation()}>
-      <input className="filter-input" style={{ flex: 1, minWidth: 160 }} value={link}
-        placeholder="Paste payment link…" onChange={e => setLink(e.target.value)} autoFocus={compact} />
-      <button className="btn btn-ghost btn-sm" onClick={save}>{saved ? "✓ Saved" : "Save"}</button>
-      <button className="btn btn-ghost btn-sm" disabled={!link} onClick={copy}>{copied ? "✓ Copied" : "Copy"}</button>
-      {compact && <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(false); setLink(value || ""); }}>✕</button>}
-    </div>
-  );
-}
-
-// ─── Order Actions: status buttons reused on list rows + job detail ───────────
-// No payment gate (per ops decision) — all actions available any time.
-// Payment status stays visible so it's never hidden, just not enforced.
-function OrderActions({ job, onAction, compact }) {
-  const isPaid = job.payment_status === "paid";
-  const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
-  {
-    // chip format — unified on rows and inside order details
-    const chip = (active) => ({
-      display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer",
-      border: `1px solid ${active ? "#BBF7D0" : "var(--border)"}`, borderRadius: 8, padding: "3px 10px",
-      background: active ? "#F0FDF4" : "var(--bg)", color: active ? "#15803D" : "var(--muted)",
-      fontSize: 12, fontWeight: 600, userSelect: "none",
-    });
-    return (
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-        <span style={chip(isPaid)} onClick={stop(() => onAction({ payment_status: isPaid ? "pending" : "paid", paid_date: isPaid ? null : today(), status: isPaid ? job.status : (job.status === "draft" ? "booked" : job.status) }))}>{isPaid ? "✓" : "○"} Paid</span>
-        <span style={chip(job.parts_released)} onClick={stop(() => onAction({ parts_released: !job.parts_released }))}>{job.parts_released ? "✓" : "○"} Parts Ready</span>
-        <span style={chip(job.techs_released)} onClick={stop(() => onAction({ techs_released: !job.techs_released }))}>{job.techs_released ? "✓" : "○"} Show Technicians</span>
-        <span style={chip(job.invoice_shared)} onClick={stop(() => onAction({ invoice_shared: !job.invoice_shared }))}>{job.invoice_shared ? "✓" : "○"} Invoice Sent</span>
-        {getTestMode() && job.status !== "done" && job.status !== "cancelled" && (
-          <span style={{ borderRadius: 20, padding: "5px 12px", cursor: "pointer", background: "#7C3AED", color: "#fff", fontSize: 12, fontWeight: 700, userSelect: "none" }}
-            onClick={stop(() => { if (window.confirm("TEST: force this order through collection, verification, and completion?")) onAction(forceCompletePatch(job)); })}>
-            ⏩ Force complete (test)
-          </span>
-        )}
-      </div>
-    );
-  }
-}
-
-function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
-  const [filterTruck, setFilterTruck] = useState("all");
-  const [stageF, setStageF] = useState("active");   // active | successful | all — default: the working queue
-  const [payF, setPayF] = useState(null);           // null | paid | unpaid (toggle)
-  const [filterDate, setFilterDate] = useState(today());
-  const [search, setSearch] = useState("");
-  const [boardOpen, setBoardOpen] = useState(true); // Day Board shown by default, collapsible
-
-  // base = the day (date/truck/search scope) — the summary reads from THIS, never from the pills
-  const base = jobs.filter(j => {
-    if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
-    if (filterDate) { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; if (d !== filterDate) return false; }
-    if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
-    return true;
-  });
-  // Active = the working queue: booked + started
-  const isActive = (j) => j.status !== "cancelled" && j.status !== "incomplete" && !jobSuccessful(j);
-  const stageList = base.filter(j =>
-    stageF === "all" ? true : stageF === "successful" ? jobSuccessful(j) : isActive(j));
-  const counts = {
-    active: base.filter(isActive).length,
-    successful: base.filter(jobSuccessful).length,
-    all: base.length,
-    // payment counts within the chosen stage — Successful + Unpaid = collections list
-    paid: stageList.filter(j => j.payment_status === "paid").length,
-    unpaid: stageList.filter(j => j.payment_status !== "paid" && j.status !== "cancelled").length,
-  };
-  const filtered = stageList
-    .filter(j => !payF ? true : payF === "paid" ? j.payment_status === "paid" : (j.payment_status !== "paid" && j.status !== "cancelled"))
-    .sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at)); // earliest on top
-
-  // Day summary — whole day always (never affected by the pills)
-  const totalKD = base.reduce((s, j) => s + (j.status !== "cancelled" ? Number(j.total || 0) : 0), 0);
-  // Headline revenue = orders SOLD on this day (sale_date), matching the Reports page,
-  // regardless of when they're scheduled. Truck/search scope still applies.
-  const salesKD = jobs.filter(j => {
-    if (j.status === "cancelled") return false;
-    if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
-    if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
-    return saleDateOf(j) === (filterDate || today());
-  }).reduce((s, j) => s + (Number(j.total) || 0), 0);
-  // Cash companion: money actually collected this day (Paid trigger stamps paid_date)
-  const collectedKD = jobs.filter(j => {
-    if (j.status === "cancelled" || !j.paid_date) return false;
-    if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
-    if (search) { const s = search.toLowerCase(); if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.area?.toLowerCase().includes(s)) return false; }
-    return j.paid_date === (filterDate || today());
-  }).reduce((s, j) => s + (Number(j.total) || 0), 0);
-  const done = base.filter(jobSuccessful).length;
-
-  return (
-    <>
-      <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{base.length}</div><div className="stat-lbl">Jobs today</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{done}</div><div className="stat-lbl">Completed</div></div>
-        <div className="stat-card">
-          <div className="stat-num" style={{ color: "var(--accent)" }}>KWD {salesKD.toFixed(3)}</div>
-          <div className="stat-lbl">{(filterDate || today()) === today() ? "Today's Revenue" : "Revenue (sold this day)"}</div>
-          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>on this day's schedule: KWD {totalKD.toFixed(3)}</div>
-          <div style={{ fontSize: 10, color: "#059669", fontWeight: 600, marginTop: 1 }}>collected this day: KWD {collectedKD.toFixed(3)}</div>
-        </div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{base.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid</div></div>
-      </div>
-
-      <div className="page-header">
-        <div className="page-title">Schedule</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <button className={`btn btn-sm ${boardOpen ? "btn-primary" : "btn-ghost"}`} onClick={() => setBoardOpen(o => !o)}>
-            {boardOpen ? "◧ Hide Day Board" : "◧ Show Day Board"}
-          </button>
-          <div className="filters">
-            <input className="filter-input" placeholder="Search…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 140 }} />
-            <input type="date" className="filter-select" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
-            <select className="filter-select" value={filterTruck} onChange={e => setFilterTruck(e.target.value)}>
-              <option value="all">All Trucks</option>
-              {TRUCKS.map(t => <option key={t}>{t}</option>)}
-            </select>
-            {filterDate && <button className="btn btn-ghost btn-sm" onClick={() => setFilterDate("")}>Clear Date</button>}
-          </div>
-          {role === "sales" && <button className="btn btn-primary" onClick={onNewJob}>+ New Job</button>}
-        </div>
-
-      </div>
-
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-      {boardOpen && (
-        <div className="card schedule-board-panel" style={{ marginBottom: 16, flex: "1 1 380px", minWidth: 300, alignSelf: "stretch" }}>
-          <div className="card-header">
-            <h3>Day Board — {filterDate || today()}</h3>
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>tap a job to open, empty slot to book</span>
-          </div>
-          <div className="card-body">
-            {(() => {
-              const d = filterDate || today();
-              const otByTruck = {};
-              activeTrucks().forEach(t => { otByTruck[t] = 0; });
-              jobs.forEach(j => {
-                if (!j.is_overtime) return;
-                const jd = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
-                if (jd === d && otByTruck[j.assigned_truck] != null) otByTruck[j.assigned_truck]++;
-              });
-              const totalOT = Object.values(otByTruck).reduce((a, b) => a + b, 0);
-              if (totalOT === 0) return null;
-              return (
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12, padding: "8px 12px", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8 }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "#B45309" }}>⏱ Overtime today:</span>
-                  {activeTrucks().filter(t => otByTruck[t] > 0).map(t => (
-                    <span key={t} style={{ fontSize: 12, fontWeight: 600, color: truckColor(t).text, background: truckColor(t).bg, border: `1px solid ${truckColor(t).solid}`, borderRadius: 6, padding: "2px 8px" }}>
-                      {t}: {otByTruck[t]} order{otByTruck[t] > 1 ? "s" : ""}
-                    </span>
-                  ))}
-                </div>
-              );
-            })()}
-            <TruckSlotGrid
-              jobs={jobs}
-              dateStr={filterDate || today()}
-              duration={1}
-              selectedTruck={null}
-              selectedHour={null}
-              onJobClick={onSelectJob}
-              onPick={(truck, hour) => onNewJobAt && onNewJobAt(truck, hour, filterDate || today())}
-              excludeId={null}
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="job-cards" style={{ flex: "2 1 420px", minWidth: 300 }}>
-          {/* Stage pills + payment toggle — filter the LIST only; the summary above stays whole-day */}
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", marginBottom: 4 }}>
-            <div style={{ display: "flex", gap: 6 }}>
-              {[
-                { k: "active", label: `Active (${counts.active})` },
-                { k: "successful", label: `✓ Successful (${counts.successful})` },
-                { k: "all", label: `All (${counts.all})` },
-              ].map(p => (
-                <button key={p.k} className={`btn btn-sm ${stageF === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setStageF(p.k)}>{p.label}</button>
-              ))}
-            </div>
-            <div style={{ width: 1, height: 22, background: "var(--border)" }} />
-            <div style={{ display: "flex", gap: 6 }}>
-              {[
-                { k: "paid", label: `Paid (${counts.paid})` },
-                { k: "unpaid", label: `Unpaid (${counts.unpaid})` },
-              ].map(p => (
-                <button key={p.k} className={`btn btn-sm ${payF === p.k ? "btn-primary" : "btn-ghost"}`} onClick={() => setPayF(payF === p.k ? null : p.k)}>{p.label}</button>
-              ))}
-            </div>
-          </div>
-        {filtered.length === 0 && <div className="empty"><h3>No jobs</h3><p>Adjust filters or create a new job.</p></div>}
-        {filtered.map(job => (
-          <div key={job.id} className="job-card" onClick={() => onSelectJob(job)}>
-            <div className="job-card-top">
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="job-card-name" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span>{job.customer_name}</span>
-                  {job.customer_mobile && <a href={`tel:${job.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)" }}>{job.customer_mobile}</a>}
-                  {job.assigned_truck && <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text, whiteSpace: "nowrap" }}>{job.assigned_truck}</span>}
-                  {job.scheduled_at && (
-                    <span className="tag tag-time" style={{ whiteSpace: "nowrap" }}>
-                      {fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}
-                    </span>
-                  )}
-                </div>
-                {(() => {
-                  const cn = (customers || []).find(c => c.id === job.customer_id || (last8(c.mobile) && last8(c.mobile) === last8(job.customer_mobile)));
-                  return cn?.notes ? <div style={{ fontSize: 12, color: "#B45309", fontWeight: 600, marginTop: 3 }}>⚠ {cn.notes}</div> : null;
-                })()}
-                {(job.items && job.items.length) ? (
-                  <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 7 }}>
-                    {(() => {
-                      // group items → services → cars
-                      const svcMap = {};
-                      job.items.forEach(it => {
-                        const k = it.service_id || it.id;
-                        if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, isTire: it.kind === "tire", qty: 0, products: [], car: it.car_label || `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "—" };
-                        if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim(), ok: itemOK(job, it.id) }); }
-                        else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name, ok: itemOK(job, it.id) });
-                      });
-                      const carGroups = {};
-                      Object.values(svcMap).forEach(l => { (carGroups[l.car] = carGroups[l.car] || []).push(l); });
-                      return Object.entries(carGroups).map(([car, lines]) => (
-                        <div key={car}>
-                          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text)", marginBottom: 2 }}>🚗 {car}</div>
-                          <div style={{ paddingLeft: 16, display: "flex", flexDirection: "column", gap: 2 }}>
-                            {lines.map(l => (
-                              <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, lineHeight: 1.45 }}>
-                                <span style={{ whiteSpace: "nowrap", fontWeight: 600, color: "var(--text)", flexShrink: 0, width: 92 }}>
-                                  <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
-                                </span>
-                                <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: "1 1 auto", minWidth: 0, display: "block" }}>
-                                  {l.products.slice(0, 2).map((p, i) => {
-                                    const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
-                                    return <span key={i} title={p.n}>{i > 0 ? " · " : ""}<span style={{ color: "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {short}{p.ok && <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span>}</span>;
-                                  })}
-                                  {l.products.length > 2 && (
-                                    <span style={{ fontWeight: 600 }}> · +{l.products.length - 2} more{l.products.slice(2).every(p => p.ok) && l.products.length > 2 ? <span style={{ color: "#15803D", fontWeight: 800 }}> ✓</span> : ""}</span>
-                                  )}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                ) : (
-                  <>
-                    <div className="job-card-service">{job.service_type} · {job.car_brand} {job.car_model}</div>
-                    {itemsSummary(job) && <div className="job-card-service" style={{ marginTop: 2, color: "var(--text)" }}>📦 {itemsSummary(job)}</div>}
-                  </>
-                )}
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
-                <StatusPill status={job.status} />
-                {job.truck_status && job.truck_status !== "scheduled"
-                  && !(job.truck_status === "completed" && DONE_STATUSES.includes(job.status))
-                  && !(job.truck_status === "processing" && ["en_route", "on_site"].includes(job.status)) && (
-                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 7px", borderRadius: 6,
-                    background: job.truck_status === "completed" ? "#DCFCE7" : job.truck_status === "processing" ? "#FEF3C7" : "#DBEAFE",
-                    color: job.truck_status === "completed" ? "#15803D" : job.truck_status === "processing" ? "#92400E" : "#1D4ED8" }}>
-                    🚚 {job.truck_status === "arrived" ? "parts received" : job.truck_status === "processing" ? "started" : job.truck_status === "completed" ? "successful" : job.truck_status}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="job-card-meta">
-              {(() => {
-                const cks = deriveChecks(job);
-                const done = cks.filter(Boolean).length;
-                return (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title={`Verification ${done}/4`}>
-                    {cks.map((c, i) => <span key={i} style={{ width: 15, height: 6, borderRadius: 3, background: c ? "var(--success)" : "var(--border)" }} />)}
-                    <span style={{ fontSize: 10.5, fontWeight: 700, color: done === 4 ? "var(--success)" : "var(--muted)", marginLeft: 3 }}>{done}/4</span>
-                  </span>
-                );
-              })()}
-              {job.is_overtime && <span className="tag" style={{ background: "#F59E0B", color: "#fff", fontWeight: 700 }}>⏱ OT</span>}
-
-              {job.total ? <span className="tag tag-total">KWD {Number(job.total).toFixed(3)}</span> : null}
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>{job.area}</span>
-              {role === "sales" && (
-                <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }}
-                  onClick={(e) => { e.stopPropagation(); onReschedule(job); }}>↻ Reschedule</button>
-              )}
-            </div>
-            {(role === "sales" || role === "purchaser") && (
-              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-                <OrderActions job={job} compact onAction={(patch) => onAction(job, patch)} />
-                <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
-                  <PaymentLinkEditor value={job.payment_link} onSave={(link) => onAction(job, { payment_link: link })} compact />
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-      </div>
-    </>
-  );
-}
-
-// ─── Distributor Dashboard ────────────────────────────────────────────────────
-// Shows part_ready orders. Per-item: match-checkbox + Collected; once all collected,
-// Delivered unlocks. Persists to DB (parts_status, item_checks).
-function DistributorView({ jobs, onUpdate }) {
-  const [view, setView] = useState("order"); // order | supplier
-  // Only jobs with something to physically collect reach the distributor —
-  // labor-only orders (skimming, computer check, labor-only replacements) stay out.
-  const hasCollectables = (j) => (j.items || []).some(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
-  const active = jobs.filter(j => hasCollectables(j) && j.parts_released && j.parts_status !== "delivered" && j.status !== "cancelled" && j.status !== "incomplete")
-    .sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at)); // earliest on top
-
-  // per-item collect action (used by supplier view too) — writes to the job
-  const collectItem = (job, itemId) => {
-    const collected = { ...(job.collected_items || {}), [itemId]: new Date().toISOString() };
-    const next = { ...job, collected_items: collected };
-    onUpdate(next); updateJob(job.id, { collected_items: collected });
-  };
-  const confirmItem = (job, itemId, val) => {
-    const item_checks = { ...(job.item_checks || {}), [itemId]: val };
-    const collectable = (job.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part");
-    const done = collectable.length > 0 && collectable.every(it => item_checks[it.id]);
-    const ver_times = verStamp(job, "c2", done);
-    const next = { ...job, item_checks, ver_times };
-    onUpdate(next); updateJob(job.id, { item_checks, ver_times });
-  };
-
-  // Supplier groups across active orders (includes collected, for ✅ + progress)
-  const supplierGroups = {};
-  active.forEach(j => {
-    (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part").forEach(it => {
-      const sup = it.supplier || "⚠ No supplier assigned";
-      (supplierGroups[sup] = supplierGroups[sup] || []).push({ ...it, _job: j });
-    });
-  });
-  const supplierNames = Object.keys(supplierGroups).sort();
-
-  return (
-    <>
-      <div className="page-header">
-        <div className="page-title">Collect</div>
-        <div style={{ display: "flex", gap: 4 }}>
-          <button className={`btn btn-sm ${view === "order" ? "btn-primary" : "btn-ghost"}`} onClick={() => setView("order")}>By order</button>
-          <button className={`btn btn-sm ${view === "supplier" ? "btn-primary" : "btn-ghost"}`} onClick={() => setView("supplier")}>By supplier</button>
-        </div>
-      </div>
-
-      {(() => {
-        // Pipeline: each item lives in exactly one bucket → to collect → collected → delivered
-        const released = jobs.filter(j => j.parts_released && j.status !== "cancelled");
-        let toCollect = 0, collectedCount = 0, deliveredCount = 0;
-        released.forEach(j => {
-          const col = j.collected_items || {};
-          const delivered = j.parts_status === "delivered";
-          (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part").forEach(it => {
-            if (delivered) deliveredCount++;
-            else if (col[it.id]) collectedCount++;
-            else toCollect++;
-          });
-        });
-        if (toCollect + collectedCount + deliveredCount === 0) return null;
-        return (
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
-            {[
-              { label: "Items to collect", value: toCollect, color: "#D97706" },
-              { label: "Collected", value: collectedCount, color: "var(--accent)" },
-              { label: "Delivered", value: deliveredCount, color: "var(--success)" },
-            ].map(s => (
-              <div key={s.label} style={{ flex: "1 1 90px", minWidth: 90, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px", textAlign: "center" }}>
-                <div style={{ fontFamily: "var(--font-head)", fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
-                <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".4px" }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-        );
-      })()}
-
-      {view === "order" && (<>
-        {active.length === 0 && <div className="empty"><h3>Nothing to collect</h3><p>Orders appear here when Sales marks "Parts Ready".</p></div>}
-        {active.map(job => <DistributorCard key={job.id} job={job} onUpdate={onUpdate} />)}
-      </>)}
-
-      {view === "supplier" && (
-        supplierNames.length === 0 ? <div className="empty"><h3>Nothing to collect</h3><p>No outstanding orders.</p></div> :
-        supplierNames.map(sup => {
-          const list = supplierGroups[sup];
-          const doneCount = list.filter(it => (it._job.collected_items || {})[it.id]).length;
-          return (
-            <div key={sup} className="dist-card" style={{ marginBottom: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div style={{ fontFamily: "var(--font-head)", fontWeight: 700, fontSize: 15, color: "#1E40AF" }}>📍 {sup}</div>
-                <span style={{ fontSize: 11, color: doneCount === list.length ? "var(--success)" : "var(--muted)", fontWeight: 700 }}>{doneCount} of {list.length} collected</span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {list.map(it => {
-                  const job = it._job;
-                  const isCollected = (job.collected_items || {})[it.id];
-                  const isChecked = (job.item_checks || {})[it.id];
-                  return (
-                    <div key={it.id + job.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: isCollected ? "#F0FDF4" : "var(--card)" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                        <span style={{ fontSize: 13 }}><strong>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : it.name}</strong> × {it.qty}
-                          <div style={{ fontSize: 11, color: "var(--muted)" }}>{job.customer_name} · {job.assigned_truck} · {it.service_type}</div>
-                        </span>
-                        {isCollected
-                          ? <span style={{ fontSize: 13, color: "var(--success)", fontWeight: 700, whiteSpace: "nowrap" }}>✅ Collected</span>
-                          : null}
-                      </div>
-                      {!isCollected && (
-                        <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                            <input type="checkbox" checked={!!isChecked} onChange={e => confirmItem(job, it.id, e.target.checked)} />
-                            matches order
-                          </label>
-                          <button className="btn btn-ghost btn-sm" disabled={!isChecked} onClick={() => collectItem(job, it.id)} title={!isChecked ? "Confirm match first" : ""}>Mark Collected</button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })
-      )}
-    </>
-  );
-}
-
-
-// ─── Distributor History (own page) ──────────────────────────────────────────
-function DistributorHistoryView({ jobs }) {
-  const [histSupplier, setHistSupplier] = useState("all");
-  const [histGroup, setHistGroup] = useState("order"); // order | supplier (default: per order)
-
-  const history = [];
-  jobs.forEach(j => {
-    const collected = j.collected_items || {};
-    (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part").forEach(it => {
-      if (collected[it.id]) history.push({
-        ...it, when: typeof collected[it.id] === "string" ? collected[it.id] : null,
-        customer: j.customer_name, truck: j.assigned_truck, service: it.service_type,
-        orderId: j.id, orderWhen: j.scheduled_at, orderDelivered: j.parts_status === "delivered",
-      });
-    });
-  });
-  history.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
-  const histSuppliers = [...new Set(history.map(h => h.supplier || "Unassigned"))].sort();
-  const histFiltered = histSupplier === "all" ? history : history.filter(h => (h.supplier || "Unassigned") === histSupplier);
-
-  return (
-    <>
-      <div className="page-header"><div className="page-title">Collected History</div></div>
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", gap: 4 }}>
-            <button className={`btn btn-sm ${histGroup === "order" ? "btn-primary" : "btn-ghost"}`} onClick={() => setHistGroup("order")}>Per order</button>
-            <button className={`btn btn-sm ${histGroup === "supplier" ? "btn-primary" : "btn-ghost"}`} onClick={() => setHistGroup("supplier")}>Per supplier</button>
-          </div>
-          {histGroup === "supplier" && (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-              <button className={`btn btn-sm ${histSupplier === "all" ? "btn-primary" : "btn-ghost"}`} onClick={() => setHistSupplier("all")}>All</button>
-              {histSuppliers.map(s => (
-                <button key={s} className={`btn btn-sm ${histSupplier === s ? "btn-primary" : "btn-ghost"}`} onClick={() => setHistSupplier(s)}>{s}</button>
-              ))}
-            </div>
-          )}
-          <span style={{ fontSize: 12, color: "var(--muted)", marginLeft: "auto" }}>{histFiltered.length} collected item{histFiltered.length !== 1 ? "s" : ""}</span>
-        </div>
-
-        {histFiltered.length === 0 ? <div className="empty"><h3>No collected history</h3><p>Collected items will appear here.</p></div> : (() => {
-          // group into { groupKey: { title, sub, items[] } }
-          const groups = {};
-          histFiltered.forEach(h => {
-            const key = histGroup === "supplier" ? (h.supplier || "Unassigned") : h.orderId;
-            if (!groups[key]) groups[key] = {
-              title: histGroup === "supplier" ? (h.supplier || "Unassigned") : h.customer,
-              sub: histGroup === "supplier" ? "" : `${h.truck} · ${h.orderWhen ? fmtDate(h.orderWhen) : ""}`,
-              delivered: histGroup === "order" ? h.orderDelivered : null,
-              items: [],
-            };
-            groups[key].items.push(h);
-          });
-          const keys = Object.keys(groups);
-          return (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {keys.map(k => (
-                <div key={k} className="dist-card">
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <div style={{ fontFamily: "var(--font-head)", fontWeight: 700, fontSize: 15, color: histGroup === "supplier" ? "#1E40AF" : "var(--text)" }}>
-                      {histGroup === "supplier" ? "📍 " : "🧾 "}{groups[k].title}
-                      {groups[k].sub && <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}> · {groups[k].sub}</span>}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                      {histGroup === "order" && (
-                        <>
-                          <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 8px", borderRadius: 6, background: "#DCFCE7", color: "#15803D" }}>✅ Collected</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".3px", padding: "2px 8px", borderRadius: 6, background: groups[k].delivered ? "#DCFCE7" : "#F1F5F9", color: groups[k].delivered ? "#15803D" : "#94A3B8" }}>{groups[k].delivered ? "✅ Delivered" : "○ Not delivered"}</span>
-                        </>
-                      )}
-                      <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{groups[k].items.length} item{groups[k].items.length > 1 ? "s" : ""}</span>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {groups[k].items.map((h, i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, borderBottom: i < groups[k].items.length - 1 ? "1px solid var(--border)" : "none", paddingBottom: 6 }}>
-                        <div>
-                          <strong>{h.kind === "tire" ? `${h.brand} ${h.pattern || ""} · ${itemSpec(h)}` : h.name}</strong> × {h.qty}
-                          <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                            {histGroup === "supplier" ? `${h.customer} · ${h.service}` : `${h.supplier || "Unassigned"} · ${h.service}`}
-                          </div>
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap", textAlign: "right" }}>{h.when ? `${fmtDate(h.when)} ${fmtTime(h.when)}` : "—"}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          );
-        })()}
-    </>
-  );
-}
-
-function DistributorCard({ job, onUpdate }) {
-  const [j, setJ] = useState(job);
-  useEffect(() => { setJ(job); }, [job]); // follow live updates
-  // collectable items = tires with a tire OR parts (exclude labor-only lines)
-  const items = (j.items || []).filter(it => (it.kind === "tire" && it.tire_id) || it.kind === "part" || it.kind === "service");
-  const checks = j.item_checks || {};
-  const collected = j.collected_items || {};
-
-  const patch = (p) => { const next = { ...j, ...p }; setJ(next); onUpdate(next); updateJob(j.id, p); };
-
-  const toggleMatch = (id) => {
-    const item_checks = { ...checks, [id]: !checks[id] };
-    const done = items.length > 0 && items.every(it => item_checks[it.id]);
-    patch({ item_checks, ver_times: verStamp(j, "c2", done) });
-  };
-  const markCollected = (id) => {
-    if (!checks[id]) return; // must confirm match first
-    patch({ collected_items: { ...collected, [id]: new Date().toISOString() } });
-  };
-  const allCollected = items.length > 0 && items.every(it => collected[it.id]);
-  const markDelivered = () => { if (allCollected) patch({ parts_status: "delivered" }); };
-  const partsStatus = j.parts_status === "delivered" ? "delivered" : (allCollected ? "collected" : "pending");
-
-  return (
-    <div className="dist-card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
-        <div style={{ fontFamily: "var(--font-head)", fontWeight: 600, fontSize: 15 }}>{j.customer_name} — {j.service_type}</div>
-        <span className="status-pill" style={{ background: partsStatus === "delivered" ? "#DCFCE7" : partsStatus === "collected" ? "#FEF3C7" : "var(--bg)", color: partsStatus === "delivered" ? "#15803D" : partsStatus === "collected" ? "#92400E" : "var(--muted)" }}>{partsStatus}</span>
-      </div>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>Truck {j.assigned_truck} · {fmtDate(j.scheduled_at)} {fmtTime(j.scheduled_at)} · {j.area}</div>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>{j.xero_ref ? `PO Ref: ${j.xero_ref}` : "No PO ref"}</div>
-
-      {items.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>Labor-only order — nothing to collect.</div>}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {items.map(it => (
-          <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px", background: collected[it.id] ? "#F0FDF4" : "var(--card)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
-                {it.kind === "tire" ? `🔗 ${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : it.name} × {it.qty}
-                <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 500, marginTop: 1 }}>for {it.service_type}{it.car_label ? ` · 🚗 ${it.car_label}` : ""}</div>
-              </div>
-              {it.supplier && <span style={{ fontSize: 11, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 6, padding: "2px 8px", height: "fit-content", whiteSpace: "nowrap" }}>{it.supplier}</span>}
-            </div>
-            <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, fontWeight: 600, margin: "6px 0 8px", cursor: "pointer" }}>
-              <input type="checkbox" checked={!!checks[it.id]} onChange={() => toggleMatch(it.id)} />
-              I'm sure this item matches the order
-            </label>
-            {!collected[it.id]
-              ? <button className="btn btn-ghost btn-sm" disabled={!checks[it.id]} onClick={() => markCollected(it.id)} title={!checks[it.id] ? "Confirm match first" : ""}>Mark Collected</button>
-              : <span style={{ fontSize: 12, color: "var(--success)", fontWeight: 700 }}>✓ Collected</span>}
-          </div>
-        ))}
-      </div>
-
-      <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center" }}>
-        <button className="btn btn-primary btn-sm" disabled={!allCollected || j.parts_status === "delivered"} onClick={markDelivered}>
-          {j.parts_status === "delivered" ? "✓ Delivered to Truck" : "Mark Delivered to Truck"}
-        </button>
-        {!allCollected && items.length > 0 && <span style={{ fontSize: 11, color: "var(--muted)" }}>Collect all items to enable delivery.</span>}
-      </div>
-    </div>
-  );
-}
-
-// ─── Technician Dashboard (per truck) ─────────────────────────────────────────
-function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck, onCreateUpsell }) {
-  const [upsellJob, setUpsellJob] = useState(null);     // job that just completed
-  const [upsellStep, setUpsellStep] = useState("ask");  // "ask" | "form"
-  const promptUpsell = (job) => { setUpsellJob(job); setUpsellStep("ask"); };
-  const stampResponse = (resp) => {
-    const next = { ...upsellJob, upsell_response: resp };
-    onUpdate(next);                                    // local state (full job object)
-    updateJob(upsellJob.id, { upsell_response: resp }); // server patch
-    setUpsellJob(null);
-  };
-  const [pickTruck, setPickTruck] = useState(activeTrucks()[0]);
-  const myTruck = lockedTruck || pickTruck;
-  const todayJobs = jobs
-    .filter(j => j.assigned_truck === myTruck && j.techs_released && j.status !== "cancelled")
-    .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
-    .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
-
-  const isDone = (j) => j.truck_status === "completed" || j.status === "done" || j.status === "incomplete";
-
-  // 🔔 New-order alert: when a job appears on this truck's list (realtime), show
-  // a banner + try sound/vibration so the technician notices without watching.
-  const seenIds = useRef(null);
-  const [newAlert, setNewAlert] = useState(null);
-  useEffect(() => {
-    const ids = new Set(todayJobs.map(x => x.id));
-    if (seenIds.current) {
-      const fresh = todayJobs.filter(x => !seenIds.current.has(x.id) && !isDone(x));
-      if (fresh.length) {
-        setNewAlert(fresh[0]);
-        try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch {}
-        try {
-          const ac = new (window.AudioContext || window.webkitAudioContext)();
-          const o = ac.createOscillator(), g = ac.createGain();
-          o.connect(g); g.connect(ac.destination);
-          o.frequency.value = 880; g.gain.value = 0.15;
-          o.start(); o.stop(ac.currentTime + 0.18);
-          setTimeout(() => { const o2 = ac.createOscillator(); o2.connect(g); o2.frequency.value = 1100; o2.start(); o2.stop(ac.currentTime + 0.4); }, 220);
-        } catch {}
-        setTimeout(() => setNewAlert(a => (a && fresh[0] && a.id === fresh[0].id) ? null : a), 10000);
-      }
-    }
-    seenIds.current = ids;
-  }, [todayJobs.map(x => x.id).join(",")]);
-
-  const active = todayJobs.filter(j => !isDone(j));
-  const completed = todayJobs.filter(isDone);
-  const inProgress = active.filter(j => j.truck_status === "processing" || j.truck_status === "arrived").length;
-
-  const tc = truckColor(myTruck);
-
-  return (
-    <>
-      {newAlert && (
-        <div onClick={() => { onSelectJob && onSelectJob(newAlert); setNewAlert(null); }}
-          style={{ position: "sticky", top: 8, zIndex: 60, background: "#16A34A", color: "#fff", borderRadius: 12, padding: "12px 16px", marginBottom: 12, boxShadow: "0 6px 18px rgba(22,163,74,.35)", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 14 }}>🔔 New order assigned</div>
-            <div style={{ fontSize: 12.5, marginTop: 2 }}>{fmtTime(newAlert.scheduled_at)} · {newAlert.customer_name} · {newAlert.area || ""}</div>
-          </div>
-          <span onClick={(e) => { e.stopPropagation(); setNewAlert(null); }} style={{ fontWeight: 800, padding: "2px 8px" }}>✕</span>
-        </div>
-      )}
-    <>
-      <div className="page-header">
-        <div className="page-title">My Jobs — {fmtDate(new Date().toISOString())}</div>
-        {lockedTruck ? (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, color: truckColor(myTruck).text, background: truckColor(myTruck).bg, border: `2px solid ${truckColor(myTruck).solid}`, borderRadius: 8, padding: "5px 12px", fontSize: 14 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: truckColor(myTruck).solid }} /> {myTruck}
-          </span>
-        ) : (
-          <TruckPills value={myTruck} onChange={setPickTruck} />
-        )}
-      </div>
-
-      {/* Reporting strip */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
-        {[
-          { label: "Jobs", value: active.length, color: truckColor(myTruck).solid },
-          { label: "Completed", value: completed.length, color: "var(--success)" },
-        ].map(s => (
-          <div key={s.label} style={{ flex: "1 1 90px", minWidth: 90, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, padding: "12px 14px", textAlign: "center" }}>
-            <div style={{ fontFamily: "var(--font-head)", fontSize: 26, fontWeight: 700, color: s.color }}>{s.value}</div>
-            <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".5px" }}>{s.label}</div>
-          </div>
-        ))}
-      </div>
-
-      {active.length === 0 && <div className="empty"><h3>No active jobs</h3><p>{completed.length > 0 ? `${completed.length} completed today — see History.` : `All clear for ${myTruck}.`}</p></div>}
-
-      <div className="job-cards">
-        {active.map((job, i) => <TechJobCard key={job.id} job={job} index={i} onUpdate={onUpdate} onCompletedPrompt={onCreateUpsell ? promptUpsell : null} />)}
-      </div>
-
-      {/* ⬆ post-completion upsell prompt — survives the job card unmounting */}
-      {upsellJob && (
-        <div className="overlay">
-          <div className="modal" style={{ maxWidth: 440 }}>
-            <div className="modal-body" style={{ padding: 18 }}>
-              {upsellStep === "ask" ? (
-                <>
-                  <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 6 }}>✅ Job completed - Do you have Upsell?</div>
-                  <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 }}>
-                    While you were on the car, did you notice anything it needs?
-                    Tires, brakes, battery, valves — anything worth a quote.
-                    If it converts, the credit counts for <strong style={{ color: "var(--text)" }}>{upsellJob.assigned_truck}</strong>.
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <button type="button" className="btn btn-primary" onClick={() => setUpsellStep("form")}>Yes, I have Upsell</button>
-                    <button type="button" className="btn btn-ghost" onClick={() => stampResponse("none")}>No, nothing to report</button>
-                  </div>
-                </>
-              ) : (
-                <TechUpsellForm job={upsellJob} autoOpen onCreate={onCreateUpsell}
-                  onDone={() => stampResponse("added")}
-                  onCancel={() => setUpsellStep("ask")} />
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-    </>
-  );
-}
-
-// ─── Technician History: completed jobs (own page to keep My Jobs clean) ──────
-function TechHistoryView({ jobs, onSelectJob, lockedTruck }) {
-  const [pickTruck, setPickTruck] = useState(activeTrucks()[0]);
-  const myTruck = lockedTruck || pickTruck;
-  const [dateStr, setDateStr] = useState(today());
-  const isDone = (j) => j.truck_status === "completed" || j.status === "done" || j.status === "incomplete";
-  const done = jobs
-    .filter(j => j.assigned_truck === myTruck && isDone(j) && j.status !== "cancelled")
-    .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return !dateStr || d === dateStr; })
-    .sort((a, b) => lastAction(b) - lastAction(a)); // most recent action first
-  const dayTotal = done.reduce((s, j) => s + Number(j.total || 0), 0);
-
-  return (
-    <>
-      <div className="page-header">
-        <div className="page-title">History</div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input type="date" className="filter-select" value={dateStr} onChange={e => setDateStr(e.target.value)} />
-          {dateStr && <button className="btn btn-ghost btn-sm" onClick={() => setDateStr("")}>All dates</button>}
-        </div>
-      </div>
-      <div style={{ marginBottom: 14 }}>
-        {lockedTruck ? (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, color: truckColor(myTruck).text, background: truckColor(myTruck).bg, border: `2px solid ${truckColor(myTruck).solid}`, borderRadius: 8, padding: "5px 12px", fontSize: 14 }}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: truckColor(myTruck).solid }} /> {myTruck}
-          </span>
-        ) : (
-          <TruckPills value={myTruck} onChange={setPickTruck} />
-        )}
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13 }}>
-        <span style={{ color: "var(--muted)" }}>{done.length} completed{dateStr ? ` on ${fmtDate(dateStr)}` : " (all time)"}</span>
-      </div>
-
-      {done.length === 0 && <div className="empty"><h3>No completed jobs</h3><p>Nothing for {myTruck}{dateStr ? " on this date" : ""} yet.</p></div>}
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {done.map((job, i) => (
-          <div key={job.id} onClick={() => onSelectJob && onSelectJob(job)} style={{ background: "var(--card)", border: "1px solid var(--border)", borderLeft: `3px solid ${job.status === "incomplete" ? "#B45309" : "var(--success)"}`, borderRadius: 10, padding: "12px 14px", cursor: onSelectJob ? "pointer" : "default", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>
-                <span className="my-job-num" style={{ marginRight: 6 }}>#{i + 1}</span>
-                {job.customer_name} <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 500 }}>· {fmtDate(job.scheduled_at)} {fmtTime(job.scheduled_at)}</span>
-              </div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{job.service_type} · {job.area}</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontWeight: 700, color: job.status === "incomplete" ? "#B45309" : "var(--success)" }}>KWD {Number(job.total || 0).toFixed(3)}</div>
-              <div style={{ fontSize: 11, color: job.status === "incomplete" ? "#B45309" : "var(--success)", fontWeight: 600 }}>{job.status === "incomplete" ? "⚠ Incomplete" : "✓ Done"}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </>
-  );
-}
-
-// Shrink a photo in-browser before upload (max 1400px, JPEG ~0.8) — damage
-// documentation doesn't need full camera resolution; this ~10x's storage life.
-async function compressPhoto(file) {
-  try {
-    const img = await new Promise((res, rej) => {
-      const u = URL.createObjectURL(file); const im = new Image();
-      im.onload = () => res(im); im.onerror = rej; im.src = u;
-    });
-    const MAX = 1400;
-    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
-    if (scale === 1 && file.size < 400 * 1024) return file; // already small
-    const cv = document.createElement("canvas");
-    cv.width = Math.round(img.width * scale); cv.height = Math.round(img.height * scale);
-    cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
-    const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.8));
-    return blob && blob.size < file.size ? new File([blob], (file.name.replace(/\.\w+$/, "") || "photo") + ".jpg", { type: "image/jpeg" }) : file;
-  } catch { return file; } // any failure → upload original rather than block
-}
-async function uploadJobPhoto(rawFile, jobId) {
-  const file = await compressPhoto(rawFile);
-  const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-  const path = `${jobId}/${Date.now()}-${Math.random().toString(36).slice(2,6)}.${ext}`;
-  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/job-photos/${path}`, {
-    method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": file.type || "image/jpeg" }, body: file });
-  if (!res.ok) throw new Error(await res.text());
-  return `${SUPABASE_URL}/storage/v1/object/public/job-photos/${path}`;
-}
-function JobNotes({ j, patch, completed }) {
-  const [phase, setPhase] = useState(null); // 'pre' | 'post' | null
-  const [txt, setTxt] = useState("");
-  const [draftId, setDraftId] = useState(null);
-  const [uploading, setUploading] = useState(0);
-  const notes = Array.isArray(j.check_notes) ? j.check_notes : [];
-  // Always read/patch through refs so async photo uploads never act on a stale snapshot
-  const notesRef = useRef(notes); notesRef.current = notes;
-  const patchRef = useRef(patch); patchRef.current = patch;
-
-  const openPhase = (p) => { setPhase(p); setTxt(""); setDraftId("n" + Date.now()); };
-
-  // Photos AUTO-SAVE onto the order the moment each upload finishes — no Save button.
-  const commitPhoto = (url, ph, id) => {
-    const cur = notesRef.current;
-    const ex = cur.find(n => n.id === id);
-    patchRef.current({
-      check_notes: ex
-        ? cur.map(n => n.id === id ? { ...n, photos: [...(n.photos || []), url] } : n)
-        : [...cur, { id, phase: ph, text: "", photos: [url], at: new Date().toISOString() }],
-    });
-  };
-  const addPic = async (e) => {
-    const files = Array.from(e.target.files || []); e.target.value = "";
-    for (const f of files) {
-      setUploading(u => u + 1);
-      try { const u = await uploadJobPhoto(f, j.id); commitPhoto(u, phase, draftId); }
-      catch { alert("⚠ Photo upload failed — please try again."); }
-      setUploading(u => u - 1);
-    }
-  };
-  // × delete a photo from any note (drops empty notes entirely)
-  const delPic = (noteId, url) => {
-    const next = notesRef.current
-      .map(n => n.id === noteId ? { ...n, photos: (n.photos || []).filter(u => u !== url) } : n)
-      .filter(n => (n.text && n.text.trim()) || (n.photos || []).length > 0);
-    patchRef.current({ check_notes: next });
-  };
-  // Done: persist the text (if any) into the draft note, then close
-  const done = () => {
-    const t = txt.trim();
-    if (t) {
-      const cur = notesRef.current;
-      const ex = cur.find(n => n.id === draftId);
-      patchRef.current({
-        check_notes: ex
-          ? cur.map(n => n.id === draftId ? { ...n, text: t } : n)
-          : [...cur, { id: draftId, phase, text: t, photos: [], at: new Date().toISOString() }],
-      });
-    }
-    setPhase(null); setTxt(""); setDraftId(null);
-  };
-
-  const badge = (p) => p === "pre" ? { t: "🔍 Pre-check", c: "#B45309", bg: "#FFFBEB" } : { t: "✅ Post-service", c: "#15803D", bg: "#F0FDF4" };
-  const thumb = (n, u, i) => (
-    <span key={i} style={{ position: "relative", display: "inline-block" }}>
-      <a href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ height: 46, borderRadius: 5, border: "1px solid var(--border)", objectFit: "cover" }} /></a>
-      {!completed && (
-        <button type="button" onClick={(e) => { e.preventDefault(); delPic(n.id, u); }}
-          style={{ position: "absolute", top: -6, right: -6, width: 17, height: 17, borderRadius: "50%", border: "none", background: "var(--danger)", color: "#fff", fontSize: 10, fontWeight: 800, lineHeight: 1, cursor: "pointer", padding: 0 }}>×</button>
-      )}
-    </span>
-  );
-  const draftNote = notes.find(n => n.id === draftId);
-  return (
-    <div style={{ marginBottom: 10 }}>
-      {notes.filter(n => n.id !== draftId).map(n => { const b = badge(n.phase); return (
-        <div key={n.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 10px", marginBottom: 6, background: b.bg }}>
-          <div style={{ fontSize: 10.5, fontWeight: 800, color: b.c }}>{b.t} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· {fmtDate(n.at)}</span></div>
-          {n.text && <div style={{ fontSize: 12.5, marginTop: 3 }}>{n.text}</div>}
-          {(n.photos || []).length > 0 && <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-            {n.photos.map((u, i) => thumb(n, u, i))}
-          </div>}
-        </div>); })}
-      {!completed && !phase && (
-        <div style={{ display: "flex", gap: 6 }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => openPhase("pre")}>+ 🔍 Pre-check note</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => openPhase("post")}>+ ✅ Post-service note</button>
-        </div>
-      )}
-      {!completed && phase && (
-        <div style={{ border: "1px dashed var(--border)", borderRadius: 8, padding: "8px 10px" }}>
-          <div style={{ fontSize: 11, fontWeight: 800, color: badge(phase).c, marginBottom: 5 }}>{badge(phase).t}</div>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
-            {(phase === "pre"
-              ? ["6 Points Check", "Rim scratch", "Rim bent", "Body scratch", "Body dent", "Tire sidewall damage", "Low tread", "Missing wheel cap", "Missing lock nut key", "Warning light on"]
-              : ["6 Points Check", "Torque checked", "Pressures set", "Test drive done", "Old parts returned", "Area cleaned"]
-            ).map(s => (
-              <button key={s} type="button" className="btn btn-ghost btn-sm" style={{ fontSize: 10.5, padding: "3px 9px", borderRadius: 14 }}
-                onClick={() => setTxt(t => t ? (t.endsWith(" ") || t.endsWith(",") ? t + s : t + ", " + s) : s)}>{s}</button>
-            ))}
-          </div>
-          <textarea className="filter-input" style={{ width: "100%", minHeight: 44 }} placeholder="Note (e.g. front-right rim scratch before service)…" value={txt} onChange={e => setTxt(e.target.value)} />
-          {(draftNote?.photos?.length > 0 || uploading > 0) && (
-            <div style={{ display: "flex", gap: 8, margin: "8px 0 2px", flexWrap: "wrap", alignItems: "center" }}>
-              {(draftNote?.photos || []).map((u, i) => thumb(draftNote, u, i))}
-              {uploading > 0 && <span style={{ fontSize: 11.5, color: "var(--muted)" }}>⏳ uploading{uploading > 1 ? ` ×${uploading}` : ""}…</span>}
-            </div>
-          )}
-          <div style={{ fontSize: 10.5, color: "var(--muted)", margin: "4px 0 6px" }}>Photos save automatically — use × to remove a mistake.</div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer" }}>📷 Add photo<input type="file" accept="image/*" multiple style={{ display: "none" }} onChange={addPic} /></label>
-            <button className="btn btn-primary btn-sm" disabled={uploading > 0} onClick={done}>✓ Done</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-function TechStage({ num, title, done, meta, children, muted, reopened, setReopened }) {
-  const showBody = !done || reopened[num];
-  return (
-    <div style={{ border: `1px solid ${done ? "#BBF7D0" : "var(--border)"}`, borderRadius: 10, marginBottom: 8, background: done ? "#F0FDF4" : "var(--card)", opacity: muted ? .55 : 1 }}>
-      <div onClick={() => done && setReopened(r => ({ ...r, [num]: !r[num] }))}
-        style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", cursor: done ? "pointer" : "default" }}>
-        <span style={{ width: 20, height: 20, borderRadius: "50%", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0,
-          background: done ? "var(--success)" : "var(--bg)", color: done ? "#fff" : "var(--muted)", border: done ? "none" : "1px solid var(--border)" }}>{done ? "✓" : num}</span>
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: done ? "#15803D" : "var(--text)" }}>{title}</span>
-        {meta && <span style={{ fontSize: 11, color: done ? "#15803D" : "var(--muted)", marginLeft: "auto", fontWeight: 600 }}>{meta}</span>}
-      </div>
-      {showBody && children && <div style={{ padding: "0 12px 12px" }}>{children}</div>}
-    </div>
-  );
-}
-
-function TechJobCard({ job, index, onUpdate, onCompletedPrompt }) {
-  const [j, setJ] = useState(job);
-  useEffect(() => { setJ(job); }, [job.id, job.updated_at, job.status, job.truck_status, job.parts_released, job.techs_released]); // resync only on real changes, not every keystroke re-render
-  const [open, setOpen] = useState(false);
-  const [reopened, setReopened] = useState({}); // manually reopened done-stages
-  // distinct cars on this order (multi-car orders get one mileage each)
-  const jobCars = (() => {
-    const m = new Map();
-    (job.items || []).forEach(it => {
-      const key = it.car_id || it.car_label || "primary";
-      if (!m.has(key)) m.set(key, { key, car_id: it.car_id || (key === "primary" ? job.car_id : null), label: it.car_label || `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "Car" });
-    });
-    if (!m.size) m.set("primary", { key: "primary", car_id: job.car_id, label: `${job.car_brand || ""} ${job.car_model || ""}`.trim() || "Car" });
-    return [...m.values()];
-  })();
-  const [mileages, setMileages] = useState(() => job.car_mileages || (job.service_mileage ? { [jobCars[0].key]: { km: job.service_mileage, unit: job.service_mileage_unit || "KM" } } : {}));
-  const mSet = (key, patch) => setMileages(p => ({ ...p, [key]: { ...(p[key] || { unit: "KM" }), ...patch } }));
-  const allMiles = jobCars.every(c => Number((mileages[c.key] || {}).km) > 0);
-  const items = j.items || [];
-  const productItems = items.filter(it => it.tire_id || (Number(it.unit_price) || 0) > 0);
-  const hasProducts = productItems.length > 0;
-  const ordChecks = j.tech_checks_order || {};
-  const carChecks = j.tech_checks_car || {};
-  const patch = (p) => { const next = { ...j, ...p }; setJ(next); onUpdate(next); updateJob(j.id, p); };
-
-  const completed = j.truck_status === "completed" || j.status === "done";
-  const started = j.truck_status === "processing" || completed;
-  const partsReceived = !!j.parts_received || j.truck_status === "arrived" || started;
-
-  const startJob = () => patch({ truck_status: "processing", status: "on_site", started_at: j.started_at || new Date().toISOString() }); // pill shows "Started"
-  const toggleOrd = (id) => {
-    const tech_checks_order = { ...ordChecks, [id]: !ordChecks[id] };
-    const done = productItems.length > 0 && productItems.every(it => tech_checks_order[it.id]);
-    const p = { tech_checks_order, ver_times: verStamp(j, "c3", done) };
-    // completing "parts match the order" = parts received (auto — no separate button)
-    if (done && !started && !completed) { p.parts_received = true; p.truck_status = "arrived"; }
-    patch(p);
-  };
-  const toggleCar = (id) => {
-    const tech_checks_car = { ...carChecks, [id]: !carChecks[id] };
-    const done = productItems.length > 0 && productItems.every(it => tech_checks_car[it.id] || (mism[it.id] && (mism[it.id].resolution === "approved" || mism[it.id].resolution === "dont_fit")));
-    patch({ tech_checks_car, ver_times: verStamp(j, "c4", done) });
-  };
-
-  const mism = j.tech_mismatch || {};
-  // an item is "resolved" for stage ② if checked OK, office-approved, or office said don't fit
-  const itemCarOk = (it) => carChecks[it.id] || (mism[it.id] && (mism[it.id].resolution === "approved" || mism[it.id].resolution === "dont_fit"));
-  const dontFitItems = productItems.filter(it => mism[it.id] && mism[it.id].resolution === "dont_fit");
-  const hasDontFit = dontFitItems.length > 0;
-  const s2count = productItems.filter(it => ordChecks[it.id]).length;
-  const s3count = productItems.filter(itemCarOk).length;
-  const s2done = hasProducts && s2count === productItems.length;
-  const s3done = hasProducts && productItems.every(itemCarOk);
-
-  // ── Mismatch flow (stage ②): flag item → office decides. Inline UI (no browser popups — they're blocked in some mobile browsers) ──
-  const [flagging, setFlagging] = useState(null);      // item id whose reason input is open
-  const [flagReason, setFlagReason] = useState("");
-  const [confirmStop, setConfirmStop] = useState(false); // inline stop confirmation
-  const startFlag = (id) => { setFlagging(id); setFlagReason(""); };
-  const saveFlag = (id) => {
-    const reason = flagReason.trim();
-    if (!reason) return;
-    setFlagging(null); setFlagReason("");
-    patch({ tech_mismatch: { ...mism, [id]: { reason, at: new Date().toISOString(), resolution: null } }, tech_checks_car: { ...carChecks, [id]: false }, ver_times: verStamp(j, "c4", false) });
-  };
-  const clearMismatch = (id) => { const m = { ...mism }; delete m[id]; setConfirmStop(false); patch({ tech_mismatch: m }); };
-  const resolveMismatch = (id, resolution) => {
-    const m = { ...mism, [id]: { ...mism[id], resolution, resolved_at: new Date().toISOString() } };
-    const done = productItems.every(it => carChecks[it.id] || (m[it.id] && (m[it.id].resolution === "approved" || m[it.id].resolution === "dont_fit")));
-    setConfirmStop(false);
-    patch({ tech_mismatch: m, ver_times: verStamp(j, "c4", done) });
-  };
-  const approveMismatch = (id) => resolveMismatch(id, "approved");
-  const dontFitMismatch = (id) => resolveMismatch(id, "dont_fit");
-  const stopIncomplete = () => {
-    const reasons = Object.values(mism).map(x => x.reason).filter(Boolean).join(" · ");
-    setConfirmStop(false);
-    patch({ status: "incomplete", incomplete_at: new Date().toISOString(), incomplete_reason: reasons || "Mismatch — office confirmed stop" });
-  };
-  const canComplete = !hasProducts || (s2done && s3done);
-  const complete = () => {
-    if (!canComplete || completed) return;
-    if (!allMiles) { alert("Please enter the current mileage for every car before completing."); return; }
-    const now = new Date().toISOString();
-    const cm = {};
-    jobCars.forEach(c => { const v = mileages[c.key]; cm[c.key] = { car_id: c.car_id, label: c.label, km: Number(v.km), unit: v.unit || "KM" }; });
-    const first = cm[jobCars[0].key];
-    const p = { truck_status: "completed", status: "done", completed_at: now,
-      car_mileages: cm, service_mileage: first.km, service_mileage_unit: first.unit };
-    if (hasDontFit) {
-      p.partial_completion = true;
-      p.unfitted_items = dontFitItems.map(it => `${it.qty}× ${it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name} — ${mism[it.id].reason}`).join(" · ");
-    }
-    patch(p);
-    if (onCompletedPrompt) onCompletedPrompt({ ...j, ...p }); // "one last thing" — prompt lives in MyJobsView (this card unmounts on completion)
-    // append to the car's mileage log (fire-and-forget; never blocks completion)
-    jobCars.forEach(c => {
-      const v = cm[c.key];
-      if (c.car_id && v) appendCarMileage(c.car_id, {
-        date: now, km: v.km, unit: v.unit,
-        service: j.service_type || "", job_id: j.id, mobile: j.customer_mobile || "",
-      });
-    });
-  };
-
-  const ts = completed ? "completed" : started ? "processing" : partsReceived ? "arrived" : "scheduled";
-  const tsLabel = ts === "arrived" ? "parts received" : ts === "processing" ? "in progress" : ts;
-  const statusColor = ts === "completed" ? "#15803D" : ts === "processing" ? "#D97706" : ts === "arrived" ? "#2563EB" : "#94A3B8";
-  const pillBg = ts === "completed" ? "#DCFCE7" : ts === "processing" ? "#FEF3C7" : ts === "arrived" ? "#DBEAFE" : "#F1F5F9";
-
-  // Collapsed summary: car → services → product summaries (sales-row structure)
-  const collapsedGroups = (() => {
-    const svcMap = {};
-    items.forEach(it => {
-      const k = it.service_id || it.id;
-      if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, isTire: it.kind === "tire", qty: 0, products: [], car: it.car_label || `${j.car_brand || ""} ${j.car_model || ""}`.trim() || "—" };
-      const _bad = mism[it.id] && mism[it.id].resolution !== "approved";
-      if (it.kind === "tire" && it.tire_id) { svcMap[k].qty += Number(it.qty) || 0; svcMap[k].products.push({ q: it.qty, n: `${it.brand} ${it.pattern || ""}`.trim(), bad: _bad }); }
-      else if (it.kind === "part") svcMap[k].products.push({ q: it.qty, n: it.name, bad: _bad });
-    });
-    const groups = {};
-    Object.values(svcMap).forEach(l => { (groups[l.car] = groups[l.car] || []).push(l); });
-    return Object.entries(groups);
-  })();
-
-  // A stage section: done → slim green ✓ header (tap to reopen); active → full body
-
-  // Verification checklist structured like Service Details: car → service → products (no prices)
-  const verGroups = (() => {
-    const svcMap = {};
-    productItems.forEach(it => {
-      const k = it.service_id || it.id;
-      if (!svcMap[k]) svcMap[k] = { key: k, service_type: it.service_type, variant: it.variant, car: it.car_label || `${j.car_brand || ""} ${j.car_model || ""}`.trim() || "—", items: [] };
-      svcMap[k].items.push(it);
-    });
-    const g = {};
-    Object.values(svcMap).forEach(s => { (g[s.car] = g[s.car] || []).push(s); });
-    return Object.entries(g);
-  })();
-  const verChecklist = (checkMap, toggle, withMismatch) => (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {verGroups.map(([car, svcs]) => (
-        <div key={car}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>🚗 {car}</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingLeft: 10, borderLeft: "2px solid var(--border)" }}>
-            {svcs.map(s => {
-              const variantStr = s.variant && Object.values(s.variant).filter(Boolean).join(" / ");
-              return (
-                <div key={s.key} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 9, padding: "8px 10px" }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 5 }}>{s.service_type}{variantStr ? <span style={{ color: "var(--muted)", fontWeight: 500 }}> · {variantStr}</span> : ""}</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                    {s.items.map(it => {
-                      const m = withMismatch ? mism[it.id] : null;
-                      const itemLabel = (
-                        <span style={{ fontSize: 12.5 }}>
-                          <span style={{ color: "var(--accent)", fontWeight: 700 }}>{it.qty}×</span> <strong>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""}${it.position ? ` (${it.position})` : ""}` : it.name}</strong>
-                          {it.kind === "tire" && itemSpec(it) ? <span style={{ color: "var(--muted)" }}> · {itemSpec(it)}</span> : ""}
-                          {it.kind === "part" && it.supplier ? <span style={{ fontSize: 10, fontWeight: 700, color: "#1E40AF", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 5, padding: "0 5px", marginLeft: 5 }}>{it.supplier}</span> : ""}
-                        </span>
-                      );
-                      if (m && !m.resolution) return (
-                        <div key={it.id} style={{ border: "1px solid #FCA5A5", borderRadius: 8, padding: "8px 10px", background: "#FEF2F2" }}>
-                          {itemLabel}
-                          <div style={{ fontSize: 12, color: "#991B1B", fontWeight: 600, margin: "5px 0" }}>⚠ Doesn't match: {m.reason}</div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                            <button type="button" className="btn btn-sm" style={{ background: "#FEF3C7", border: "1px solid #F59E0B", color: "#92400E", fontWeight: 700 }} onClick={() => approveMismatch(it.id)}>✓ Office approved — proceed with fitting</button>
-                            <button type="button" className="btn btn-sm" style={{ background: "#FEE2E2", border: "1px solid #DC2626", color: "#991B1B", fontWeight: 700 }} onClick={() => dontFitMismatch(it.id)}>⛔ Office confirmed — don't fit this item</button>
-                            <button type="button" className="btn btn-ghost btn-sm" onClick={() => clearMismatch(it.id)}>↩ Undo (flagged by mistake)</button>
-                          </div>
-                        </div>
-                      );
-                      if (m && m.resolution === "dont_fit") return (
-                        <div key={it.id} style={{ border: "1px solid #DC2626", borderRadius: 8, padding: "7px 9px", background: "#FEF2F2", opacity: .9 }}>
-                          {itemLabel}
-                          <div style={{ fontSize: 11.5, color: "#991B1B", fontWeight: 700, marginTop: 3 }}>⛔ Office confirmed — don't fit · {m.reason}</div>
-                          {m.resolved_at && <div style={{ fontSize: 10.5, color: "#B91C1C" }}>{fmtDate(m.resolved_at)} {fmtTime(m.resolved_at)}</div>}
-                        </div>
-                      );
-                      if (m && m.resolution === "approved") return (
-                        <div key={it.id} style={{ border: "1px solid #F59E0B", borderRadius: 8, padding: "7px 9px", background: "#FFFBEB" }}>
-                          {itemLabel}
-                          <div style={{ fontSize: 11.5, color: "#92400E", fontWeight: 700, marginTop: 3 }}>✓ Office-approved despite mismatch · {m.reason}</div>
-                          {m.approved_at && <div style={{ fontSize: 10.5, color: "#B45309" }}>{fmtDate(m.approved_at)} {fmtTime(m.approved_at)}</div>}
-                        </div>
-                      );
-                      return (
-                        <div key={it.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "7px 9px", background: checkMap[it.id] ? "#F0FDF4" : "var(--card)" }}>
-                          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
-                            <input type="checkbox" checked={!!checkMap[it.id]} onChange={() => toggle(it.id)} style={{ marginTop: 2 }} />
-                            {itemLabel}
-                          </label>
-                          {withMismatch && !checkMap[it.id] && flagging !== it.id && (
-                            <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", marginTop: 4, marginLeft: 24, padding: "1px 6px" }} onClick={() => startFlag(it.id)}>⚠ Doesn't match customer's car</button>
-                          )}
-                          {withMismatch && flagging === it.id && (
-                            <div style={{ marginTop: 6, marginLeft: 24, display: "flex", flexDirection: "column", gap: 6 }}>
-                              <input className="filter-input" style={{ width: "100%" }} autoFocus value={flagReason}
-                                placeholder="What doesn't match? (required — e.g. car needs 21-inch, tire is 20)"
-                                onChange={e => setFlagReason(e.target.value)} />
-                              <div style={{ display: "flex", gap: 6 }}>
-                                <button type="button" className="btn btn-sm" style={{ background: "#FEE2E2", border: "1px solid #DC2626", color: "#991B1B", fontWeight: 700 }} disabled={!flagReason.trim()} onClick={() => saveFlag(it.id)}>Report mismatch</button>
-                                <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setFlagging(null); setFlagReason(""); }}>Cancel</button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-
-  return (
-    <div className="my-job-card" style={{ borderLeft: `4px solid ${statusColor}`, padding: 0, overflow: "hidden" }}>
-      {/* ⚠ mismatch banner — pinned on top whenever any item doesn't match */}
-      {(() => {
-        const bad = productItems.filter(it => mism[it.id] && mism[it.id].resolution !== "approved");
-        if (!bad.length) return null;
-        return (
-          <div style={{ background: "#FEF2F2", borderBottom: "1.5px solid #FCA5A5", padding: "7px 14px", fontSize: 12, fontWeight: 700, color: "#991B1B" }}>
-            ⚠ {bad.length} item{bad.length > 1 ? "s don't" : " doesn't"} match the customer's car — {bad.map(it => it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name).join(" · ")}
-          </div>
-        );
-      })()}
-      {/* Collapsed summary — always visible, tap to expand */}
-      <div onClick={() => setOpen(o => !o)} style={{ cursor: "pointer", padding: "12px 14px" }}>
-        {/* 1 · order number / time */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-            <span className="my-job-num">#{index + 1}</span>
-            <span style={{ fontFamily: "var(--font-head)", fontSize: 18, fontWeight: 700 }}>⏰ {fmtTime(j.scheduled_at)}</span>
-            {j.is_overtime ? <span style={{ fontSize: 9, background: "#F59E0B", color: "#fff", padding: "1px 5px", borderRadius: 4, fontWeight: 700 }}>OT</span> : ""}
-          </div>
-          <span style={{ fontSize: 14, color: "var(--muted)" }}>{open ? "▲" : "▼"}</span>
-        </div>
-        {/* 2 · customer / mobile */}
-        <div style={{ fontWeight: 600, fontSize: 14, marginTop: 4 }}>
-          {j.customer_name} · <a href={`tel:${j.customer_mobile}`} onClick={e => e.stopPropagation()} style={{ color: "var(--accent)", fontWeight: 600 }}>{j.customer_mobile}</a>
-        </div>
-        {/* 3 · full address — tap to navigate */}
-        <div style={{ fontSize: 12.5, marginTop: 2 }}>
-          {j.map_link ? (
-            <a href={j.map_link} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ color: "var(--accent)", fontWeight: 500, textDecoration: "underline", textDecorationColor: "rgba(212,132,10,.4)" }}>
-              📍 {j.area}, Blk {j.block}{j.street ? `, St ${j.street}` : ""}{j.lane ? `, Ln ${j.lane}` : ""}{j.house ? `, ${j.house}` : ""}
-            </a>
-          ) : (
-            <span style={{ color: "var(--muted)" }}>📍 {j.area}, Blk {j.block}{j.street ? `, St ${j.street}` : ""}{j.lane ? `, Ln ${j.lane}` : ""}{j.house ? `, ${j.house}` : ""}</span>
-          )}
-        </div>
-        {/* 4–5 · car → services / items */}
-        {collapsedGroups.length > 0 && (
-          <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
-            {collapsedGroups.map(([car, lines]) => (
-              <div key={car}>
-                <div style={{ fontSize: 12.5, fontWeight: 700 }}>🚗 {car}</div>
-                <div style={{ paddingLeft: 14, display: "flex", flexDirection: "column", gap: 2 }}>
-                  {lines.map(l => (
-                    <div key={l.key} style={{ display: "flex", justifyContent: "space-between", gap: 14, fontSize: 12, lineHeight: 1.45 }}>
-                      <span style={{ whiteSpace: "nowrap", fontWeight: 600, flexShrink: 0, width: 92 }}>
-                        <span style={{ color: "var(--accent)", fontWeight: 700 }}>{l.isTire ? (l.qty || "") : 1}×</span> {shortService(l.service_type)}{l.isTire && !l.qty ? " (labor)" : ""}
-                      </span>
-                      <span style={{ color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: "1 1 auto", minWidth: 0, display: "block" }}>
-                        {l.products.slice(0, 2).map((p, i) => {
-                          const short = (p.n || "").length > 26 ? (p.n || "").slice(0, 25) + "…" : (p.n || "");
-                          return <span key={i} title={p.n} style={p.bad ? { color: "#DC2626", fontWeight: 700 } : undefined}>{i > 0 ? " · " : ""}<span style={{ color: p.bad ? "#DC2626" : "var(--accent)", fontWeight: 700 }}>{p.q}×</span> {p.bad ? "⚠ " : ""}{short}</span>;
-                        })}
-                        {l.products.length > 2 && <span style={{ fontWeight: 600 }}> · +{l.products.length - 2} more</span>}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        {/* 6 · total — highlighted like the sales row · 7 · note */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 7 }}>
-          <span style={{ fontSize: 12, color: "#B45309", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.notes ? `⚠ ${j.notes}` : ""}</span>
-          <span style={{ fontFamily: "var(--font-head)", fontWeight: 700, color: "var(--accent)", fontSize: 15, whiteSpace: "nowrap" }}>KWD {Number(j.total || 0).toFixed(3)}</span>
-        </div>
-      </div>
-
-      {!open ? null : (
-      <div style={{ padding: "0 12px 12px" }}>
-
-        {!completed && !started && (
-          <div style={{ margin: "2px 0 10px" }}>
-            <button className="btn btn-primary btn-sm" onClick={startJob}>▶ Start Job</button>
-          </div>
-        )}
-
-        {hasProducts ? (
-          <>
-            {/* Stage 2 · parts vs ORDER */}
-            <TechStage reopened={reopened} setReopened={setReopened} num={1} title="Verify parts match the order" done={s2done} meta={`${s2count}/${productItems.length}`}>
-              {verChecklist(ordChecks, toggleOrd)}
-            </TechStage>
-
-            {/* Stage 3 · parts vs CAR */}
-            <TechStage reopened={reopened} setReopened={setReopened} num={2} title="Verify parts match the customer's car" done={s3done} meta={`${s3count}/${productItems.length}`}>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>Check against the actual car — even if the order was confirmed by the customer.</div>
-              {verChecklist(carChecks, toggleCar, true)}
-            </TechStage>
-          </>
-        ) : (
-          j.no_products_reason === "customer_parts" ? (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#FFFBEB", border: "1.5px solid #FCD34D", borderRadius: 10, padding: "9px 12px", marginBottom: 8 }}>
-              <span style={{ fontSize: 15 }}>🛞</span>
-              <span style={{ fontSize: 12.5, fontWeight: 700, color: "#92400E" }}>Parts/tires are WITH THE CUSTOMER — install what the customer provides.</span>
-            </div>
-          ) : (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 10, padding: "9px 12px", marginBottom: 8 }}>
-              <span style={{ fontSize: 15 }}>🔧</span>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#1E40AF" }}>{j.no_products_reason === "labor_only" ? "Labor only — no products for this order." : "Labor only — no products for this order. Parts/tires with customer."}</span>
-            </div>
-          )
-        )}
-
-        {/* Stage 4 · Complete */}
-        <TechStage reopened={reopened} setReopened={setReopened} num={hasProducts ? 3 : 1} title="Complete job" done={completed} meta={completed ? (jobDurationMin(j) != null ? fmtDuration(jobDurationMin(j)) : "done") : null}>
-          <JobNotes j={j} patch={patch} completed={completed} />
-          {!completed && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px" }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px" }}>Current mileage (required{jobCars.length > 1 ? " — per car" : ""})</label>
-                {jobCars.map(c => {
-                  const v = mileages[c.key] || { km: "", unit: "KM" };
-                  return (
-                    <div key={c.key} style={{ marginTop: 8 }}>
-                      {jobCars.length > 1 && <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>🚗 {c.label}</div>}
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <input className="filter-input" style={{ width: 130 }} type="number" min="0" inputMode="numeric"
-                          placeholder="e.g. 82500" value={v.km || ""} onChange={e => mSet(c.key, { km: e.target.value })} />
-                        <div style={{ display: "flex", gap: 4 }}>
-                          {["KM", "Mile"].map(u => (
-                            <button key={u} type="button" className={`btn btn-sm ${(v.unit || "KM") === u ? "btn-primary" : "btn-ghost"}`} onClick={() => mSet(c.key, { unit: u })}>{u}</button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div>
-                <button className="btn btn-success btn-sm" disabled={!canComplete || !allMiles} onClick={complete}
-                  title={!canComplete ? "Finish stages 1 and 2 first" : !allMiles ? "Enter mileage for every car first" : ""}>
-                  {hasDontFit ? "Complete Job (partial — skip don't-fit items)" : "Complete Job"}
-                </button>
-                {!canComplete && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>Finish both verifications to unlock.</span>}
-                {j.started_at && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>⏱ Started {fmtDuration(Math.max(0, Math.round((Date.now() - new Date(j.started_at)) / 60000)))} ago</div>}
-              </div>
-              {hasDontFit && !confirmStop && (
-                <button type="button" className="btn btn-sm" style={{ alignSelf: "flex-start", background: "#FEE2E2", border: "1px solid #DC2626", color: "#991B1B", fontWeight: 700 }} onClick={() => setConfirmStop(true)}>⛔ Stop job — mark incomplete</button>
-              )}
-              {hasDontFit && confirmStop && (
-                <div style={{ border: "1px solid #DC2626", borderRadius: 8, padding: "8px 10px", background: "#FEF2F2" }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#991B1B", marginBottom: 6 }}>Mark this order incomplete?</div>
-                  <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>It will move to history and won't be completed today. This can't be undone from the truck.</div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button type="button" className="btn btn-sm" style={{ background: "#DC2626", border: "1px solid #DC2626", color: "#fff", fontWeight: 700 }} onClick={stopIncomplete}>Yes — mark incomplete</button>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => setConfirmStop(false)}>Back</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </TechStage>
-      </div>
-      )}
-    </div>
-  );
-}
-
-function HistoryView({ jobs, onSelectJob, onEdit, onReorder }) {
-  const [search, setSearch] = useState("");
-  const [filterTruck, setFilterTruck] = useState("all");
-  const [filterAgent, setFilterAgent] = useState("all");
-  const [quick, setQuick] = useState("all"); // all | completed | cancelled | paid | unpaid
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-
-  // History = successful orders (by status OR technician completion) + cancelled + incomplete
-  const histJobs = jobs.filter(j => jobSuccessful(j) || j.status === "cancelled" || j.status === "incomplete");
-  const agents = [...new Set(histJobs.map(j => j.sales_agent).filter(Boolean))];
-
-  const filtered = histJobs.filter(j => {
-    const cancelled = j.status === "cancelled";
-    const incomplete = j.status === "incomplete";
-    if (quick === "completed" && (cancelled || incomplete)) return false;
-    if (quick === "cancelled" && !cancelled) return false;
-    if (quick === "incomplete" && !incomplete) return false;
-    if (quick === "paid" && (cancelled || incomplete || j.payment_status !== "paid")) return false;
-    if (quick === "unpaid" && (cancelled || incomplete || j.payment_status === "paid")) return false;
-    if (filterTruck !== "all" && j.assigned_truck !== filterTruck) return false;
-    if (filterAgent !== "all" && j.sales_agent !== filterAgent) return false;
-    const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : "";
-    if (dateFrom && d < dateFrom) return false;
-    if (dateTo && d > dateTo) return false;
-    if (search) {
-      const s = search.toLowerCase();
-      if (!j.customer_name?.toLowerCase().includes(s) && !j.customer_mobile?.includes(s) && !j.service_details?.toLowerCase().includes(s)) return false;
-    }
-    return true;
-  }).sort((a, b) => lastAction(b) - lastAction(a)); // most recent action first
-
-  const completedShown = filtered.filter(j => j.status !== "cancelled" && j.status !== "incomplete");
-  const totalRevenue = completedShown.reduce((s, j) => s + Number(j.total || 0), 0);
-
-  const QUICK = [
-    { key: "all", label: "All" },
-    { key: "completed", label: "✓ Successful" },
-    { key: "cancelled", label: "Cancelled" },
-    { key: "incomplete", label: "Incomplete" },
-    { key: "paid", label: "Paid" },
-    { key: "unpaid", label: "Unpaid" },
-  ];
-
-  return (
-    <>
-      <div className="page-header">
-        <div>
-          <div className="page-title">Order History</div>
-          <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 2 }}>
-            {filtered.length} order{filtered.length !== 1 ? "s" : ""} shown · KWD {totalRevenue.toFixed(3)} successful{quick === "all" ? "" : " (filtered)"} — full numbers live in Reports
-          </div>
-        </div>
-        <div className="filters">
-          <input className="filter-input" placeholder="Search customer, item…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 200 }} />
-          <select className="filter-select" value={filterTruck} onChange={e => setFilterTruck(e.target.value)}>
-            <option value="all">All Trucks</option>
-            {TRUCKS.map(t => <option key={t}>{t}</option>)}
-          </select>
-          {agents.length > 0 && (
-            <select className="filter-select" value={filterAgent} onChange={e => setFilterAgent(e.target.value)}>
-              <option value="all">All Agents</option>
-              {agents.map(a => <option key={a}>{a}</option>)}
-            </select>
-          )}
-          <input type="date" className="filter-select" value={dateFrom} onChange={e => setDateFrom(e.target.value)} title="From date" />
-          <input type="date" className="filter-select" value={dateTo} onChange={e => setDateTo(e.target.value)} title="To date" />
-        </div>
-      </div>
-
-      {/* Quick status filter pills */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-        {QUICK.map(q => (
-          <button key={q.key} className={`btn btn-sm ${quick === q.key ? "btn-primary" : "btn-ghost"}`} onClick={() => setQuick(q.key)}>{q.label}</button>
-        ))}
-      </div>
-
-      {filtered.length === 0 && <div className="empty"><h3>No orders found</h3><p>Completed and cancelled orders will appear here.</p></div>}
-
-      {filtered.map(job => (
-        <div key={job.id} className="history-job-card" onClick={() => onSelectJob(job)}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{job.customer_name}</div>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>
-                {job.link_type && LINK_BADGE[job.link_type] && <span style={{ fontSize: 10, fontWeight: 800, color: LINK_BADGE[job.link_type].c, background: LINK_BADGE[job.link_type].bg, border: `1px solid ${LINK_BADGE[job.link_type].c}33`, borderRadius: 5, padding: "1px 6px", marginRight: 6 }}>{LINK_BADGE[job.link_type].t}</span>}
-                {job.service_type} · {job.car_brand} {job.car_model}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{fmtDateTime(job.scheduled_at)} · {job.assigned_truck} · {job.sales_agent}</div>
-              {job.status === "cancelled" && job.cancel_reason && job.cancel_reason !== "—" && (
-                <div style={{ fontSize: 12, color: "#991B1B", marginTop: 4 }}>✕ {job.cancel_reason}{job.cancelled_at ? ` · ${fmtDate(job.cancelled_at)}` : ""}</div>
-              )}
-              {job.status === "cancelled" && (onEdit || onReorder) && (
-                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                  {onEdit && <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onEdit(job); }}>✏ Edit &amp; Restore</button>}
-                  {onReorder && <button type="button" className="btn btn-ghost btn-sm" onClick={(e) => { e.stopPropagation(); onReorder(job); }}>↻ Reorder</button>}
-                </div>
-              )}
-              {job.status === "incomplete" && (
-                <div style={{ fontSize: 12, color: "#B45309", marginTop: 4 }}>⚠ {job.incomplete_reason || "Incomplete"}{job.incomplete_at ? ` · ${fmtDate(job.incomplete_at)}` : ""}</div>
-              )}
-              {job.partial_completion && job.status !== "incomplete" && (
-                <div style={{ fontSize: 12, color: "#B45309", marginTop: 4 }}>◐ Partial — not fitted: {job.unfitted_items || "see order"}</div>
-              )}
-            </div>
-            <div style={{ textAlign: "right", flexShrink: 0 }}>
-              <div style={{ fontWeight: 700, color: "var(--accent)", fontSize: 15 }}>KWD {Number(job.total || 0).toFixed(3)}</div>
-              <StatusPill status={job.status} />
-              <div style={{ fontSize: 11, marginTop: 4, color: job.payment_status === "paid" ? "var(--success)" : "var(--danger)", fontWeight: 600 }}>{job.payment_status}</div>
-            </div>
-          </div>
-        </div>
-      ))}
-    </>
-  );
-}
-
-// ─── Customer Profile Detail ──────────────────────────────────────────────────
-// Build a branded per-car service-history PDF (client-side, via print window).
-// mode: "simple" = date/service/mileage; "detailed" = adds items done.
-const BNCHR_LOGO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABJ8AAACgCAYAAACi7s0aAABBaklEQVR42u3deZxlZ10n/vc599baK4TAuIEIiiNhMyHdSWDoVpAx7g7dwAAKgqLzU0fHBZefdIL+EHFkVHQURtRBGKGjDiaCsmg3S3pJOhAxCAPK4jIKIUt37VX3nvP7456qJJCQrbrq3FufN69KtGmS2+c89/l+n+95nu8hIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIihlbxBf/bWumoMpcp1tyodkCNuhlBdS7K2vel4+jdfKe2zhipMja28Fi7Ue2g/paKpfVaTC0yDwyRfWpX4ENql6m3zLx1WMeBofrEiSkZO+0dO7XCUZ0MjkiMiYg424vgI7oOpUgZdzI26izCY0QdUq7NfzFaC+sjuurEtIiIWPfcuEyMia2suIsvRqFQO26PXR5uVk0WkZkwVUq3qNxiyj96jBsVqjssxi5T2IpPKE8Z03OpMVOW2cLPv2qlfzbjevvN3mE+ifVzjW80bpfl1s3NtSmFeTfa4y9HMmYeVjqgvsPcVyu814NM+zI8SN9uRRLLIbmjZ/TdbMI/6vuMC6zc4b5SjlxMqxWu9TKlh+rrtTy/q0wat+D37HVErbzDdy82bswUasdM6fp5pQfp67d87NQ6Ohb9oif5Pw4pXb7OY2f1urzXA+zwdAtbOv+Lz9VH1xmcNuUf3egz9lu8w+85omuffvLk2Dpp111N14W+axz2pQ64JZNpGBy0W8ZSk7BX/kHhr407YtkRF/r4542hrZKQnbJLz/91rmnLtm6ptsYiap9SeZ3PeKVLLaUAtc7j7aRPeYiHmm+Wxu1ZJrID/+x6ez1hpO77YZ07HCX8G19myZNVvg7nqz1cYZcJjMvjmmGxsjZnzan9k8IHdbxH7V0u8JE7xLThL0IVqB1SutQnnNvMIW3O73rYjX/2o/b6VUd07dfLwN3EXKfvU86xq/W5Tt3MxZ/19fb6q8+bw9fn3zEohl7nAg9wbZMfR9wxxiyjb17tRh3Xqx1Xebs9rh+xGBNxt7p3M6nOOK1nTu9uf29sFSVKpZ3GnWfceWrP0TfrOu/R9wc+638rLN0hMI+6nlrhs874YstNmrZ1k9SOMQ+z28sULnG9/4CFZo9Ogur6uMUZX2xB1bIdNn2VjsKtIzSey2bp1W8W7Zfq+i5LvsG0XYomuVwxeMq5qLKUnRlDdX8LpdI2Yx5lzKMUDpiz5P2uxuvN+xOFGTgrC9jNULjVjC+22Lo55HPvT19HR/E5uwVi83Kd0i1mbLOiotVjpza+NkOf7evSc0Zv7VFbxB1jTKE0rethxj1M4dvMebnrnNLxZrxB4TNrOXSxpXpmxhbTvZvkpLzd70nxKW6bSntNErKkUit0bDflUlyq6298wKu8xesVqiZZrxj5wkO3+dnax1QL9FRu0vMAT3er31V4ZtMDKk911kenGWttS/6L5rONxl7Z2yeBp3yH0k/pulAX85hptsoPClRF0268bPWCLD5/xA5KHPRvF9NKE8Z9ndLXqb3UKb/ub7zGQYsj8oS6rXPIXc0pWdC3aV4cjrFTN/NysQGjtEj+F18gxgziS6W2tPZ6ko5JFxpzoXk/5Tq/b9mvKHy6aWOS5uQxkpIgx30Ns8VacbLQ0Veb0zerr+MxJvyeb3O1E57soH7zfrwE5K00txTG3WLFTgcd93MK/bwNJoZkcVU43BSe3uNrfMBbTfoTXRdaUJnR12/K7oM5sFwrPcVoxLRabV7fjL7SV9jmVz3OSSd8k6IpOuZFGxERcU+jzCA37jS5Q21B5Yy+wrm2+QkT3u+U73V583DjcHLmGMUFYsT6TaqDCXWxWZyN2WvcUaf8giuUt9shEFtH16yeaS9z3Lfar5e3g0WrrRYUDuq71ovtcMKES83rrx1zHCSPKTSNelRbjWkrzQKh67Gm/ZlTfs0Rky5vdvZGRETc+5VT2cSY2hk9fLFtXusD3uLdvshB/eTMMXoLw4j1n04Hi7d5fYXSLj/rEb7WOz1P4aaR6ZkR9yy09nQUahN+33F7XORjGQPRSqs96h6t4zq/Zdr3mrN6vK6TctOWVSqw0PTy2u2HFS7wbs/yFP+Y+SwiIu5XrkzXitqKyk7fhsc65lkudk1etLCOOd7RIdoEsU81in2TU3yKszmZDo4u3Kpnp29UeJcjvsN+n0yyvsWWbT190x6g8mbXe7LHWcgb8KJ1SUmh8j47TPlD232T03pN36fsbonbHqzcqmeHi5WOOOob7fOxNImNiIj7GWMGO27P6Jn0cFOOOO7ZLnJlClDrcn0r8kKYzZbiU2zERNp1Rs92j7fbO73X0z3Zx5Osb6lx0DGvZ5cnOO13FJ7dbCXukwJUbLLVwtMR2026ynZPcasVhbHsdoo7mc+6ZvRs8wg7vd1RT1ekABUREesUYxb1jZk25QrHHXCRK9W6ihSg7kOON3jYfa0L7fJlbm39iwFqOxTO+JQ9To3aw/oUn2LjJtJB759H2uYd3usbFD6eHVBbbAyc0bPLsxx3vYv8Up7kRAtC/KDw9BY77HSlaU9xq57CWC5OfMH5bE7ftIfb4R2O+oYUoCIiYp1izKDfYNeYKVe4xgFFClD3yeBlRz21n7bdt1vW7ncy97EDZ7wZz3KFsvnVkZDiU2xssj6vb9ojTHunE55qr08kWd9SOmb0TXuFq93gEm/N/Y9Nc8ejdlfaZp/TeorExriHi4NBTPtyO7zDEU9T+LsU1SMiYh1iTKmnwrixZgdUkSN49yPnm3FGz7yedtdAekpdzI7ibcibx2JzkvVxX2HcO53wcIW+Oj1VtswI6Cv11ab8T8d9ZXP/MxfFRichtxWeJl1lOoWnuF8x7cvt8g7HPNL+pldYRETE/YsxgwJUZdykP8qbo+/ntRwUnYblZyTXRlnwxWYm648w4R3e6ytSgNpCSoUVlXHn6LrCKdNNMSDddWJj3FmPpzMpPMX9iGlz+sY83KR3OLpWVE9Mi4iI+xtjVgtQYyZdsVaAqpOzxDAuAyM2N1lf7QE1KEAdTrK+he5/zw6P0/cahao5kx1xdq0Wnm6w3U5X2eYp2fEU65BNDR6qjK31gEoBKiIi1itvvq0ANdUUoAo9p9KfMoYtXYrYvIl0UIAa9wjbvMO7PdzBJOtb6P6vNiB/rhN+PNuI46y7/VG7peaoXXY8xXrGtNUjeDu8w/s8QqGfeS0iItYhxpR6an3jazugLrCSGBPDJMWn2PxkfbUAtdM70gNqyxUDOmb1TXql9/mG9EqJszjW7tjjaVsKT3GWYtpqAWraO9MDKiIi1jHG3LEH1DW+JQ9vY5ik+BTtSNZnmyN46QG11e59oa9QY9obXbN27zM3xfpZLTxdb1vzVrsctYuzG9PSAyoiIs5OjLntCN6YP/K+NCGP4ZEFXrRlJKYH1FYOossq4x6k8GbHTDUFgzQgj/vv9s3F+/4sR+1ig2PaoAfUMY9MASoiItYtd14tQG2/XRPy16QHVLQ9PYpoz0S6ugNq0APquC9PD6gtdO8HDcgv0EkD8lgntz9qtyM9nmLDM6zbjuBNpgdURESsa+78+T2gXpweUNH21Ciijcn6mEeY9E7vTg+oLRREVxuQP89xP5YtxHG/3LHH05Xp8RSbNK/d9ha8bc0OqPSAioiI9Ykxd+wBdSw9oKLtS/2INibrq0fwduYI3hYrGAx2v035Zcc81X693Pe41w41hae325bCU7QmpnV9hckcwYuIiHWNMbcdwZtKASraLcWnaOvIXE3WH2m7t3uvr2iO4GXMjnYAva0B+YQ3uNrDct/jXjmkdHmz4+kcf5bCU7Qqpq02IV8tQKW4HhER9z9/vm0H1JQ/WusBlQJUtC4dimjvRNoxr2fMI037c1d7sELlUMbtyAfQZZUJDzHuTT5qwhWKNCCPu7U6Rk4ZM+mPbE/hKVqVcd2xAHVbX8PEtIiIuP/5820FqCsc8+9zzDvalwpFtHsi7ZrTM+WrjPvfjplymbwJbfTv+2oD8r1u8d8d1E8D8viCaoWjOi5X6XudHb7BaSspPEXLsq7BQ5UJD9d1lVN2oc5DlYiIWIf8+fYFqDd5n8c3x7wTY6IlaVBE+yfSrhk9O12s4zfzJrQtdN/P6Nnpexz3w9k+HF/QFUr79ZzwE3Z7ntN6irxyOFo6t83q2eE8fb+rUHt0HqhERMS6xJjSir6uXSa82QfszoP7aIsUn2JYJtKO03p2eIETnp1G1FtE3RxTmfIqJ3197nvcxTgpHdR30gUm/YLZNHOO1se0rtNW7PadjvkhB9P/KSIi1nHdNK9nh6+y6Ndcngf30Q4pPsXwTKO10pJKx6856d84oMo20pG/64MG5HR0vdF7PTQ9UuIOVp/k3WAcr9ExrqdQ5AlftF7XrMqEl7vOIxPTIiJiHXPowcmRHb7LSd+cB7jRBklyYpgm0dKy2k7n4jKF2hVZYG6J+76kb9JDTPpDNxhPA/K4QxwrVOa80C5fa05fkdgWQzG3FVbUpm234hXNez4jIiLWR6VUgV/2CZMOqEj+HJuZtEcMV7JeOqPS9T1OerSDeVK8Re77agPyi8359TQgDwx2PRUq77QLP2dBrUxSFUOVhXXMqEz4TifsVajyZDoiItZt3bSgb6evdqPvUqgdSYyJzUx7IoZtGq1VthnDD6GWCv5WMWhAvsOLHfef0oA8mgJkbYfn2umLLKsS12IIVSYUCi8BB7IDKiIi1nHttKxW+XEfNWGffk4PxGZJkh7DZ9CEGp7pPc5V6Oc11Vvo3i/om/KrTnhyzq9vcfv0mwLki60klYqhjmm1jn/vmEcqsqM3IiLWSaG0qLbNV7rVNyjUOT0Qm2X0kps6/7nf/9Hyp66FQk/fDrtN+PZmEZpEfWsE0EJPgTHj3uQaX5YG5FvUYR2F2qS9JjzGopohSKYSYRLT7mxeq/VtN6njmeBo5rSISCwaojjT9vy50lUrPAfcmB22sTm6IzOBUil0muVI3PfJSZOq95t+KmWr7zzfgf9hX9NOL7bCGB00IN/ui/X8L6d8nStUzXjNt3+rOLfZ59Tx7aaw0uIjd4lRiWn35JOugG/By+3Tz82LiLOg32RSKXCvp0rVRPd2PgQbnBwo9D3VSefY46bkzbEZuiPwZa+NK0zqmEVlsWk5my/TvZ+YiuavXdt1LGNJ1dJkvbSowBO91wMUbskkuqUWlB2zenZ5ktNe7aDvV+uil4uzRaz2LLjWU6zQ2lbjldqYwnRi1KbGtGkdfSy2NKbVSksoPNYHPEzhk804yYOViFiveaayXUcPi5YTh9Zx/p4ypsRcS2PM4O2qlWnnWHQh/tzggV0edMSG6g75l702qdD3GfN+2Zg/17doRTkUWyDbZoIm+R0z6yIdLzHlqyy0cCJdfUX1uAfpeyze7YpMoltKcbsG5Ce8X+G1jujanwLUyDvULMpP+FKlr7bUjIi2qZoYVfmsOa+04i+Mm0+M2sCYBsvGLHi80k/b5jGtXBwM3tvYt82UOefjk/IyjYhYz4i0TWnWnyj8lgn/oK9q4mfcnzizoKPjkSr/2bSnWWjpTuxCZVxh0cX4c0cTY2LjDXPxqTKmUPkXy77eRT6c27muPuw9rrLNO015XEsLUH1Tupab4tO5mUS3nNUG5BN+wzVucKFjDus4mCLkSHt0810vPMqk7a2cn1ZjVN9n9HydPT6UG7fJMe19/kztL0y5uKVjZtC9rnY+/jgLg4hYp5llUHia90p7mrdqxnr7P3irU37LNt9vTl/bjuDVCn0FnoD0fYpNMcznfQdPlFcccpEPe5sJtdIhpTo/9/vnbSb8Ozda9oPNOebBNW+nR2US3aJWG5AXxnT9oVO+KA3It4Bz12akr9allUeTarUphRUvtceHEqM2+ecG455kxqwX6VlsDj62NWZ8ZWJaRKyTvimlede70EvUSkd0E4vW8eeQ0muMqRVm/Kg5nzSuo25dblI0ZwO+XN08qM17gmODDefOp1qtq2PGHK5ySOmkFZc2X/LLc2PX4RovNxPSMSd9zJRHNb0y2jRJFc3+li8FB5Kob9ECVGlZz3YPNecPHfHUZpZID7BRtaOZh0pfpGNQFm/TzFSrdXTMmlV6W2JUKyw3PZQ+7IQP2O4i8617Ml00rYAf3MS0ym0t0yMi7ltEGsOiqzB4k+Zqe4LEovVU+Spd+y066e0mvNhyy47fFahQOcdxu3BzbltstOHdHTBYaCzo6Llc5bIkZ+t+fQu1QqV0urV18cFdPxdcltu2hXXN6NnhKab9N4W+oy1940jcf+evPU188NryvI3RtbagNp8Y1aqYUej4bGtj2mBkP0Cd9yJGxDrNeYOZJIWGjbrepX9s7Wfro7Rd17Zm7ZSdT7Hh6fHwKvKFyTgBY7lFoVgrQP2g477Xfj1HRuCNnjHM3/1CJ3GqZXekbvGx3KIppm5ztBnbKT9FxHpIO4KNjDFVy8dCYSm5SaSoEHHfp9G4p1eqMngjYH8k37ZVNQ3Ip7za1S62X8/h7IAa4fGc736M5rj+koztiFjXFV/mlIhowVQUEVtnQTOlNK1jm05zqGO0kpHbGpBPmPAmV3uwA6o88YuIiIiIiNg8WZBFbAW1ypTCkmPmPcusn1ZY0GUEC1ClRX3Tvsy4N7p9B7OIiIiIiIjYcOmHEjH6KuNKSz5hytOdZxac9PemHFbrqXQYoeJMoWNGz25PdY1fscePNv2fehkOERERERERGys7nyJGXa02gcp1zjPrBuNuMG6PK8z7eTt0DfpAjZZC1xk92/2I456fBuQRERERERGbI8WniK2iUKkV/lbfo62odez1Uqe9xQ5d1QgWoCodi/om/bZjLkwD8oiIiIiIiI2X4lPEVlI0/Z0Gfx8Uo8a8wJyPmNZRtfz1sPf+zztoQF6aMO6w9zvXQZVDmfsiIiIiIiI2ShZgMQrSSPq+XbXaFUpPcKtlB/XNGjMoSY3Wn3PQgHybh+n7X2qFR6cBeURERERExEZJ8SmGX+FWcFkuxb12UN8RXRf7G/O+z4RSZyT7P3Wc0bPTU530Sgf1XZf+TxERERERERth+ItP89m9sGXVayP4M+CKjIX7ZLUR9yX+0IxfbBqQj95b4W5rQP5jjnuuC6ykAXlERERERMTZN9zFpwoTI9ajpo3qlh7DKtQ6KPw9ODfFp/tsv77DOi7yM854qx266hEsQFU6llQmvcYJ56cBeURERERExNk3nMWnQRPhWtcuPeeqla7IEcJ1dUjhsI4jtit8WVOGKFo3Enqo/W1u2P1W+5BardDzXeZ81JSueiQbkNMxbcybnXSOA2lAHhHR+rk7Nl839yEihnKVUxi2HsHFEH7mexRGhncQVaZ1Vf6zwg+olTlCs87267nGi2z3b8zqK1q0Q6RWK3XM6al9ABzNLrj75XKVR+s46GZXe5aO9+qa0lOPVOJfKM3r2+kRZr0R37jWgLwYsWbrEXHXMWTw1/Z854vm82QeurP7taxWOqqrVjuaIsiGO4Kb9OzOtY/Y4vNxx1GFfUMwFw8+Y1eh54SVoZm9Bp9zBbXtumqG5FoPxkVx1/2Dh7dYU+iYVRn3/a71CYVfNop9ajbTKf9R6RfNq9TKlg352rjCgv9jwccxKJ7E/bPagPwSH3DSi233BvPNPsNRUuqY0bPb053wSw76Sa8x1kz0ETHaiiaila2KbPXa58lOzM+3V+F3sJhLsYmudqEJD7HSyrwwIjYmgg7bi4n6aqXrPNZiE2vbPHfVSssoPAGFSy2N0vAZ9gVlaVlt2i+5xkG8U20+27Pv96TSUXmyMfutoK+NB+4qE0qL3rXWMHt/io/rYvV67vFGJzzBbj/mjN4IzBefO4YGDch3+AnHfdBF3qDWGcKgGhH3LrHrq1ToNZ0D26JS6agzB90hH5lVG/M9TphXenezRzW7wzZuVBZKFb5I6SfVxlTNIZaI2FpuMG7e0xUmWhdB73r+6jjluSY8wXzzmKfdca+0qDblAte6Uu2NhuHheN/gaHZl0TbvcJ7lO/tto7CYLMypTDnfmPMTDNdJD3NNctfGYl6tYwG8GdyYRHRd7dNvQspPutZ5dni60/rKEWvOvdqAfMJrnfA3Cn/tsI6DWfxFjGAhY7A7dtwPm/NSHf3WbcKvFPqWfGWTtOUI3uAq9LDTD6n8kJrkehuec9HBEs0T+dyBiK01BwzK/st24bAdJi1r/z7d1TejVzSFp+GYuwqFBbVtvlnhm1VDEPcqjOO0eXMeipvurKXJaOxkKJQWVBZz7Gqdh31bCw1900pzTtnjZDOwUyxY37tfr/VEWfQ8pZOmPNyCqvVPDO7tKO+pTZlSe7MbXOzRbkn/p4gR9gSfzEUYQjP6KXls4sJzdflZ5FhoxJZVqdVmzBvTG4JHAbfP54she4BeKMw369vhWJfUeoomWt/lZx2dYzSDYJiAuDWSoMG2vq7fUKiaRvM5crf+36mq2QV0oxMO6HqPcRNWRrAB+YKenR7ljN9X+Fa1jlqVAlTECDqkdNkQzL/xudekk4uwadc+IuL2a+5O84KMouWfddh1hubPUa8VI79gPSbFmhgutcqk0owPOceb1Qr7suvprFltQL7Xdeb9gAkdpT4jVpQpdM3o2eVbHPdyhb6jWehEjKTLVYqW/0RERESMmBSfYtjUugr8jIdbdIUyu1POstUG5Bd7vVm/aqfuiDbE7ZjVs91PO+6Za3/uiIiIiIiIuF9SfIrhUevZpWPGH7vQlWkMvYH2NTug5v2E0/7KDl3VyF37Ql/Hssqk33HC4+zXczg7oCIiIiIiIu6PFJ9iONQq47rm/KvCD6oVDmTH04Yp1I6q7Nez4tnmfcqkTvO68lH6cxbNq2O363qzD3qAAyqHMldGRERERETcV1lQRfvVTfvnQqXvefb41+a4XfpibKTLmwbkl/iMFc9UWzK29la80VHoWNCz3aMs+H2F2j5l87afiIiIiIiIuJdSfIp2q9VKlWkdi/6TC71LneN2m2a1AflFTlr0AybXGpCPlkLXaT27fKuTLrNfLw3IIyIiIiIi7psUn6K9Bjue+rbrOO2l9nqNI7qKFJ421Woj7ov8nhmvbhqQ90bwT9oxo2/aIcf9hzQgj4iIiKFUZfd2RGy+FJ+inermmN02XacdcpGfd0TX/pEscgyfffpqHXv8F6cdtX0EG5AXCn2lFZVJr3O189KAPCIiIoZOR58UoDZg/VKoW7++rk2kb25sjhSfoo1T4qDwtEPHnJfa62WO6NqXHU+tUaibENvT8RyL/smkjnrE+nCVCitqXbtMOOyEnWlAHhEREUOTr5XoeRApOGzI9S58eavHQm1Wzxy4LGMiNlaOkES7DHo89W3Xddpl9q7teOonaLYuiFVqHYX/62rPNO2ojo6+WjFCT9cKHXP6dvm3Zvy+wnc6ouPyNLyPiIiIVufVpWUUvk3tpS5TOaLraHKYdXWZUqHnmCk8zSLatsmjblb+PTdZcCb74GIzpPgUbZoUBz2etumacehzdjyl8NRGRdOA/BLHHPNDdvtts3ojN7eUOmb07PIdTrrMHpflGGhERES0PE8rLahs9xinvMrlfjQPz86C1Ws67tWmPMysvqJ1bRpqHdQ+udZGIn10Y4Ol+BRtmQ5v6/E045ALm8JTdjy132oj7ou9xkmPscv/47SeYuTml64ZPdMOOeavXex/pwAVERERrVYozalM+RGnfKWe31L6sDGVJUX6/9xHq9duRanwGPyQSV9vVtXCwtPg2F1HjevAudn7FJuxmIrYbIOjdpXtOncoPGXH0/AYNCAvHfUjCo+z3ZNa+tTn/ukr9VSm/a6rfdglPqJWKvIUMSIiIlqrNK+yzTfp+yaLKisGB8NWcnHu4xW97dpNKJWYUyla2he0VlpRKJ1scvessWLDpfgUmz0RDt69sUPHaS+zx8scNu7G5q0c9bpX5QuDF85mwl3fqzrYu7ZfzwnPtuSkCV9sqcVB+L79OUvL+qbtNuGw97kEcw4ps409IiIiWp3DzDf5dZkXp6yrhWZt0daHrrXamNKcm2x3ovnV5K2x4VJ8is0OhJUJPWf8rD3+KzhoORdmSO/loAH5PznmP5r2Tl2l3gg2IJ/Xs8tjVF6ncNAR3RSfIiIiouUGxZE6D2HXOTcsW/75+iZ19L3LeW5Ov6fYLCk+xeYZNBgvLeopXOKkpzU7kuqz8u8qdHR8UO0XnO9MMxkn+K53cBv0f3q3q/2oB/oNs3rqEZtrCl1n9OxywHH/r4v8gtcY8+JsXo+IiIghyGRiK625Sn2FwhuQfk+xaVJ8is0Me4NOOaVp23z7WS8D9bHLN/i0cxWe77BO86uxnlYbkF/iN53wWLt938g2ID+jb5ufd9wHXeTKZudXxlREREREtEFlUmHO/3GzdzYtTZKrxiYtniI2W43ZDZgEa5VKqfZkta5i7UBYdj+tt336Duv4Bz+k69G2u2QkG5BXCitqk17vansVaUAeEREREa1ZZ9XGlRa8yqWW8qA0NlOKT9EWZ78oMeg7VKLyMR30ctnP2rWum6OOy67xbIuuNe4hlkewAfmKyja7THiz612MhRQ1IyIiImJT1SqTSmd8WOUPml1PeUAamyZvOoitKOecN+YqDxqQX+gfLXqOUl+nKUqN1ixamtezzWMt+R8KlaM6Z+FNjRERERER9zRHrZr9+D/uYgso83A0NndIRkScLasNyC/xl+b9mG0jutW30DWjZ5dnO+4l9usxYkcMIyIiImI41Hp26pr1ehd5W95wF22Q4lNEnF2rDcgv8mvO+D07ddUjeOSx1jGrZ9ovuto3NT3FUoCKiIiIiI3MSfumdc34iDE/rFb6UHY8xeZL8Skizr7VBuQP9p/MOGGbrnrEnr4UCn2lPia93jGPVOirM89GRERExAaoVcZ09NxiyQEXOA0uT6+n2HxZFEXE2VeoHVB7uEXLnmXJZ4zrqEcsEK42IJ/wQGOucL1tTSKQ/k8RERERcfbUKl2F0pJZz3SJG5q326XwFK2Q4lNEbIxC5bCOS3zKsucqVbqqkWtAXuiY07PD4y167VoD8jS6j4iIiIizYbXw1LFszjM82Tsd0U2fp2iTFJ8iYuMcbBqQX+SdFrzEthENioWuM3p2+4+O+Ymm71X6P0VERETE+hoUnkqlFYv+g0v8mSO6zQtwIlojxaeI2FirDcj3+q9O+4MRb0DeN+0Vjnua/XoOpwAVEREREeuWb67ueFqy4Bn2emsKT9FW3RH78tWKdPLfJClkxj23r2nEfdyLnfFo23ytOX3FCBVnBg3ICx2FSW90jb0u9HG1MmfvIyIiIuJ+rn0HO546lsw74GJXpfAUbdYdmS8ejCmVKT9tihXQJzs74h4omlLxxRa81wFjThjzICsqxQgVMgulZX3bnKvnTY55CpbUisxUEZuWMxQua3EPtsvyIC0iIu7B+nd1x9OcZ+SoXQyD7kh88SaVCiz4tMJCXm2+wUUEOkpfalLH3IgVD+Jsjp3KEV1P9nFXe57t/lxf3TQgL0bozzloQL7LE53x2wrf7YguSQ4iNjFutbe4c3luUURE3M36d7XHUwpPMUSGu/hUqU0r9fyNys/guGXLzsFNubln3Tk4rTCtY9mjzPtZ23xzClBxj632f7rE253003Z6hRk9o3YkeLUB+Q7f5bi/dpFXJUmI2CTvca6OaWMtPP46eJS24nz/mt1PERHxeWr12o6neQdSeIphMswLvMqUwooPWbLPxW7O7dxUJ/AtrvXHtvlO8zmCF/fQ/uYNeHv8kpMeb5dnOa2nGLmedB1z+ib9V+9zgyd5h1onr8CN2LDv4KDf2oTfMuVSi1a0q19hrdTR8/c+5olyRPfz874612LTDPYjJ6+L2GylWmnZgme62FVNKWojC099tb7VbsvDctWKITxVMYh51RB92uLu1jXDu7irm2HU99MudrMbjHt003koNt51ui6wovYjFj1daVq/GYIRd/dtXm1A/tdeZMZXm/Z48yPbgJxpf+C4PQqfTAPyiA1PQaeNmbJoqmWlp0FW1rc9N+lzVGqTSuPNdUpmsRn3gPlchogWxIoCHR3/6LCOKzawKD9Yez/ADh0rQzIX11hEb8jWpas73CZ1huY6j+FWu7/QJ+4O6Zeu1lWaN2PMieZLuJKng5tqpflK/6OT3m+bJ2f3U9xjqw3IH2/OSc+04rgxD7DclGZG58+52oD8wXre5KOecrvvTuaviI3JIfr6avT1WxSjCpW+snmiHLfP+aYVFnzckutvl+bGRo3MQenpHF37Vbn6EZusb8qYFT/soBc4vIFxbMqinjc6bZe62WbQ3tixmluPKfw7E3av7Scehrg3obDkVrPew1qpr72zb6FW6Kjdapulu/ptw7vzaTBsllTNW2HqPAdrybDjlFuU8nQy7v3Ca3D87qOOe55pb9XRVw3pVtm7/nOuNiDf4xa/qfCiNCCP2OBv4WBOKVo2t9z2uWI1AV9tsXDCuG/0BLfmomyik/6LKb9iIb09IzZxXuyYA9/qlAe5wGfP+kPM1X/2vzWDFwzdNTvha/Qc1fWg1u+AGmyyoe8z+p7qYn8z5JWBOxjunio50tXOQXZNEpK4j1YbkF/kbY75WQ/0/zkzwg3Id3qh4z7oIr+eZpEREXeSho8rLXi9PW71NhNmM09uuHMV9uk76rX4KWPOXduzGxEbv/7t6dvhgeZ9O37HUR0b9RDz8JCdavkaHef5Wyf9pV2e1fp1RaFvSteMv3Cxv3HKmI8PWXuOg3e9g7ubb3BEtMpqA/KLvdxJj7fTAaf1lSN2hHO1AfmUX3G1G1zirxzW+UITdkTEllOtzZmFo/ouzRy5CfFqsKvilI6+hWZ/Xva3R2yWAn30vEjtdc3/t+mFhVY6onBIqRy6Bxc9h5Q+rhqltUF2qERE+9LcffoOKa14oTk32KYzcn1QVhuQ0zXpf7nGlznYNF6PiIjPnTPTaWjzl0IpOEW0Q8e82rgnusb5CvXQ7UjaSJc3jXqGLepdPnovJMoiJyLauch4tMKTzOCAFbcaUzJik3ChtKRvwkNw2BGTrmha9kVERERE3HkO2W/e2frd4EAuSbRfik8R0U6DXUAdF/iIZS/QUShV6hF7+r3agHynvbZ5tYP6zdn9iIiIiIg7X8cvNBnzB+xWtPztcxFSfIqINiua/k97vcW8l9quqxjBfh+rDch3eJHjfmCt8XpERERExJ2t4weNxx+s79shDy+j/YM2IqLN9jUFqIv8vFv9iZ266hF821GtY17flF93wpPt18v5/YiIiIi4SxV6ng+Ojl6PoBgtKT5FRLsVt2tA3vU9ZnzYtO5INiDvNQ3Ix7zZMV/iYPPnjoiIiIj43LX8vNqEix332KaxdvLGaPGAjYhou9UG5Bc4bdlBy2aNKdQj2oB80hfpepNTxjw6DcgjIiLifho8tMvPPf/pDUGf0QJ9U8aUXnC7X4topfQUiYjhcLA5fneJG5zwAttcodJTjVgRvdAxq2e3J7nVqx30/U3/p16TPBauyXCIiIiIe2F7c5S/lvLE3anRwSKWW369ah0LKBxwg59TmFUrFCP2gp4YCSk+RcTw2K+n1lX4Iyf8vN1+zhm9kZvLVhuQ7/Rix1zvYr/tbSZcp3KBFSdVSRwjIiLibtVqEwrzflflr3TUI/fm4PXNwQo9tdIDlX7SuIdaUWnriaFCYUXfNl9izjfjTU3j8V5uZrRNik8RMWxJQU+to/BSJz3WTt/mtL5yxJpzV2sNyF/thA/Z673glIcqPNRynl1GRETEF1Dr265jzmEXemEuyL100kml47Q+x6ybv36PQfEpjcejlVJ8iojhc5naIaVxzzfvhGmPMq9SjtARvNUG5OM6Sm9xrV/Qc6vKj5mw24JameJTREREfAElCu9zSGmfcdkRc8+cq3SeU054n+32mdfX3iJUx5xa1z7X+bfO92GHlC5PESraJcWn2IoK/5xF+1C7XOWwjie41XEHlY4ZM2VlxAoyhdKyWtcDTXsVWMJiCk8RERFxDwz2xIy5XGWfnv0pPt0jR3TVCie9Qce+tSvZ1oyRnm3GzHguftZlCpfnNka7lCPwJ8gCLO558B2MlmX7rDRTdc68D6vVBuQX+aBFLzKh1NFveXJwX9KJwUHDGT0zepZUisx7a9cmYlSXihERmVc2zz59hVrXn5pxs65uy3tllRbR9xxvtw1V3pYc7Rukw6yiaQAXbXDZWngrWz3iC/MK/UzII2C/XlOAepNZr7BT1+D1uKNlUGTpoqsYsbf73dcrMjDb8jfQRNy7EdNB7YyvtHyHkR4RERudadQO67jAZ9X+zNTa6rO9q5wllR0e5gH+vULdNB6PaNVSfDiXHX21rl04R610RRZkm5wyFy7DYR1amjYXa+WmWz5nARvDbH+zA2qPn3HaW+3QVY1gASpuc3Tt/7qxtZ9xEKN2KpybGNWSGHVFEwUqj9Brfq1dn3E1K7tZoW4e5KSEGRGx2SuIyhvWzky0P9rVKt8N9mWTRrRLd4gngb4dus74fxT+s1rHkfSw2jTXKZpXwB807SvNq1q4Q6Nu6v8fB1ek+DQyy8qjKvsw6XlmXWPaIy22ujFk3B/71t7q8qmmzNi2QvcgRu007rQfVvgBhxOjNj1GHbTihGeY9tUWWhijiqbcVPgncFRJFg4REZvmoD4KO7zbrI+a8lUWW7nGWVWaQ9fTXOeRCn/XdAlNLIn7ssIqbpejDH7lfhreRLhQmlWb8MOu9TGF38gI2WQnfb1xv2Glxa+AHzz3/gg4N8WnkXG5yqN1HHSLaxxUeZ+uCSvq9AUa0XA4SLE+bJlWtl8fxKjKhBe7xkdc6Ndy2zbZNZ5qzG/ptThGDXwoNysiojUZR6mw7BpvNuHnLKm09fTQ6sOvXSad9lxclgcZca9G0GGlA6D6vN7Ih3Wcq3BUdV/fpNgd6otTY0Vt0qud9AyFt6t8WpEjNxs8KT9A6RId36lWtnbBX+tYVOj7ALgxxxlGymoD8gt9wHEvtsMf6GX308jOOrDi79Q+Y8yDWzjvFCqFFbUpv+qkZyn8OeZz+zZYpVS6SOnb1ArLLX1b5CB+Ujcxal9iVEREa3KOjj8056cUui2fnQtL4Dlu8HLnWTZ44JKYEl94nVzoN7v9Bt5nh8qkB+p7tFvvUGMZnCeq7u3Lu4b7CMDga1RYVJn2FOOeMoLvumq/1RbPs6hbW3iqjSksudFEk9gfyFOAkXNbA/I3OO5xHuDHndZT5LjTSCnUDild7GYnfdCEp+qptK3QWDR/nVeZtte4vdmHt0nLhh7mDHpxlS2NUV2lBTfj+uZXE6MiIjY/llcOKZ3vw0662jb7zLf44WahtKRv2iMteCr+vIl82ZwRd5Z/FC5TrL2M63pPU/tWlSeofLHadvN6Tvm0a/292l+qXLnWIuCwzh0KVvegbDDsEwKUFvQttLb0MfrDdnDdyxZf/cqkUs/VnuDWnH8eYfv01Tou8xLf7DF2eroz+orsgBqx+1y6XKX0NqWntvogVaE0r7KgysORTbsHBS2PUVNKM95rj5sSoyIiWphz1N6gbPaltv1tu4N9KS/E21yRWxh34tBarlG71rN9wE/qeHzz5t3PHeP/Bo9T+E5LXuYDfs+MV/p3brw3BahR2g3QaRLM2JzEvv1qhXJt+s1IGd2xWDukdrnapZ5jzjUmfYWF5vBNjEoiOFiYl64y4xVK4+pW95sraeWem2hLfBqUyP4IRXp0RES0KufoNyvnPzXjl3U9QK/FWx4GD70oXOoDvtwTfDIPNeJz8o7BeDhll47fMu7Zllnb07eA2v9VNC3sOdek7aByjmk/joOu9n0u8fa1Y3t3Iwux2AoqY0pz/tUt3rr2azG6Llc5rLTHTRY9U2WhKU1k38moKFRqpfP9ndq7bFM3ITNi2BLA2oTCrE+b82eo1xY6ERHRhpyjdljHBT6rcJVpWn6MrVDp2WHSsmdi9Q2qEZqyaeWYByr8hSnPNqdnDJWPmfezSufre4zPeoxxj8HjLHumBVcqDIpTlYfa5m2Oe25zbO9uT5lkEMboq9SmFXidpzntiO69bY4WQ2i1AfmTnLLgB0zoKLOgG7l0cODV+s3OkYhhjFJTCoXX2e/W5ulhYlRERJscaP7e94bm5RDtXkfXSsvgu5wyloca0YyLwhVKHzWh60pT9pq10vSdvNyi813o5S7wfhe72aWWPN6cC33cBQ7b49vwVLUPG0NPZcrrXeOpCn2Hv3ABKsWnGPUvWG1Macatar+hVmTy3UJWG5Bf7H+a8Wt26Kr1cmFGRKHvkNKF3m7WcdM6svsphi9GFWbcqvLq5vhdduZGRLQv56jUCju827yPmVSqWzxfDxqPVyZ9jdo+BXdXGIgtMpIP6rvVy+1yiXnLSpWe7/BEl3mSGR814ZQxR3Tv8FPrOKzjfH9p2ZMsOWFctzmL8Pve41wfanpB34UUn2LU9W1XqPyKPf7VoOdKnihvJfuaKvweP2bGu5oCVAoUo+LRCoVax0+rZO9TDF+MmlaqvCoxKiKi1WpHdZxnWelNJhiCHkqVcfQ9X94HH4d1FConPV7Xf3Za35hxy17gQlc6ZQx8lSUXWLFf7w4/1GsnSy52s0WX6vmIGtt8iUkvdbnKFXddY0rxKUY7qZ/Sddrf+iK/0myPzRPlraZQ+5Baoa/nueZ9yqROq59WxT13sCkuXujdZv2+HTrZ3RZDoVI1MerDOolRERGtt/qyk8qbzFlp/ZuUax1zKH2L63yxg/pfaFdKbJm10Y+a0DGlY8Eb7fWHbjDuAis+6AFOebrjnuaU/Ws/xzxyrdi6erLkyW4x7/t01GbVeIEP+BIHm5MJdyLFpxhN9Voa38P3eqgFVzQ7JGLrGTQg77jIpy07qLKo24yTGH4far7xHT9uxqdM6qa4GK2PUYM9mJXCi1xgPjEqIqL1i/bB0bu9/lbP1aYU2nzcv1Do69thh55ngaM5erdF847BcbuTzlH5JktYtqjwMrXCYpN/LHu8SX9h2juc46880F95gL+yzd865hXgkNJ+PbWOJ3mvRW81obDNNj3fCfal+BRbKzj0bNex5CUudMwRXQdz1GpLu22b6DUW/KApZRqQj4jBFt/CHjfpe55aXzdvN4xWx6i+HTqW/JQLHVPrJEZFRAyB1eJN6Q1Kw3CYrbACvsthnfS+3eLjtuMiU85pmoW/xx4fdZnC+WsPbXsqtUX/16e9yGe90GddbkXPbi9xwt61h/pHFWqF0u9g8JKvytPAjXf+zUjxKUbRit3G3Oq19niVI7rNOdXY6m5rQP46p/1mGpCPkNXi4l7vteg/mdLR0U8BKlqntmKXrlv8jr1+uXkDaxYDERHDYLV403GlWTcb02l1rlEoLaqMe5yHulihVmf30xbOQR6tQ/OO6Hc3L+MqXdH89z10FbjJXq9zod+1x2V63mkHSg8D5yocVSnUxrzfgtPNP/WrfNTEXR3xTPEpRk3PTmNu9j/t9eJU+ONOk4bDOhb9iDPekwbkI2S1uLjXa53xEtO6SlUKUNGipK9ntzGnvcVe36tWJkZFRAyRQu2wjq91o9pbTTEEDxAqkyi9ENYKDbH1VB66dli08FGF2r7b5cmDtiQUtrvGE5zyGCc93bivdbM5HR9s1lOVy5r/3ZgbFT7dFLR2+6xtd/Wv7+YOxIgl9V2nvdFez1/r+pQeGvG5SUPdNCA/5VkWnDThyyypFCnID73VM+iFVzqpsMMrzOmrlIo02YxNjlG7dM34U9Oe2TwRrBOjIiKGVOkPrHietm/oqHXMg29z3ENc5NPq9BnckgZlyNXxu3wn//3gVwsPN+n9YMLgdSg3+1kX+3Dz1rx+M7YKhWUnLd2TY6hZaMXoJPW7dZ1xpdILmsJTkvq4c0VzVvkC/2LJs9VW0iNopO7v4AjeHr9kxk/ZppMdULHpMWqXrll/6uMOOq/pwJEYFRExfA6oULjReyz4mAllq190Uij09O2wW9k0hE7j8a2pdHOzs4m+Xc1YuO3hbKUyhso/W/IdFh1wi1+0pKfrBY554NqRutUC5g22Y2fzDehbuuvvQopPMQpJ/UrzNPlKn3DA+XouS1Ifd+O2BuRXm/eDpnTSgHyErB7B2+OXzHlJClCx6TFqtfB0wIpDeeIcETG0CrUjOi61pONNJlh7DX17PzM9tdoLHMqR7y3s77FaBXrcneQstVKFW1zgLZ7oj+zxM5Zca6dH6vpqcIXSaueoWQ9V+qImq/lX+5y5q511KT7FsCf1PbuMmXUlnuGgZZcpXJ7XrMe9KFBc4rXO+G0704B8JO/vE70yBajYtBi125gZV7rOgcSoiIgRsa+Zx3veZFYPHe1+993g6N2k832LC9d6V8XWsPr2uY4PWGy63Va+Ya335IG1UdIxqcQOtY4bjDfj5J88AIVzsdpwfHDSqPQ0U8abYtNfK1R3tbMuxacY7qR+sOPpKh93wAVWHFImqY97mTwMGpB3/bDTrrY9DchHyu0LUDmCF5sRo840u3K/PzEqImJkFCqHlPb6Wz1Xm1bQ+t1PfZNKlefnBm4xq0dFP+N6fX+nUpv0GNd6ukLtQ02xqGfGnBtwvULfo/WbY3YnLPiw2gPX/pk3qh3RVXuRFav9n/53s7660zw7xacY7qR+1pWmPKM5xpCkPu5LIK4dULvAisqzLPkXEzqtPrsf987tj+ClABUbE6NuO2r3CQcctOKliVERESNlX7OW7viD1u97GsSmwe6n2nf6oAes9e6JrbHeWT0qWvodEwqVWuGV3mbCFXpqpYu93x95ggub3mCrjcX3eJWXe5zSG8CNSgf1TfkR25ynVpv3d3re1RSh7jTfSfEphjmpv9LHHWgat+YYQ9yfCblS69jrnyx4lsKKThqQj5QUoGLjYtTqcfBBj6dnWnYoMSoiYuSs9k1adpVZN+k22WN7893Cir4dzrXgGUjj8a02XgeFodeY809qTDnPg7zG5aq19dDlendaPHqtFRdYUes6aNkJ+034BfN6phQKL3OxBe76vXcpPsVwJvUzrnJd0+Pp0F1XVyPuRUDuN/2f3mPej9h2u9eIxugE3TQhj7MfowYPR1Z7PGXHU0TEqOaOg75Jl/iMyttM0/rccfVwYO2713Kj2Drj9QqlC5zW90MmFBYs2e67Xev3HDOlaApUp4ypdRxufgbH6zrNP6fnpO8w4S36OnboOuNtnugNDn/h9VOKTzF8Sf2Mq3zCM7xYL0ftYl2t7o65yH93xmvTgHwEg256QMXZj1GDXbmJURERWynHeL3loVhfl+bVxu11jSek8fgWc7DpdbvXW8x4mV0mzFoy5fkmHPN+lyqadiRF0+/poL79egp9pzzCdX7TuD/Rs82krgV/Y6zpI/ahL5xPd3MHYqiS+nlXmmr6Z+QYQ5wNqw3Ib/LDCo+z3R6z+ooE5pGx/3Y7oI4r7PKL5vRVSkV6H8R9ilErzVvt/tSUg4lRERFbZjE/aOT8Se/xMB8x6astqhStLUIV6JnWdasX4APOTe6z5cbsYR0XOeSEjh1+tjks93ilt7rWKbV34a/1/auuaX1fo3SJvqeZts28ym4dc95vxjd7ihvvyQO3FJ9iGJL62wpP402PpzpH7eKsheRBr6fCklMOWnSNcQ+x3OpEIu7trHLbLrdXOKm2wytSgIr7EaMGhaePO9gcB8+Op4iIrRIFjujab9lJbzbhkCWVNu+AWm08XjjolJ9zgdPN2qoe4btUodf8tNnq56vO6tUYNJsvFf5fJ33QuF826aEWMe4CXRfo3+5TTDZ/X2n+Po45v+0f/KRvN9P8s+72M6f4FMOQ1HfNugrPcF7zVrsUnuJsWm24V/gHJz3HhLc3B/CKFCZGyO13QJ0kBai4TzFqd3PU7joHvDhvXo2I2HL2NXN+x5vM+hmFseY4fztziUHj8cp2DzHrm/FGg2LZ6PZ/Kmy3U1dPt9VnGfq6dmLG9g1Z7xzWscdhR/yVXX4Az9H3KJ1mRHTW8p3BT98ZlXco/Tdf6xjcm7V5ik/R5qR+pXlj0FUmPcN5zSsgU3iKjQlSq4WJv3Tcf7Hbr5nRy7w5YrPM7d+Cd1JhR47gxb2IUbuNOeNKn2gKT4lRERFbMWesHFK6wEec9F7bfJ151e2W7m38zKvlhO/BG102orueVguDlbe60a2WLLX6vtDXM4F34257KN1vqz2g9vssft7bvNKDXWjZ1+p5JCaa3/mvKh+05KSn+EdwWMeB5i1591AWUdHGhB56HmDMaVe50QGXNscYktTHRrrtaNavO+HxdnuB03qKzJ0jdp9XC42vcBy7mwJUX5GjlvEFY9SZO/R4SoyKiNiq9jW7Xjv+QOnrWrzvaVXHnNqYJ7vOY53vgw7rODhiu59W4/Jer8Prhu7zb8RO6oPNG+6O6thvCe9tfu4qDyqba3uvx0oWUNG2pL5SYKeuM17v/V6Up8mxycnE4InAA/2AM74mDchHdOa5fQ+oE5ZMeZUSvex2izuJUbt0nfYGn/DCNBePiAj7moV431Vm3WTMOWtdaturb9qY056Ln3RgpON36egQPVDcd+92FN1vg51wPbXCFcq7bEJ/9P59riTU0ZYJYXCKdKIZkzMu90SXqRW+L83FYxMNXkHLV1lywrMtO2nMg6ykAfnI2a/X9Pr6b477lAn/wzYPNKtPjuElRt0uRp12mQtdrlak8BQREU2+2LHHTa5xlSnP19Nv+Xq7tACe6XqXK8wZ7NeqR/D+VCRW36NxfBZ7f2XhFJuf0Nf6SoVduvo+bsE3NYWn8nZfgojNs3oeeq9PWPJcpVqnGb0xakG33+yA+hMrLrLsL+3UMa5Q3+G9H7FVYhS9tRhV+TsLvqkpPA1iVApPERGBZudQofYGy247ntRepRV92z3Ukm8CR7KzP87mgIvYnGS+r9bXUdipo2PenF/xLy5wkbc5rKNQpfAUrXGwKUrs9Q6LXmK7jkKPjNGRs7oDao+PeoKnmvf9Kv9kl46x5m0wtX6Kj1sgRnUVdurqmDXvlU57YmJURETcqUEPnNo277XoIyaV6pY/oFiNY7XvwW0NuiPOgu7dJmD12tP9JFhx31P54nZjqNQ1qaOLOWfMe7MVv2qvv4UhbnZ323elbuHnykJ5fYoSgwLUf3XCeR7ku93cnI8uFOotfiyrGKGxVuiv9Zo732u812Gl71N7sW0ersACes3Z99u6OmQcDN+YvX2cKnR0TOroYMat5r1J5ddc4CNDHqM+Pypo/fd18PnKxK+W5jptHzsb/W9r4xUZ3KcUyjfOEV3nWXatN5twyGLTzLm9SvMqXU9x3FcqfCy9duNs6d7NUOwaUyiNZQNe3Ged5t1gpUH5ac6iZdfp+WP8sfP9QxMeO6juS+f8lhg31iw82xRi+rrGmu9z3H/7mqLEUS9ys9p2z1fTbK/e2qpmrGn+OvyFiWptbircgl/yPv9d3zerHVD4d6acY1ypMjghn4N5w3aPB68O6Bp0uagwZ96ya1TeovLHvtY/jUiMur0xYwo9nVbvgV+NX3Wy0BZ9Z8aaXKfT6uV0rTCG3gZ8ylJhrNkLWbT0O7SQ79AG5olV8115k1k/Z9xYy/PDQVTbbdLNXoifahpzJ5uJdXd3O59usegmleUE/rhPgb/Qs+IW/LPCR9ROGnONr/Wxtd93WMeH1EOd0PfUxvyLZfRV2vRy1VrfknHcnEG5LiG6XrvrvMApf6r0ApXH6tvWjPytqrJkTOHGEbvnq08tS4UZ/CH+0CkPsuiJei7Q9zi1L1V7kMKOfFFaH580uxUXcBP+VccHVa7Vd50LfXKkYtTnj+nPWHaOSk/V4vLTavyqzWXQtiTXGfdpy8b09Wl5+WlZR215A/5dK5Z9tpXX5Lbv0GwG8IbNr6u7oT/ihD/V9RQrlrW73U1lRqm23zFTLrbQ/BmyYy7W+evxhVxvm1tMOUffbI4RxL2wXW1WYUqlb84FVj7v9xzRdVQ1Es1aa4WjdplQrv3Z23QvFpTmLdmf5GNd7/llt3vL1Q22Y1zVsvu/GWNtp2X/1szI3vfVfZx3tiX9mClM5QsyJDGqsuJJZn3uvsXBnN4ZmRj1uU7Z5RZdD1G1er7arnaTji8x46ssZeC2KNcZlu/4kjP2653l69Jx3K7W5X+3/w4xa7/FDOIN9lET/tmOoVlLdxQ+5dahP1oeEVs+YSkd0XVEdwje/BBxzx3WyZjewguxWqeZ17I7eNi/x6sx6lC+zxERERHrrbjbxDpifUba6G/bHIbvS7bPbu37n7GWcRB3lQnVGaeZTyJjZ2Svy1ac5/J9yXwbERERERERERERERERERERERERERERERERERERERERERERERERsQX9/wxs1XGjq7rBAAAAAElFTkSuQmCC";
-// Branded per-car service-history PDF — timeline design, direct .pdf download.
-const SVC_AR = {
-  "Tire Change & Balancing": "تبديل تواير مع ميزان",
-  "Tire Patch": "رقعة تواير",
-  "Tire Rotation": "تدوير تواير",
-  "Oil & Filter": "تبديل زيت وفلتر",
-  "Battery": "تبديل بطارية",
-  "Brake Pads": "تبديل فحمات بريك",
-  "Brake Disc": "تبديل أقراص بريك",
-  "Disc Skimming": "مخرطة أقراص",
-  "Major Service": "صيانة شاملة",
-  "AC Gas Refill": "تعبئة غاز مكيف",
-  "Car Computer Check": "فحص كمبيوتر",
-  "Part Replacement": "تبديل قطع غيار",
-  "Tire Check": "فحص تواير",
-  "Wheel Repair": "إصلاح عجلات",
-  "Mechanical Check": "فحص ميكانيكي",
+const sqBrakeAutoLines = (svcName, side, brand) => {
+  const kinds = svcName === "Brake Pads" ? ["pads", "sensor"] : svcName === "Brake Disc" ? ["disc"] : [];
+  if (!kinds.length) return [];
+  const poss = side === "Front & Rear" ? ["Front", "Rear"] : (side === "Front" || side === "Rear") ? [side] : [];
+  const out = [];
+  poss.forEach(pos => kinds.forEach(kind => out.push({
+    name: sqTplName(kind, brand, pos), category: "brake", unit: kind === "sensor" ? "pc" : "set",
+    qty: 1, unit_price: 0, _auto: `${pos.toLowerCase()}-${kind}`,
+  })));
+  return out;
 };
-const arSvc = (t) => String(t || "").split(" + ").map(p => SVC_AR[p.trim()] || p.trim()).join(" + ");
-function openServiceHistoryPDF(car, customer, jobs, mode, lang) {
-  const ar = lang === "ar";
-  const L = ar ? {
-    title: "سجل صيانة المركبة", issued: "تاريخ الإصدار", customer: "العميل", vehicle: "المركبة",
-    vin: "رقم القاعدة", visits: "عدد الزيارات", latest: "آخر قراءة للعداد", period: "فترة الخدمة",
-    logh: "سجل الخدمات — الأحدث في الأسفل", none: "لا توجد خدمات مسجلة بعد.",
-    sealb: "سجل صيانة موثق", sealt: "يعكس هذا السجل الخدمات المنفذة والموثقة بواسطة فرق بنشر+ المتنقلة في الكويت.",
-    dl: "⬇ تحميل PDF",
-  } : {
-    title: "Vehicle Service History", issued: "Issued", customer: "Customer", vehicle: "Vehicle",
-    vin: "VIN / Plate", visits: "Recorded visits", latest: "Latest mileage", period: "Service period",
-    logh: "Service Log — Most Recent Last", none: "No completed services on record yet.",
-    sealb: "Verified service history", sealt: "This record reflects services performed and documented by BNCHR+ mobile service units in Kuwait.",
-    dl: "⬇ Download PDF",
-  };
-  const carJobs = (jobs || [])
-    .filter(j => j.car_id === car.id && (j.status === "done" || j.truck_status === "completed"))
-    .sort((a, b) => new Date(a.scheduled_at || a.created_at) - new Date(b.scheduled_at || b.created_at));
-  const log = Array.isArray(car.mileage_log) ? car.mileage_log : [];
-  const kmFor = (j) => {
-    if (Number(j.service_mileage) > 0) return `${Number(j.service_mileage).toLocaleString()} ${j.service_mileage_unit || "KM"}`;
-    const e = log.find(x => x.job_id === j.id);
-    return e ? `${Number(e.km).toLocaleString()} ${e.unit || "KM"}` : "";
-  };
-  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-  const detailed = mode === "detailed";
-  const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"], MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-  const chipsFor = (j) => (j.items || [])
-    .filter(it => detailed ? true : it.kind !== "labor")
-    .map(it => {
-      const nm = it.kind === "tire" ? `${it.brand || ""} ${it.pattern || ""} ${it.size || ""}`.replace(/\s+/g, " ").trim() : (it.name || "");
-      if (!nm) return "";
-      const q = Number(it.qty) > 1 ? `${it.qty}× ` : "";
-      return `<span class="part">${it.kind === "labor" ? "🔧 " : ""}<b>${esc(q + nm.slice(0, 60))}</b></span>`;
-    }).filter(Boolean).join("");
-  const entries = carJobs.map(j => {
-    const d = new Date(j.scheduled_at || j.created_at);
-    const km = kmFor(j);
-    const ch = detailed ? chipsFor(j) : "";
-    return `<div class="entry">
-      <div class="date"><div class="dow">${DOW[d.getDay()]}</div><div class="dm mono">${d.getDate()} ${MON[d.getMonth()]}</div><div class="yr mono">${d.getFullYear()}</div></div>
-      <div class="spine"><div class="node"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.2"/><path d="M12 4.5v1.6M19.5 12h-1.6M12 19.5v-1.6M4.5 12h1.6"/></svg></div></div>
-      <div class="body-col"><div class="svc-line"><span class="svc-type">${esc(ar ? arSvc(j.service_type || "Service") : (j.service_type || "Service"))}</span>${km ? `<span class="svc-km mono">${esc(km)}</span>` : ""}</div>
-      ${ch ? `<div class="parts">${ch}</div>` : ""}</div>
-    </div>`;
-  }).join("");
-  const latest = car.last_mileage ? `${Number(car.last_mileage).toLocaleString()} ${car.last_mileage_unit || "KM"}` : "—";
-  const range = carJobs.length ? `${MON[new Date(carJobs[0].scheduled_at).getMonth()]} ${new Date(carJobs[0].scheduled_at).getFullYear()} — ${MON[new Date(carJobs[carJobs.length-1].scheduled_at).getMonth()]} ${new Date(carJobs[carJobs.length-1].scheduled_at).getFullYear()}` : "—";
-  const fname = `BNCHR-Service-History-${(car.brand || "car")}-${(car.model || "")}`.replace(/\s+/g, "-");
-
-  const html = `<!doctype html><html${ar ? ' dir="rtl" lang="ar"' : ""}><head><meta charset="utf-8"><title>Service History — ${esc(car.brand)} ${esc(car.model)}</title>
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..900&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>
-  :root{--ink:#16181d;--graphite:#5c616b;--faint:#9aa0aa;--hairline:#e4e2dd;--paper:#fff;--brand:#00ca00;--brand-ink:#00a000;--brand-soft:#eafbe6;--tint:#f7f6f3;}
-  *{margin:0;padding:0;box-sizing:border-box;}html{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
-  body{font-family:'Archivo',sans-serif;color:var(--ink);background:#d8d7d3;}
-  html[dir=rtl] body,html[dir=rtl] .svc-type,html[dir=rtl] .doc-title{font-family:'IBM Plex Sans Arabic','Archivo',sans-serif;}
-  html[dir=rtl] .date{text-align:left;padding-right:0;padding-left:4px;}
-  html[dir=rtl] .doc-id{text-align:left;}html[dir=rtl] .foot .url{text-align:left;}
-  html[dir=rtl] .body-col{padding-left:0;padding-right:8px;}
-  .mono{font-family:'IBM Plex Mono',monospace;}
-  .page{width:210mm;min-height:297mm;margin:24px auto;background:var(--paper);padding:16mm 16mm 12mm;box-shadow:0 6px 32px rgba(0,0,0,.18);display:flex;flex-direction:column;}
-  .masthead{display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:2.5px solid var(--ink);}
-  .logo{height:24px;display:block;}
-  .doc-id{text-align:right;}.doc-id .doc-title{font-size:15px;font-weight:750;letter-spacing:.06em;text-transform:uppercase;}
-  .doc-id .issued{font-size:9.5px;color:var(--graphite);margin-top:5px;}
-  .identity{display:grid;grid-template-columns:1.1fr 1.2fr 1.1fr;border-bottom:1px solid var(--hairline);padding:14px 0 16px;gap:16px;}
-  .field .label{font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);font-weight:700;margin-bottom:5px;}
-  .field .value{font-size:13.5px;font-weight:640;}
-  .plate{display:inline-block;margin-top:2px;border:1.5px solid var(--ink);border-radius:4px;padding:3px 9px;font-size:11px;font-weight:600;letter-spacing:.08em;}
-  .summary{display:grid;grid-template-columns:repeat(3,1fr);background:var(--tint);border-radius:6px;padding:12px 18px;margin:16px 0 22px;}
-  .summary .stat + .stat{border-left:1px solid var(--hairline);padding-left:18px;}
-  .summary .num{font-size:19px;font-weight:800;}.summary .num em{font-style:normal;color:var(--brand-ink);}
-  .summary .label{font-size:8px;letter-spacing:.2em;text-transform:uppercase;color:var(--graphite);font-weight:700;margin-top:3px;}
-  .log-heading{font-size:9px;letter-spacing:.26em;text-transform:uppercase;color:var(--graphite);font-weight:750;margin-bottom:14px;}
-  .entry{display:grid;grid-template-columns:70px 40px 1fr;padding-bottom:22px;position:relative;}
-  .date{text-align:right;padding-right:4px;}
-  .date .dow{font-size:8.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.14em;}
-  .date .dm{font-size:13px;font-weight:600;margin-top:1px;}.date .yr{font-size:9px;color:var(--faint);margin-top:1px;}
-  .spine{position:relative;}
-  .spine::before{content:'';position:absolute;left:17px;top:30px;bottom:-24px;border-left:1.5px dashed var(--hairline);}
-  .entry:last-of-type .spine::before{display:none;}
-  .spine .node{position:absolute;left:4px;top:0;width:27px;height:27px;border-radius:50%;background:var(--paper);border:1.5px solid var(--ink);display:flex;align-items:center;justify-content:center;}
-  .spine .node svg{width:14px;height:14px;stroke:var(--ink);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
-  .body-col{padding-left:8px;padding-top:4px;}
-  .svc-line{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
-  .svc-type{font-size:13.5px;font-weight:760;letter-spacing:.04em;text-transform:uppercase;}
-  .svc-km{font-size:9.5px;color:var(--graphite);}
-  .parts{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;}
-  .part{font-size:9px;border:1px solid var(--hairline);border-radius:20px;padding:3px 9px;color:var(--ink);background:var(--paper);}
-  .part b{font-weight:600;}
-  .foot{margin-top:auto;border-top:1px solid var(--hairline);padding-top:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;}
-  .seal{display:flex;align-items:center;gap:10px;}
-  .seal .badge{width:34px;height:34px;border-radius:50%;border:1.5px solid var(--brand);color:var(--brand-ink);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;background:var(--brand-soft);}
-  .seal .txt{font-size:8.5px;line-height:1.5;color:var(--graphite);max-width:340px;}
-  .seal .txt b{color:var(--ink);font-weight:700;letter-spacing:.05em;text-transform:uppercase;font-size:8.5px;}
-  .foot .url{font-size:8.5px;color:var(--faint);text-align:right;}
-  .dlbar{text-align:center;margin:14px 0 30px;}
-  .dlbtn{padding:11px 26px;font-size:13px;font-weight:700;background:#16181d;color:#fff;border:none;border-radius:8px;cursor:pointer;font-family:'Archivo',sans-serif;}
-  .entry{page-break-inside:avoid;break-inside:avoid;}
-  body.pdf{background:none;margin:0;padding:0;}
-  html.pdf{margin:0;padding:0;}
-  body.pdf .page{margin:0 !important;box-shadow:none;min-height:auto;width:794px;padding:34px 40px 28px;}
-  body.pdf .foot{margin-top:26px;}
-  body.pdf .dlbar{display:none;}
-  @page{size:A4;margin:0;}
-  @media print{html,body{margin:0;padding:0;background:none;height:auto;}.page{margin:0;box-shadow:none;width:auto;min-height:auto;padding:10mm 12mm;}.dlbar{display:none;}.foot{margin-top:26px;}}
-  </style></head><body>
-  <div class="page" id="pg">
-    <div class="masthead">
-      <div><img class="logo" src="${BNCHR_LOGO}" alt="BNCHR+"></div>
-      <div class="doc-id"><div class="doc-title">${L.title}</div><div class="issued mono">${L.issued} ${new Date().toLocaleDateString("en-GB")}</div></div>
-    </div>
-    <div class="identity">
-      <div class="field"><div class="label">${L.customer}</div><div class="value">${esc(customer.name || "")}</div></div>
-      <div class="field"><div class="label">${L.vehicle}</div><div class="value">${esc(car.brand)} ${esc(car.model)} ${esc(car.year || "")}</div></div>
-      <div class="field"><div class="label">${L.vin}</div>${car.plate ? `<span class="plate mono">${esc(car.plate)}</span>` : `<div class="value">—</div>`}</div>
-    </div>
-    <div class="summary">
-      <div class="stat"><div class="num">${carJobs.length}</div><div class="label">${L.visits}</div></div>
-      <div class="stat"><div class="num"><em>${esc(latest)}</em></div><div class="label">${L.latest}</div></div>
-      <div class="stat"><div class="num" style="font-size:14px;padding-top:4px">${esc(range)}</div><div class="label">${L.period}</div></div>
-    </div>
-    <div class="log-heading">${L.logh}</div>
-    ${entries || `<div style="color:#9aa0aa;font-size:12px">${L.none}</div>`}
-    <div class="foot">
-      <div class="seal"><div class="badge">✓</div><div class="txt"><b>${L.sealb}</b><br>${L.sealt}</div></div>
-      <div class="url mono">bnchrplus.com</div>
-    </div>
-  </div>
-  <div class="dlbar"><button class="dlbtn" onclick="dl()">${L.dl}</button></div>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"><\/script>
-  <script>
-    function dl(){
-      var el = document.getElementById('pg');
-      if (${ar ? "true" : "false"}) { window.print(); return; } // Arabic: native print shapes letters correctly
-      if (window.html2pdf) {
-        document.body.classList.add('pdf');
-        document.documentElement.classList.add('pdf');
-        window.scrollTo(0, 0);
-        html2pdf().set({
-          margin: 0, filename: '${fname}.pdf',
-          image: { type: 'jpeg', quality: 0.96 },
-          html2canvas: { scale: 2, useCORS: true, scrollX: 0, scrollY: 0, x: 0, y: 0, windowWidth: 794 },
-          jsPDF: { unit: 'mm', format: 'a4' },
-          pagebreak: { mode: ['css', 'legacy'], avoid: ['.entry', '.summary', '.identity', '.foot'] }
-        }).from(el).save().then(function(){ document.body.classList.remove('pdf'); document.documentElement.classList.remove('pdf'); })
-          .catch(function(){ document.body.classList.remove('pdf'); document.documentElement.classList.remove('pdf'); window.print(); });
-      } else { window.print(); }
-    }
-  <\/script>
-  </body></html>`;
-
-  const w = window.open("", "_blank");
-  if (!w) { alert("Please allow pop-ups to generate the PDF."); return; }
-  w.document.write(html); w.document.close();
-}
-
-function CustomerProfileDetail({ customer, cars, addresses, jobs, onBack, onSelectJob, onAddCar, onAddAddress, onNewOrder, onReorder, onEditCustomer, onEditCar, onDeleteCar, onEditAddress, onDeleteAddress }) {
-  const [pdfFor, setPdfFor] = useState(null); // car.id whose PDF options are open
-  const customerCars = cars.filter(c => c.customer_id === customer.id);
-  const customerAddrs = (addresses || []).filter(a => a.customer_id === customer.id);
-  const customerJobs = jobs.filter(j => j.customer_id === customer.id).sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at));
-  const totalSpent = customerJobs.reduce((s, j) => s + Number(j.total || 0), 0);
-
-  const [confirmDel, setConfirmDel] = useState(null); // { kind: 'car'|'addr', id }
-
-  // History filters
-  const [histCar, setHistCar] = useState("all");
-  const [histService, setHistService] = useState("all");
-  const serviceOptions = [...new Set(customerJobs.map(j => j.service_type).filter(Boolean))];
-  const filteredJobs = customerJobs.filter(j => {
-    if (histCar !== "all" && j.car_id !== histCar) return false;
-    if (histService !== "all" && j.service_type !== histService) return false;
-    return true;
-  });
-  const filteredTotal = filteredJobs.reduce((s, j) => s + Number(j.total || 0), 0);
-  const histFiltered = histCar !== "all" || histService !== "all";
-
-  return (
-    <div className="job-detail">
-      <button className="detail-back" onClick={onBack}>← Back to Customers</button>
-
-      <div className="detail-hero">
-        <div className="detail-hero-top">
-          <div>
-            <h2>{customer.name}</h2>
-            <div className="detail-hero-sub"><a href={`tel:${customer.mobile}`}>{customer.mobile}</a> · {customer.area}</div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontFamily: "var(--font-head)", fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>KWD {totalSpent.toFixed(3)}</div>
-            <div style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.length} jobs total</div>
-            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 8 }}>
-              {onEditCustomer && <button className="btn btn-ghost btn-sm" onClick={onEditCustomer}>✎ Edit</button>}
-              {onNewOrder && <button className="btn btn-primary btn-sm" onClick={onNewOrder}>+ New Order</button>}
-            </div>
-          </div>
-        </div>
-        {customer.notes && <div style={{ fontSize: 13, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px" }}>⚠ {customer.notes}</div>}
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <h3>Vehicles ({customerCars.length})</h3>
-          <button className="btn btn-ghost btn-sm" onClick={() => onAddCar(customer)}>+ Add Vehicle</button>
-        </div>
-        <div className="card-body">
-          {customerCars.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>No vehicles on file.</div>}
-          {customerCars.map(car => {
-            const log = Array.isArray(car.mileage_log) ? [...car.mileage_log].sort((a, b) => new Date(b.date) - new Date(a.date)) : [];
-            const latest = car.last_mileage || (log[0] && log[0].km);
-            const unit = car.last_mileage_unit || (log[0] && log[0].unit) || "KM";
-            return (
-            <div key={car.id} className="car-card" style={{ flexDirection: "column", alignItems: "stretch" }}>
-             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-              <div>
-                <div className="car-card-info">{car.brand} {car.model} {car.year}</div>
-                <div className="car-card-plate">{car.plate}</div>
-                {latest ? <div style={{ fontSize: 12, fontWeight: 700, color: "#15803D", marginTop: 3 }}>🧭 {Number(latest).toLocaleString()} {unit} <span style={{ fontWeight: 500, color: "var(--muted)" }}>· last recorded</span></div> : null}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                <span style={{ fontSize: 12, color: "var(--muted)" }}>{customerJobs.filter(j => j.car_id === car.id).length} jobs</span>
-                <button className="btn btn-ghost btn-sm" title="Service history PDF" onClick={() => setPdfFor(pdfFor === car.id ? null : car.id)}>📄</button>
-                {onEditCar && <button className="btn btn-ghost btn-sm" onClick={() => onEditCar(car)}>✎</button>}
-                {onDeleteCar && (confirmDel?.kind === "car" && confirmDel?.id === car.id ? (
-                  <span style={{ display: "inline-flex", gap: 4 }}>
-                    <button className="btn btn-sm" style={{ background: "#DC2626", color: "#fff", fontWeight: 700 }} onClick={() => { onDeleteCar(car.id); setConfirmDel(null); }}>Delete?</button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDel(null)}>✕</button>
-                  </span>
-                ) : (
-                  <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => setConfirmDel({ kind: "car", id: car.id })}>🗑</button>
-                ))}
-              </div>
-             </div>
-             {pdfFor === car.id && (
-               <div style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                 <span style={{ fontSize: 12, color: "var(--muted)" }}>Service history PDF:</span>
-                 <button className="btn btn-primary btn-sm" onClick={() => { openServiceHistoryPDF(car, customer, jobs, "simple", "en"); setPdfFor(null); }}>Simple</button>
-                 <button className="btn btn-ghost btn-sm" onClick={() => { openServiceHistoryPDF(car, customer, jobs, "detailed", "en"); setPdfFor(null); }}>With details</button>
-                 <button className="btn btn-ghost btn-sm" onClick={() => { openServiceHistoryPDF(car, customer, jobs, "simple", "ar"); setPdfFor(null); }}>عربي</button>
-                 <button className="btn btn-ghost btn-sm" onClick={() => { openServiceHistoryPDF(car, customer, jobs, "detailed", "ar"); setPdfFor(null); }}>عربي مفصّل</button>
-               </div>
-             )}
-             {log.length > 0 && (
-               <details style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
-                 <summary style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", cursor: "pointer" }}>Mileage history ({log.length})</summary>
-                 <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-                   {log.map((e, i) => {
-                     const prev = log[i + 1];
-                     const diff = prev && e.km > prev.km ? e.km - prev.km : null;
-                     return (
-                       <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0" }}>
-                         <span style={{ fontWeight: 600 }}>{Number(e.km).toLocaleString()} {e.unit || "KM"}</span>
-                         <span style={{ color: "var(--muted)" }}>{e.service || "Service"} · {fmtDate(e.date)}{diff ? ` · +${diff.toLocaleString()}` : ""}</span>
-                       </div>
-                     );
-                   })}
-                 </div>
-               </details>
-             )}
-            </div>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <h3>Addresses ({customerAddrs.length})</h3>
-          <button className="btn btn-ghost btn-sm" onClick={() => onAddAddress(customer)}>+ Add Address</button>
-        </div>
-        <div className="card-body">
-          {customerAddrs.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>No addresses on file.</div>}
-          {customerAddrs.map(a => (
-            <div key={a.id} className="car-card">
-              <div>
-                <div className="car-card-info">{a.label || "Address"} — {a.area}</div>
-                <div className="car-card-plate">Block {a.block}, St {a.street}{a.lane ? ", Lane " + a.lane : ""}, {a.house}{a.map_link ? " · 📍 map" : ""}</div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                {onEditAddress && <button className="btn btn-ghost btn-sm" onClick={() => onEditAddress(a)}>✎</button>}
-                {onDeleteAddress && (confirmDel?.kind === "addr" && confirmDel?.id === a.id ? (
-                  <span style={{ display: "inline-flex", gap: 4 }}>
-                    <button className="btn btn-sm" style={{ background: "#DC2626", color: "#fff", fontWeight: 700 }} onClick={() => { onDeleteAddress(a.id); setConfirmDel(null); }}>Delete?</button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDel(null)}>✕</button>
-                  </span>
-                ) : (
-                  <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => setConfirmDel({ kind: "addr", id: a.id })}>🗑</button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-header" style={{ flexWrap: "wrap", gap: 8 }}>
-          <h3>Service History</h3>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <select className="filter-select" value={histCar} onChange={e => setHistCar(e.target.value)}>
-              <option value="all">All vehicles</option>
-              {customerCars.map(c => <option key={c.id} value={c.id}>{c.brand} {c.model} {c.year}</option>)}
-            </select>
-            <select className="filter-select" value={histService} onChange={e => setHistService(e.target.value)}>
-              <option value="all">All services</option>
-              {serviceOptions.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="card-body">
-          {histFiltered && (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 13 }}>
-              <span style={{ color: "var(--muted)" }}>{filteredJobs.length} job{filteredJobs.length !== 1 ? "s" : ""} match</span>
-              <span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {filteredTotal.toFixed(3)}</span>
-            </div>
-          )}
-          {filteredJobs.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13 }}>{customerJobs.length === 0 ? "No jobs yet." : "No jobs match these filters."}</div>}
-          {filteredJobs.map(job => (
-            <div key={job.id} className="history-job-card" onClick={() => onSelectJob(job)} style={{ marginBottom: 8 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                <div>
-                  <div style={{ fontWeight: 600 }}>{job.service_type}</div>
-                  <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{job.car_brand} {job.car_model} · {fmtDate(job.scheduled_at)}</div>
-                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{job.service_details}</div>
-                  {(job.items || []).length > 0 && (
-                    <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 2 }}>
-                      {(job.items || []).map((it, i) => (
-                        <div key={i} style={{ fontSize: 11.5, color: it.kind === "labor" ? "var(--muted)" : "var(--text)", display: "flex", gap: 6 }}>
-                          <span style={{ color: "var(--muted)", flexShrink: 0 }}>{it.kind === "labor" ? "🔧" : "•"}</span>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>
-                            {Number(it.qty) > 1 ? `${it.qty}× ` : ""}{it.kind === "tire" ? `${it.brand || ""} ${it.pattern || ""} ${it.size || ""}`.replace(/\s+/g, " ").trim() : it.name}
-                            {Number(it.unit_price) > 0 && <span style={{ color: "var(--muted)" }}> · {(Number(it.unit_price) * (Number(it.qty) || 1)).toFixed(2)} KD</span>}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {Number(job.total || 0).toFixed(3)}</div>
-                  <StatusPill status={job.status} />
-                  {onReorder && <button className="btn btn-ghost btn-sm" style={{ marginTop: 6 }} onClick={(e) => { e.stopPropagation(); onReorder(job); }}>↻ Reorder</button>}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Add Car Modal ────────────────────────────────────────────────────────────
-function AddCarModal({ customer, editCar, onClose, onCreated, onUpdated }) {
-  const [f, setF] = useState(editCar
-    ? { brand: editCar.brand || "", model: editCar.model || "", sub_model: editCar.sub_model || "", year: editCar.year || "", plate: editCar.plate || "" }
-    : { brand: "", model: "", sub_model: "", year: "", plate: "" });
-  const [saving, setSaving] = useState(false);
-  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
-
-  const save = async () => {
-    if (!f.brand || (!editCar && !f.model)) return; // imported cars may lack model — editable without one
-    setSaving(true);
-    if (editCar) {
-      await updateCar(editCar.id, f);
-      onUpdated({ ...editCar, ...f });
-    } else {
-      const car = await createCar({ ...f, customer_id: customer.id, created_at: new Date().toISOString() });
-      onCreated(car);
-    }
-    setSaving(false);
-    onClose();
-  };
-
-  return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 420 }}>
-        <div className="modal-header">
-          <h3>{editCar ? "Edit Vehicle" : "Add Vehicle"} — {customer.name}</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
-        <div className="modal-body">
-          <div className="form-grid">
-            <div className="form-field"><label>Brand *</label><ComboBox value={f.brand} onChange={(v) => setF(p => ({ ...p, brand: v, model: "", sub_model: "" }))} options={carBrandOpts()} placeholder="Toyota" /></div>
-            <div className="form-field"><label>Year</label><ComboBox value={f.year} onChange={(v) => setF(p => ({ ...p, year: v }))} options={carYears} placeholder="2023" /></div>
-            <div className="form-field"><label>Model *</label><ComboBox value={f.model} onChange={(v) => setF(p => ({ ...p, model: v, sub_model: "" }))} options={carModelOpts(f.brand)} placeholder="Land Cruiser" /></div>
-            <div className="form-field"><label>Sub-Model</label><ComboBox value={f.sub_model} onChange={(v) => setF(p => ({ ...p, sub_model: v }))} options={carSubModelOpts(f.brand, f.model)} placeholder="Carrera / VXR / Denali…" /></div>
-            <div className="form-field"><label>VIN</label><input value={f.plate} onChange={set("plate")} placeholder="VIN" /></div>
-          </div>
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : editCar ? "Save Changes" : "Add Vehicle"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Customers View ───────────────────────────────────────────────────────────
-// ─── Add Address Modal ────────────────────────────────────────────────────────
-function AddAddressModal({ customer, editAddr, onClose, onCreated, onUpdated }) {
-  const [f, setF] = useState(editAddr
-    ? { label: editAddr.label || "Home", area: editAddr.area || "", governorate: editAddr.governorate || "", block: editAddr.block || "", street: editAddr.street || "", lane: editAddr.lane || "", house: editAddr.house || "", map_link: editAddr.map_link || "" }
-    : { label: "Home", area: "", governorate: "", block: "", street: "", lane: "", house: "", map_link: "" });
-  const [saving, setSaving] = useState(false);
-  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
-  const save = async () => {
-    if (!f.area) return;
-    setSaving(true);
-    const patch = { ...f, governorate: f.governorate || govFor(f.area), map_link: f.map_link || buildMapsLink({ ...f, governorate: f.governorate || govFor(f.area) }) };
-    if (editAddr) {
-      await updateAddress(editAddr.id, patch);
-      onUpdated({ ...editAddr, ...patch });
-    } else {
-      const a = await createAddress({ ...patch, customer_id: customer.id, created_at: new Date().toISOString() });
-      onCreated(a);
-    }
-    setSaving(false);
-    onClose();
-  };
-  return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 460 }}>
-        <div className="modal-header">
-          <h3>{editAddr ? "Edit Address" : "Add Address"} — {customer.name}</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
-        <div className="modal-body">
-          <div className="form-grid">
-            <div className="form-field form-full"><label>Label</label><input value={f.label} onChange={set("label")} placeholder="Home, Office…" /></div>
-            <div className="form-field"><label>Area *</label><ComboBox value={f.area} onChange={(v) => setF(p => ({ ...p, area: v, governorate: govFor(v) || p.governorate }))} options={KW_AREA_NAMES} placeholder="Salmiya" /></div>
-            <div className="form-field"><label>Governorate</label><input value={f.governorate || govFor(f.area)} readOnly placeholder="auto" style={{ background: "#F3F4F6", color: "var(--muted)" }} /></div>
-            <div className="form-field"><label>Block</label><input value={f.block} onChange={set("block")} placeholder="12" /></div>
-            <div className="form-field"><label>Street</label><ComboBox value={f.street} onChange={(v) => setF(p => ({ ...p, street: v }))} options={streetsForArea(f.area)} placeholder="33 or name" /></div>
-            <div className="form-field"><label>Lane (Jadda)</label><input value={f.lane} onChange={set("lane")} placeholder="optional" /></div>
-            <div className="form-field"><label>House #</label><input value={f.house} onChange={set("house")} placeholder="7A" /></div>
-            <div className="form-field form-full">
-              <label>Google Map Link</label>
-              <div style={{ display: "flex", gap: 6 }}>
-                <input value={f.map_link} onChange={set("map_link")} placeholder="https://maps.google.com/…" style={{ flex: 1 }} />
-                {f.map_link && <a href={f.map_link} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm" style={{ whiteSpace: "nowrap" }}>📍 Open</a>}
-              </div>
-              <PaciPinBuilder
-                    onUse={(link) => setF(p => ({ ...p, map_link: link }))}
-                    onFill={(a) => setF(p => ({ ...p,
-                      area: a.area || p.area,
-                      governorate: a.governorate || p.governorate,
-                      block: a.block || p.block,
-                      street: a.street || p.street,
-                      lane: a.lane || p.lane,
-                      house: a.house || p.house,
-                      map_link: a.mapLink || p.map_link,
-                    }))} />
-            </div>
-          </div>
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : editAddr ? "Save Changes" : "Add Address"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Edit Customer Modal ──────────────────────────────────────────────────────
-function EditCustomerModal({ customer, onClose, onUpdated }) {
-  const [f, setF] = useState({ name: customer.name || "", mobile: customer.mobile || "", area: customer.area || "", notes: customer.notes || "" });
-  const [saving, setSaving] = useState(false);
-  const set = k => e => setF(p => ({ ...p, [k]: e.target.value }));
-  const mobileChanged = f.mobile !== (customer.mobile || "");
-  const save = async () => {
-    if (!f.name || !f.mobile) return;
-    setSaving(true);
-    await updateCustomer(customer.id, f);
-    onUpdated({ ...customer, ...f });
-    setSaving(false);
-    onClose();
-  };
-  return (
-    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal" style={{ maxWidth: 460 }}>
-        <div className="modal-header">
-          <h3>Edit Customer — {customer.name}</h3>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
-        <div className="modal-body">
-          <div className="form-grid">
-            <div className="form-field"><label>Full Name *</label><input value={f.name} onChange={set("name")} /></div>
-            <div className="form-field"><label>Mobile *</label><input value={f.mobile} onChange={set("mobile")} inputMode="tel" /></div>
-            <div className="form-field form-full"><label>Area</label><ComboBox value={f.area} onChange={(v) => setF(p => ({ ...p, area: v }))} options={KW_AREA_NAMES} placeholder="Salmiya" /></div>
-            <div className="form-field form-full"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="VIP, fleet client…" /></div>
-            {mobileChanged && (
-              <div className="form-full" style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#92400E" }}>
-                ⚠ Mobile is what links this customer to their quotes and order history. Change it only to correct a wrong number.
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={saving || !f.name || !f.mobile}>{saving ? "Saving…" : "Save Changes"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer }) {
-  const [search, setSearch] = useState("");   // everything: name, mobile, area, cars, notes
-  const [mobileQ, setMobileQ] = useState(""); // phone only — exact
-  const [areaF, setAreaF] = useState("all");
-  const [govF, setGovF] = useState("all");
-  const [brandF, setBrandF] = useState("all");
-  const [sortBy, setSortBy] = useState("name");
-
-  const digits = (s) => (s || "").replace(/\D/g, "");
-  const q = search.trim().toLowerCase();
-  const mq = digits(mobileQ);
-  const mobileExact = mq.length >= 8;
-
-  // per-customer vehicle lookup (brands + count + searchable text)
-  const brandsByCust = {}, carCount = {}, carText = {};
-  cars.forEach(car => {
-    if (!car.customer_id) return;
-    (brandsByCust[car.customer_id] = brandsByCust[car.customer_id] || new Set()).add(car.brand);
-    carCount[car.customer_id] = (carCount[car.customer_id] || 0) + 1;
-    carText[car.customer_id] = `${carText[car.customer_id] || ""} ${car.brand || ""} ${car.model || ""}`.toLowerCase();
-  });
-
-  const areaOptions = [...new Set(customers.map(c => c.area).filter(Boolean))].sort();
-  const brandOptions = [...new Set(cars.map(c => c.brand).filter(Boolean))].sort();
-  const GOVS = ["Al Asimah", "Hawalli", "Farwaniya", "Mubarak Al-Kabeer", "Ahmadi", "Jahra"];
-
-  const filtered = customers.filter(c => {
-    if (mq) {
-      const m = digits(c.mobile);
-      if (mobileExact) { if (m.slice(-8) !== mq.slice(-8)) return false; } // 8 digits → exact
-      else if (!m.startsWith(mq)) return false;                            // typing → number starts with
-    }
-    if (q) {
-      const hay = `${c.name || ""} ${c.mobile || ""} ${c.area || ""} ${c.notes || ""}${carText[c.id] || ""}`.toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    if (areaF !== "all" && c.area !== areaF) return false;
-    if (govF !== "all" && govFor(c.area) !== govF) return false;
-    if (brandF !== "all" && !(brandsByCust[c.id] && brandsByCust[c.id].has(brandF))) return false;
-    return true;
-  }).sort((a, b) => {
-    if (sortBy === "recent") return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-    if (sortBy === "vehicles") return (carCount[b.id] || 0) - (carCount[a.id] || 0);
-    return (a.name || "").localeCompare(b.name || "");
-  });
-
-  const CAP = 200;
-  const shown = filtered.slice(0, CAP);
-  const hasFilters = q || mq || areaF !== "all" || govF !== "all" || brandF !== "all";
-  const clearAll = () => { setSearch(""); setMobileQ(""); setAreaF("all"); setGovF("all"); setBrandF("all"); };
-
-  return (
-    <>
-      <div className="page-header">
-        <div className="page-title">Customers ({customers.length})</div>
-        <button className="btn btn-primary" onClick={onNewCustomer}>+ New Customer</button>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
-        <div className="search-wrap" style={{ flex: "1 1 170px", minWidth: 160 }}>
-          <span className="search-icon">📱</span>
-          <input className="search-input" placeholder="Mobile — exact" value={mobileQ}
-            onChange={e => setMobileQ(e.target.value)} inputMode="tel" />
-        </div>
-        <div className="search-wrap" style={{ flex: "1 1 200px", minWidth: 180 }}>
-          <span className="search-icon">🔍</span>
-          <input className="search-input" placeholder="Search everything…" value={search}
-            onChange={e => setSearch(e.target.value)} inputMode="search" />
-        </div>
-        <select className="filter-select" value={govF} onChange={e => { setGovF(e.target.value); setAreaF("all"); }}>
-          <option value="all">All Governorates</option>
-          {GOVS.map(g => <option key={g}>{g}</option>)}
-        </select>
-        <select className="filter-select" value={areaF} onChange={e => setAreaF(e.target.value)}>
-          <option value="all">All Areas</option>
-          {(govF === "all" ? areaOptions : areaOptions.filter(a => govFor(a) === govF)).map(a => <option key={a}>{a}</option>)}
-        </select>
-        <select className="filter-select" value={brandF} onChange={e => setBrandF(e.target.value)}>
-          <option value="all">All Car Brands</option>
-          {brandOptions.map(b => <option key={b}>{b}</option>)}
-        </select>
-        <select className="filter-select" value={sortBy} onChange={e => setSortBy(e.target.value)}>
-          <option value="name">Sort: Name A–Z</option>
-          <option value="recent">Sort: Recently added</option>
-          <option value="vehicles">Sort: Most vehicles</option>
-        </select>
-        {hasFilters && <button className="btn btn-ghost btn-sm" onClick={clearAll}>✕ Clear</button>}
-      </div>
-
-      {hasFilters && (
-        <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 12 }}>
-          {filtered.length} customer{filtered.length !== 1 ? "s" : ""} match
-          {mobileExact ? " (exact mobile)" : ""}
-        </div>
-      )}
-
-      {filtered.length === 0 && (
-        <div className="empty">
-          <h3>No customers found</h3>
-          <p>{mq ? "No customer with this mobile — check the number, or create them as new." : "Try different filters or search terms."}</p>
-        </div>
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
-        {shown.map(c => {
-          const cCars = cars.filter(car => car.customer_id === c.id);
-          const cJobs = jobs.filter(j => j.customer_id === c.id);
-          const totalSpent = cJobs.reduce((s, j) => s + Number(j.total || 0), 0);
-          const lastJob = cJobs.sort((a, b) => new Date(b.scheduled_at) - new Date(a.scheduled_at))[0];
-          return (
-            <div key={c.id} className="customer-card" onClick={() => onSelectCustomer(c)}>
-              <div className="customer-card-name">{c.name}</div>
-              <div className="customer-card-meta">
-                <span>📱 {c.mobile}</span>
-                <span>📍 {c.area}</span>
-              </div>
-              {cCars.length > 0 && (
-                <div className="cars-row">
-                  {cCars.map(car => (
-                    <span key={car.id} className="car-chip">{car.brand} {car.model} {car.year}</span>
-                  ))}
-                </div>
-              )}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-                <span className="history-mini">{cJobs.length} job{cJobs.length !== 1 ? "s" : ""} · Last: {lastJob ? fmtDate(lastJob.scheduled_at) : "—"}</span>
-                <span style={{ fontWeight: 700, color: "var(--accent)", fontSize: 14 }}>KWD {totalSpent.toFixed(3)}</span>
-              </div>
-              {c.notes && <div style={{ fontSize: 12, color: "#B45309", marginTop: 6 }}>⚠ {c.notes}</div>}
-            </div>
-          );
-        })}
-      </div>
-
-      {filtered.length > CAP && (
-        <div style={{ textAlign: "center", padding: "16px 0", fontSize: 13, color: "var(--muted)" }}>
-          Showing first {CAP} of {filtered.length} — refine the search or filters to see the rest.
-        </div>
-      )}
-    </>
-  );
-}
-
-
-
-// ─── Truck Settings (owner / sales / purchaser) ───────────────────────────────
-function TruckSettingsView({ rows, onReload, owner }) {
-  const [testOn, setTestOn] = useState(getTestMode());
-  const [saving, setSaving] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [newTruck, setNewTruck] = useState({ truck: "", start_hour: 11, end_hour: 19 });
-  const hourOpts = []; for (let h = 6; h <= 23; h++) hourOpts.push(h);
-  const setHours = async (truck, field, val) => { setSaving(truck); await saveTruckConfig(truck, { [field]: field === "password" ? String(val) : Number(val) }); await onReload(); setSaving(""); };
-  const toggleActive = async (truck, active) => { setSaving(truck); await saveTruckConfig(truck, { active }); await onReload(); setSaving(""); };
-  const addTruck = async () => {
-    const code = (newTruck.truck || "").trim().toUpperCase();
-    if (!code) { alert("Enter a truck code, e.g. T7"); return; }
-    if (rows.some(r => r.truck === code)) { alert(code + " already exists."); return; }
-    if (Number(newTruck.end_hour) <= Number(newTruck.start_hour)) { alert("End time must be after start time."); return; }
-    setAdding(true);
-    const genPw = code.toLowerCase() + "abcdefghjkmnpqrstuvwxyz"[Math.floor(Math.random() * 23)] + String(100 + Math.floor(Math.random() * 900));
-    const ok = await addTruckConfig({ truck: code, active: true, password: genPw, start_hour: Number(newTruck.start_hour), end_hour: Number(newTruck.end_hour), sort_order: (Math.max(0, ...rows.map(r => r.sort_order || 0)) + 1) });
-    if (ok) alert(`${code} added — technician password: ${genPw}`);
-    if (ok) { setNewTruck({ truck: "", start_hour: 11, end_hour: 19 }); await onReload(); }
-    setAdding(false);
-  };
-  const sorted = [...rows].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", padding: "8px 10px", borderBottom: "1px solid var(--border)" };
-  const td = { padding: "8px 10px", fontSize: 13, borderBottom: "1px solid var(--border)" };
-  return (
-    <>
-      <div className="page-header"><div className="page-title">Truck Settings</div></div>
-      <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-        <div className="card-header"><h3>Trucks & working hours</h3></div>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Truck</th><th style={th}>Active</th><th style={th}>Start</th><th style={th}>End</th><th style={th}>Shift</th><th style={th}>Password</th></tr></thead>
-          <tbody>
-            {sorted.map(r => {
-              const c = truckColor(r.truck);
-              return (
-                <tr key={r.truck} style={{ opacity: r.active ? 1 : 0.55 }}>
-                  <td style={{ ...td, fontWeight: 700 }}><span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><span style={{ width: 12, height: 12, borderRadius: 3, background: c.solid }} />{r.truck}</span></td>
-                  <td style={td}><button className={`btn btn-sm ${r.active ? "btn-primary" : "btn-ghost"}`} disabled={saving === r.truck} onClick={() => toggleActive(r.truck, !r.active)}>{r.active ? "Active" : "Off"}</button></td>
-                  <td style={td}><select className="filter-input" value={r.start_hour} disabled={saving === r.truck} onChange={e => setHours(r.truck, "start_hour", e.target.value)}>{hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}</select></td>
-                  <td style={td}><select className="filter-input" value={r.end_hour} disabled={saving === r.truck} onChange={e => setHours(r.truck, "end_hour", e.target.value)}>{hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}</select></td>
-                  <td style={{ ...td, color: "var(--muted)" }}>{hourLabel(r.start_hour)} – {hourLabel(r.end_hour)}</td>
-                  <td style={td}><input className="filter-input" style={{ width: 92, fontFamily: "monospace" }} defaultValue={r.password || ""} disabled={saving === r.truck}
-                    onBlur={e => { const v = e.target.value.trim(); if (v && v !== r.password) setHours(r.truck, "password", v); }} /></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-header"><h3>Add a truck</h3></div>
-        <div style={{ padding: "14px 16px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div className="form-field" style={{ maxWidth: 110 }}><label>Code</label><input className="filter-input" placeholder="T7" value={newTruck.truck} onChange={e => setNewTruck(p => ({ ...p, truck: e.target.value }))} /></div>
-          <div className="form-field" style={{ maxWidth: 130 }}><label>Start</label><select className="filter-input" value={newTruck.start_hour} onChange={e => setNewTruck(p => ({ ...p, start_hour: e.target.value }))}>{hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}</select></div>
-          <div className="form-field" style={{ maxWidth: 130 }}><label>End</label><select className="filter-input" value={newTruck.end_hour} onChange={e => setNewTruck(p => ({ ...p, end_hour: e.target.value }))}>{hourOpts.map(h => <option key={h} value={h}>{hourLabel(h)}</option>)}</select></div>
-          <button className="btn btn-primary" onClick={addTruck} disabled={adding}>{adding ? "Adding…" : "+ Add truck"}</button>
-        </div>
-      </div>
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 20 }}>Changes apply to the Day Board immediately for everyone. Turning a truck off hides it from new bookings and the board; existing orders are never affected. Colors are preset (T1–T6).</div>
-
-      {owner && (
-        <div className="card" style={{ marginBottom: 16, borderColor: testOn ? "#7C3AED" : "var(--border)" }}>
-          <div className="card-header"><h3>🧪 Testing mode {testOn ? "· ON" : ""}</h3></div>
-          <div style={{ padding: "14px 16px" }}>
-            <div style={{ fontSize: 13, marginBottom: 10 }}>
-              While ON, every order shows a purple <strong>⏩ Force complete (test)</strong> button that pushes it through collection, verification, and completion in one tap — so you can fill a realistic test schedule without signing into the truck and distributor.
-            </div>
-            <button className={`btn btn-sm ${testOn ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => { const v = !testOn; setTestMode(v); setTestOn(v); }}>
-              {testOn ? "Turn testing mode OFF" : "Turn testing mode ON"}
-            </button>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
-              This setting lives only on this device. <strong>Turn it OFF before going live</strong> so the team never sees the shortcut.
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-// ─── Costs to fill (purchaser / owner) ────────────────────────────────────────
-// Focused worklist of orders whose collectable items are missing a cost.
-// Purchaser fills cost per item; saves straight onto the order for accurate margins.
-function CostsView({ jobs, onUpdate }) {
-  const [savingId, setSavingId] = useState("");
-  const [drafts, setDrafts] = useState({}); // {jobId: {itemId: cost}}
-  const [supDrafts, setSupDrafts] = useState({}); // {jobId: {itemId: supplier}}
-  const [showAll, setShowAll] = useState(false);
-  const [q, setQ] = useState("");
-
-  const custOwned = (it) => /customer/i.test(String(it.supplier || "")); // customer-supplied → nothing to cost
-  const costable = (it) => !custOwned(it) && !isLaborLine(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part");
-  const needsCost = (it) => costable(it) && !(Number(it.cost) > 0);
-  const ql = q.trim().toLowerCase();
-  const rows = jobs
-    .filter(j => j.status !== "cancelled")
-    .filter(j => (j.items || []).some(needsCost) || (showAll && (j.items || []).some(costable))) // labor-only orders never appear
-    .filter(j => !ql || `${j.customer_name || ""} ${j.customer_mobile || ""} ${j.invoice_no || ""}`.toLowerCase().includes(ql))
-    .sort((a, b) => new Date(b.scheduled_at || b.created_at) - new Date(a.scheduled_at || a.created_at));
-
-  const openCount = jobs.filter(j => j.status !== "cancelled" && (j.items || []).some(needsCost)).length;
-
-  const setDraft = (jobId, itemId, val) => setDrafts(d => ({ ...d, [jobId]: { ...(d[jobId] || {}), [itemId]: val } }));
-
-  const setSupDraft = (jobId, itemId, val) => setSupDrafts(d => ({ ...d, [jobId]: { ...(d[jobId] || {}), [itemId]: val } }));
-  const saveJob = async (job) => {
-    const d = drafts[job.id] || {};
-    const sd = supDrafts[job.id] || {};
-    const items = (job.items || []).map(it => {
-      let out = it;
-      const v = d[it.id];
-      if (v !== undefined && v !== "") out = { ...out, cost: Number(v) || 0 };
-      const s = sd[it.id];
-      if (s !== undefined) out = { ...out, supplier: s };
-      return out;
-    });
-    setSavingId(job.id);
-    await onUpdate(job.id, { items });
-    setDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
-    setSupDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
-    setSavingId("");
-  };
-
-  const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", padding: "6px 8px", borderBottom: "1px solid var(--border)" };
-  const td = { padding: "6px 8px", fontSize: 13, borderBottom: "1px solid var(--border)" };
-
-  return (
-    <>
-      <div className="page-header">
-        <div>
-          <div className="page-title">Costs to fill</div>
-          <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 2 }}>
-            {openCount === 0 ? "✓ All items have costs — margins are complete." : `${openCount} order${openCount !== 1 ? "s" : ""} with items missing a cost.`}
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input className="filter-input" style={{ width: 200 }} placeholder="🔍 Search name, mobile, invoice" value={q} onChange={e => setQ(e.target.value)} />
-          <button className={`btn btn-sm ${showAll ? "btn-primary" : "btn-ghost"}`} onClick={() => setShowAll(s => !s)}>{showAll ? "Showing all orders" : "Show only missing"}</button>
-        </div>
-      </div>
-
-      <datalist id="cost-suppliers">
-        {OTHER_SUPPLIERS.map(s => <option key={s} value={s} />)}
-      </datalist>
-
-      {rows.length === 0 && <div className="empty"><h3>Nothing to fill</h3><p>Every item across your orders has a cost entered. Margins in Reports are accurate.</p></div>}
-
-      {rows.map(job => {
-        const items = (job.items || []).filter(costable);
-        const missing = items.filter(needsCost).length;
-        const dirty = (drafts[job.id] && Object.values(drafts[job.id]).some(v => v !== "" && v !== undefined))
-          || (supDrafts[job.id] && Object.keys(supDrafts[job.id]).length > 0);
-        return (
-          <div key={job.id} className="card" style={{ marginBottom: 14, borderLeft: missing ? "3px solid #B45309" : "3px solid var(--success)" }}>
-            <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-              <h3 style={{ margin: 0 }}>{job.customer_name} <span style={{ fontSize: 12, fontWeight: 500, color: "var(--muted)" }}>· {job.customer_mobile} · {fmtDate(job.scheduled_at)} · {job.assigned_truck || "—"}{job.invoice_no ? ` · ${job.invoice_no}` : ""}</span>
-                {(job.car_brand || job.car_model) && <div style={{ fontSize: 12.5, fontWeight: 700, marginTop: 3 }}>🚗 {job.car_brand} {job.car_model} {job.car_year || ""}</div>}</h3>
-              {missing > 0 ? <span style={{ fontSize: 11, fontWeight: 700, color: "#B45309" }}>{missing} missing</span> : <span style={{ fontSize: 11, fontWeight: 700, color: "var(--success)" }}>✓ complete</span>}
-            </div>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}>Item</th><th style={th}>Supplier</th><th style={th}>Qty</th><th style={th}>Price</th><th style={th}>Cost (each)</th></tr></thead>
-                <tbody>
-                  {items.map(it => {
-                    const name = it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : it.name;
-                    const draftVal = (drafts[job.id] || {})[it.id];
-                    const has = Number(it.cost) > 0;
-                    return (
-                      <tr key={it.id} style={{ background: !has && draftVal === undefined ? "#FFFBEB" : "transparent" }}>
-                        <td style={{ ...td, fontWeight: 600 }}>{name}{it.sku ? <span style={{ fontSize: 10.5, color: "var(--muted)" }}> · {it.sku}</span> : ""}{it.car_label ? <div style={{ fontSize: 10.5, color: "var(--muted)", fontWeight: 500 }}>🚗 {it.car_label}</div> : ""}</td>
-                        <td style={td}>
-                          <input className="filter-input" style={{ width: 130 }} placeholder="supplier"
-                            value={(supDrafts[job.id] || {})[it.id] !== undefined ? (supDrafts[job.id])[it.id] : (it.supplier || "")}
-                            onChange={e => setSupDraft(job.id, it.id, e.target.value)}
-                            list="cost-suppliers" />
-                        </td>
-                        <td style={td}>{it.qty}</td>
-                        <td style={{ ...td, color: "var(--muted)" }}>{Number(it.unit_price) ? `${Number(it.unit_price).toFixed(3)}` : "—"}</td>
-                        <td style={td}>
-                          <input className="filter-input" style={{ width: 90 }} type="number" step="0.001" min="0"
-                            placeholder={has ? Number(it.cost).toFixed(3) : "0.000"}
-                            value={draftVal !== undefined ? draftVal : (has ? Number(it.cost) : "")}
-                            onChange={e => setDraft(job.id, it.id, e.target.value)} />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ padding: "10px 12px", display: "flex", justifyContent: "flex-end" }}>
-              <button className="btn btn-primary btn-sm" disabled={!dirty || savingId === job.id} onClick={() => saveJob(job)}>{savingId === job.id ? "Saving…" : "Save costs"}</button>
-            </div>
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
-// ─── Reports (sales) ──────────────────────────────────────────────────────────
-// Auto-generated replacement for the manual daily/monthly Excel reports.
-// Everything computes live from jobs + quotes + customers. Trengo call counts
-// are not in the system yet, so inquiry-based metrics stay in Trengo for now.
-const MONTHLY_TARGET = 45000; // KWD — edit here when the target changes
-
-function ReportsView({ jobs, quotes, customers, owner }) {
-  const todayD = new Date(); todayD.setHours(0, 0, 0, 0);
-  // LOCAL date string — never toISOString here: UTC conversion shifts
-  // Kuwait's midnight back to the previous day and skews every preset.
-  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const [from, setFrom] = useState(iso(todayD));
-  const [to, setTo] = useState(iso(todayD));
-
-  const preset = (key) => {
-    const d = new Date(todayD);
-    if (key === "today") { setFrom(iso(d)); setTo(iso(d)); }
-    if (key === "week") { const s = new Date(d); s.setDate(d.getDate() - d.getDay()); setFrom(iso(s)); setTo(iso(d)); } // week starts Sunday
-    if (key === "month") { setFrom(iso(new Date(d.getFullYear(), d.getMonth(), 1))); setTo(iso(d)); }
-    if (key === "lastmonth") {
-      setFrom(iso(new Date(d.getFullYear(), d.getMonth() - 1, 1)));
-      setTo(iso(new Date(d.getFullYear(), d.getMonth(), 0)));
-    }
-  };
-
-  const fmtKD = (n) => Number(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
-  // Revenue attribution: SALE DATE (day the order was placed) — shared helper.
-  const jobDate = saleDateOf;
-  const inRange = jobs.filter(j => j.status !== "cancelled" && jobDate(j) >= from && jobDate(j) <= to);
-
-  // ── headline KPIs ──
-  const totalSales = inRange.reduce((s, j) => s + (Number(j.total) || 0), 0);
-  const orders = inRange.length;
-  const ticket = orders ? totalSales / orders : 0;
-
-  // ── cost: single source of truth = job.items (what the purchaser fills in Costs tab) ──
-  const itemCostOf = (it) => (Number(it.cost) || 0) * (Number(it.qty) || 1);
-  const jobItemsCost = (j) => (j.items || []).reduce((s, it) => s + itemCostOf(it), 0);
-  const custOwnedIt = (it) => /customer/i.test(String(it.supplier || ""));
-  const costableIt = (it) => !custOwnedIt(it) && !isLaborLine(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part");
-  // collections: sold & delivered but money not in (either paid signal counts)
-  const uncollectedJobs = inRange.filter(j => jobSuccessful(j) && j.payment_status !== "paid" && j.status !== "paid");
-  const uncollectedKD = uncollectedJobs.reduce((s, j) => s + (Number(j.total) || 0), 0);
-  // margin watchdog: purchasable items sold with no cost entered (matches the Costs tab)
-  let zeroCostItems = 0;
-  inRange.forEach(j => (j.items || []).forEach(it => {
-    if (costableIt(it) && !(Number(it.cost) > 0)) zeroCostItems++;
+const sqInitialLines = (type, variant, brand) => {
+  if (type === "Brake Pads" || type === "Brake Disc") return sqBrakeAutoLines(type, variant.sides, brand);
+  const d = SQ_SERVICES[type];
+  if (d && d.template) return d.template.map(t => ({
+    name: t._tpl ? sqTplName(t._tpl, brand) : t.name,
+    category: "other", unit: "pc", qty: 1, unit_price: 0, _tpl: t._tpl || null,
   }));
-
-  // new vs loyal: customer existed before the period start = loyal
-  let newC = 0, loyalC = 0;
-  const seen = new Set();
-  inRange.forEach(j => {
-    const key = j.customer_id || last8(j.customer_mobile);
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    const c = customers.find(x => x.id === j.customer_id) ||
-              customers.find(x => last8(x.mobile) === last8(j.customer_mobile));
-    if (c && c.created_at && c.created_at.split("T")[0] < from) loyalC++; else newC++;
-  });
-
-  // quotes in range + conversion
-  const qInRange = quotes.filter(q => { const d = q.created_at ? iso(new Date(q.created_at)) : ""; return d >= from && d <= to; });
-  const qSuccess = qInRange.filter(q => quoteStatus(q, jobs).status === "success").length;
-  const qConv = qInRange.length ? Math.round((qSuccess / qInRange.length) * 100) : 0;           // per quote
-  const cConv = customerConv(qInRange, q => quoteStatus(q, jobs).status === "success");         // per customer (default)
-
-  // ── month target (always current month, independent of selected range) ──
-  const mStart = iso(new Date(todayD.getFullYear(), todayD.getMonth(), 1));
-  const monthSales = jobs.filter(j => j.status !== "cancelled" && jobDate(j) >= mStart && jobDate(j) <= iso(todayD))
-    .reduce((s, j) => s + (Number(j.total) || 0), 0);
-  const tPct = Math.min(100, Math.round((monthSales / MONTHLY_TARGET) * 100));
-
-  // ── per-agent ──
-  const agentNames = [...new Set([...SALES_AGENTS, ...inRange.map(j => j.sales_agent).filter(Boolean), ...qInRange.map(q => q.agent).filter(Boolean)])];
-  const perAgent = agentNames.map(a => {
-    const aj = inRange.filter(j => j.sales_agent === a);
-    const aq = qInRange.filter(q => q.agent === a);
-    const aqs = aq.filter(q => quoteStatus(q, jobs).status === "success").length;
-    const ac = customerConv(aq, q => quoteStatus(q, jobs).status === "success");
-    return { agent: a, orders: aj.length, sales: aj.reduce((s, j) => s + (Number(j.total) || 0), 0),
-             quotes: aq.length, quotedCust: ac.customers,
-             conv: aq.length ? Math.round((aqs / aq.length) * 100) : null,
-             convC: aq.length ? ac.pct : null };
-  }).filter(p => p.orders || p.quotes).sort((x, y) => y.sales - x.sales);
-
-  // ── services breakdown (count · % of orders · KD · % of sales) ──
-  // Revenue comes from service blocks (or job total for imported orders without blocks).
-  // Cost comes from ITEMS — the only place the purchaser fills it — attributed to the
-  // item's service_type (falls back to the job's headline service).
-  const svcStats = {};
-  let svcCount = 0;
-  const bump = (t) => (svcStats[t] = svcStats[t] || { n: 0, kd: 0, cost: 0 });
-  inRange.forEach(j => {
-    const blocks = (j.services && j.services.length) ? j.services : [{ service_type: j.service_type || "Other", _fallbackTotal: Number(j.total) || 0 }];
-    blocks.forEach(s => {
-      const t = s.service_type || "Other";
-      const rev = s._fallbackTotal != null ? s._fallbackTotal : serviceTotals(s).total;
-      bump(t); svcStats[t].n++; svcStats[t].kd += rev; svcCount++;
-    });
-    (j.items || []).forEach(it => {
-      const c = itemCostOf(it);
-      if (!c) return;
-      const t = it.service_type || j.service_type || "Other";
-      bump(t); svcStats[t].cost += c;
-    });
-  });
-  const svcRows = Object.entries(svcStats).map(([t, v]) => ({ type: t, ...v })).sort((a, b) => b.kd - a.kd);
-  const tireKD = svcRows.filter(r => /tire|patch|rotation|wheel/i.test(r.type)).reduce((s, r) => s + r.kd, 0);
-
-  // ── daily bars ──
-  const days = [];
-  for (let d = new Date(from + "T00:00:00"); iso(d) <= to; d.setDate(d.getDate() + 1)) days.push(iso(d));
-  const byDay = days.map(d => ({ d, kd: inRange.filter(j => jobDate(j) === d).reduce((s, j) => s + (Number(j.total) || 0), 0) }));
-  const maxDay = Math.max(...byDay.map(x => x.kd), 1);
-  const minPos = Math.min(...byDay.filter(x => x.kd > 0).map(x => x.kd), Infinity);
-
-  const th = { textAlign: "left", fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", padding: "8px 10px", borderBottom: "1px solid var(--border)" };
-  const td = { padding: "8px 10px", fontSize: 13, borderBottom: "1px solid var(--border)" };
-
-  return (
-    <>
-      <div className="page-header">
-        <div className="page-title">Reports</div>
-        <div className="filters">
-          <button className="btn btn-ghost btn-sm" onClick={() => preset("today")}>Today</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => preset("week")}>This Week</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => preset("month")}>This Month</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => preset("lastmonth")}>Last Month</button>
-          <input type="date" className="filter-input" value={from} onChange={e => setFrom(e.target.value)} />
-          <input type="date" className="filter-input" value={to} onChange={e => setTo(e.target.value)} />
-        </div>
-      </div>
-
-      <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>KWD {fmtKD(totalSales)}</div><div className="stat-lbl">Total sales</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{orders}</div><div className="stat-lbl">Orders</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {fmtKD(ticket)}</div><div className="stat-lbl">Avg ticket</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{cConv.pct}%</div><div className="stat-lbl">Conversion — {cConv.won}/{cConv.customers} customers · per quote {qConv}% ({qSuccess}/{qInRange.length} sent)</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{loyalC} / {newC}</div><div className="stat-lbl">Loyal / new customers</div></div>
-        {owner && (() => {
-          const totalCost = svcRows.reduce((s, r) => s + r.cost, 0);
-          const profit = totalSales - totalCost;
-          const marginPct = totalSales ? Math.round((profit / totalSales) * 100) : 0;
-          return (
-            <div className="stat-card">
-              <div className="stat-num" style={{ color: "#15803D" }}>KWD {fmtKD(profit)}</div>
-              <div className="stat-lbl">Gross profit · {marginPct}% margin{zeroCostItems > 0 ? ` · ⚠ ${zeroCostItems} no-cost item${zeroCostItems > 1 ? "s" : ""}` : ""}</div>
-            </div>
-          );
-        })()}
-        <div className="stat-card">
-          <div className="stat-num" style={{ color: uncollectedKD > 0 ? "#DC2626" : "var(--success)" }}>KWD {fmtKD(uncollectedKD)}</div>
-          <div className="stat-lbl">Uncollected ({uncollectedJobs.length} successful unpaid)</div>
-        </div>
-      </div>
-
-      {/* Month target */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-body" style={{ padding: "14px 16px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
-            <span style={{ fontWeight: 700, fontFamily: "var(--font-head)" }}>Month target · KWD {fmtKD(MONTHLY_TARGET)}</span>
-            <span>Now <strong style={{ color: "var(--accent)" }}>KWD {fmtKD(monthSales)}</strong> · Remaining <strong>KWD {fmtKD(Math.max(0, MONTHLY_TARGET - monthSales))}</strong> · <strong>{tPct}%</strong></span>
-          </div>
-          <div style={{ height: 12, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-            <div style={{ width: `${tPct}%`, height: "100%", background: tPct >= 100 ? "var(--success)" : "var(--accent)", transition: "width .3s" }} />
-          </div>
-        </div>
-      </div>
-
-      {/* Daily sales bars */}
-      {days.length > 1 && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-body" style={{ padding: "14px 16px" }}>
-            <div style={{ fontWeight: 700, fontFamily: "var(--font-head)", fontSize: 13, marginBottom: 10 }}>Daily sales</div>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 120, overflowX: "auto", paddingBottom: 4 }}>
-              {byDay.map(x => (
-                <div key={x.d} title={`${x.d} · KWD ${fmtKD(x.kd)}`} style={{ flex: "1 0 14px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, minWidth: 14 }}>
-                  <span style={{ fontSize: 8.5, color: "var(--muted)", whiteSpace: "nowrap" }}>{x.kd > 0 ? fmtKD(x.kd) : ""}</span>
-                  <div style={{ width: "100%", borderRadius: "3px 3px 0 0", height: `${Math.max(2, (x.kd / maxDay) * 90)}px`,
-                    background: x.kd === maxDay && x.kd > 0 ? "var(--success)" : (x.kd === minPos && x.kd > 0 ? "#DC2626" : "#1A1A1A") }} />
-                  <span style={{ fontSize: 8.5, color: "var(--muted)" }}>{x.d.slice(8)}</span>
-                </div>
-              ))}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>Green = best day · Red = lowest (non-zero) day</div>
-          </div>
-        </div>
-      )}
-
-      {/* Per-agent */}
-      <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-        <div className="card-header"><h3>Per agent</h3></div>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Agent</th><th style={th}>Orders</th><th style={th}>Sales (KD)</th><th style={th}>Quoted — cust (quotes)</th><th style={th}>Conv (customers)</th><th style={th}>Conv (quotes)</th></tr></thead>
-          <tbody>
-            {perAgent.map(p => (
-              <tr key={p.agent}>
-                <td style={{ ...td, fontWeight: 600 }}>{p.agent}</td>
-                <td style={td}>{p.orders}</td>
-                <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(p.sales)}</td>
-                <td style={td}>{p.quotedCust}{p.quotes ? ` (${p.quotes})` : ""}</td>
-                <td style={{ ...td, fontWeight: 700 }}>{p.convC == null ? "—" : p.convC + "%"}</td>
-                <td style={td}>{p.conv == null ? "—" : p.conv + "%"}</td>
-              </tr>
-            ))}
-            {perAgent.length === 0 && <tr><td style={td} colSpan={6}>No activity in this range.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Services breakdown */}
-      <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-        <div className="card-header">
-          <h3>Services</h3>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>Tires {totalSales ? Math.round((tireKD / totalSales) * 100) : 0}% · Other {totalSales ? Math.round(((totalSales - tireKD) / totalSales) * 100) : 0}%</span>
-        </div>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><th style={th}>Service</th><th style={th}>Number</th><th style={th}>KD</th><th style={th}>% of sales</th>{owner && <><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></>}</tr></thead>
-          <tbody>
-            {svcRows.map(r => (
-              <tr key={r.type}>
-                <td style={{ ...td, fontWeight: 600 }}>{r.type}</td>
-                <td style={td}>{r.n}</td>
-                <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(r.kd)}</td>
-                <td style={td}>{totalSales ? Math.round((r.kd / totalSales) * 100) : 0}%</td>
-                {owner && <>
-                  <td style={td}>{fmtKD(r.cost)}</td>
-                  <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{fmtKD(r.kd - r.cost)}</td>
-                  <td style={td}>{r.kd ? Math.round(((r.kd - r.cost) / r.kd) * 100) : 0}%</td>
-                </>}
-              </tr>
-            ))}
-            {svcRows.length === 0 && <tr><td style={td} colSpan={owner ? 7 : 4}>No orders in this range.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-
-      {/* ═══ OWNER MARGIN REPORTS ═══ */}
-      {owner && (() => {
-        const itemRevOf = (it) => (Number(it.unit_price) || 0) * (Number(it.qty) || 1);
-
-        // 1 · PER SERVICE TYPE — margin (already have svcRows with kd+cost)
-        const svcMargin = svcRows.map(r => ({ ...r, profit: r.kd - r.cost, margin: r.kd ? Math.round(((r.kd - r.cost) / r.kd) * 100) : 0 }))
-          .sort((a, b) => b.profit - a.profit);
-
-        // 2 · PER ORDER — full margin per job
-        const orderRows = inRange.map(j => {
-          const items = j.items || [];
-          const cost = jobItemsCost(j);
-          const rev = Number(j.total) || 0;
-          // labor-only orders have nothing to cost — never flag them as "missing costs"
-          const costableItems = items.filter(costableIt);
-          return { id: j.id, name: j.customer_name, date: j.scheduled_at, svc: j.service_type, rev, cost, profit: rev - cost, margin: rev ? Math.round(((rev - cost) / rev) * 100) : 0, hasCost: costableItems.length === 0 || costableItems.some(it => Number(it.cost) > 0) };
-        }).sort((a, b) => b.profit - a.profit);
-
-        // 3 · PER SKU / ITEM — which products earn best (real products only:
-        // skip labor lines and customer-supplied items so margins aren't fake 100%)
-        const skuMap = {};
-        inRange.forEach(j => (j.items || []).forEach(it => {
-          if (!costableIt(it)) return;
-          const key = it.sku || (it.kind === "tire" ? `${it.brand} ${it.pattern || ""} ${it.size || ""}`.trim() : it.name) || "—";
-          skuMap[key] = skuMap[key] || { key, name: it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() : it.name, units: 0, rev: 0, cost: 0 };
-          skuMap[key].units += Number(it.qty) || 0;
-          skuMap[key].rev += itemRevOf(it);
-          skuMap[key].cost += itemCostOf(it);
-        }));
-        const skuRows = Object.values(skuMap).map(r => ({ ...r, profit: r.rev - r.cost, margin: r.rev ? Math.round(((r.rev - r.cost) / r.rev) * 100) : 0 })).sort((a, b) => b.profit - a.profit);
-
-        const bar = (pct) => (
-          <div style={{ display: "inline-block", width: 42, height: 6, borderRadius: 3, background: "var(--border)", verticalAlign: "middle", marginRight: 6 }}>
-            <div style={{ width: `${Math.max(0, Math.min(100, pct))}%`, height: "100%", borderRadius: 3, background: pct >= 40 ? "#15803D" : pct >= 20 ? "#D97706" : "#DC2626" }} />
-          </div>
-        );
-
-        return (
-          <>
-            {/* 1 · Profit by service type */}
-            <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-              <div className="card-header"><h3>💰 Profit by service type</h3></div>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}>Service</th><th style={th}>Orders</th><th style={th}>Revenue</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
-                <tbody>
-                  {svcMargin.map(r => (
-                    <tr key={r.type}>
-                      <td style={{ ...td, fontWeight: 600 }}>{r.type}</td>
-                      <td style={td}>{r.n}</td>
-                      <td style={td}>{fmtKD(r.kd)}</td>
-                      <td style={td}>{fmtKD(r.cost)}</td>
-                      <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{fmtKD(r.profit)}</td>
-                      <td style={td}>{bar(r.margin)}{r.margin}%</td>
-                    </tr>
-                  ))}
-                  {svcMargin.length === 0 && <tr><td style={td} colSpan={6}>No orders in this range.</td></tr>}
-                </tbody>
-              </table>
-              <div style={{ fontSize: 11, color: "var(--muted)", padding: "8px 12px" }}>Profit = revenue − product cost. Labor-only services show near-100% margin (no product cost).</div>
-            </div>
-
-            {/* 2 · Margin per order */}
-            <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-              <div className="card-header"><h3>📋 Margin per order — top & bottom</h3></div>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}>Customer</th><th style={th}>Service</th><th style={th}>Revenue</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
-                <tbody>
-                  {(orderRows.length <= 16
-                    ? orderRows
-                    : [...orderRows.slice(0, 8), { divider: true }, ...orderRows.slice(-8)]).map((r, i) => r.divider
-                    ? <tr key="d"><td style={{ ...td, textAlign: "center", color: "var(--muted)", fontSize: 11 }} colSpan={6}>⋯ middle orders hidden ⋯</td></tr>
-                    : (
-                      <tr key={r.id}>
-                        <td style={{ ...td, fontWeight: 600 }}>{r.name}{!r.hasCost && <span title="no costs entered" style={{ color: "#B45309" }}> ⚠</span>}</td>
-                        <td style={{ ...td, color: "var(--muted)", fontSize: 12 }}>{shortService ? shortService(r.svc) : r.svc}</td>
-                        <td style={td}>{fmtKD(r.rev)}</td>
-                        <td style={td}>{fmtKD(r.cost)}</td>
-                        <td style={{ ...td, fontWeight: 700, color: r.profit >= 0 ? "#15803D" : "#DC2626" }}>{fmtKD(r.profit)}</td>
-                        <td style={td}>{bar(r.margin)}{r.margin}%</td>
-                      </tr>
-                    ))}
-                  {orderRows.length === 0 && <tr><td style={td} colSpan={6}>No orders in this range.</td></tr>}
-                </tbody>
-              </table>
-              <div style={{ fontSize: 11, color: "var(--muted)", padding: "8px 12px" }}>⚠ = order still missing item costs (fill in the Purchaser's Costs tab for accurate margin).</div>
-            </div>
-
-            {/* 3 · Profit by SKU / item */}
-            <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-              <div className="card-header"><h3>🏷️ Profit by product (SKU)</h3></div>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}>Product</th><th style={th}>Units</th><th style={th}>Revenue</th><th style={th}>Cost</th><th style={th}>Profit</th><th style={th}>Margin</th></tr></thead>
-                <tbody>
-                  {skuRows.slice(0, 30).map(r => (
-                    <tr key={r.key}>
-                      <td style={{ ...td, fontWeight: 600 }}>{r.name}{r.key !== r.name && <span style={{ fontSize: 10.5, color: "var(--muted)" }}> · {r.key}</span>}</td>
-                      <td style={td}>{r.units}</td>
-                      <td style={td}>{fmtKD(r.rev)}</td>
-                      <td style={td}>{fmtKD(r.cost)}</td>
-                      <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{fmtKD(r.profit)}</td>
-                      <td style={td}>{bar(r.margin)}{r.margin}%</td>
-                    </tr>
-                  ))}
-                  {skuRows.length === 0 && <tr><td style={td} colSpan={6}>No product items in this range.</td></tr>}
-                </tbody>
-              </table>
-              {skuRows.length > 30 && <div style={{ fontSize: 11, color: "var(--muted)", padding: "8px 12px" }}>Showing top 30 products by profit.</div>}
-            </div>
-          </>
-        );
-      })()}
-
-      {/* Lead sources — marketing ROI */}
-      {(() => {
-        const leads = {};
-        inRange.forEach(j => {
-          const k = j.lead_from || "—";
-          leads[k] = leads[k] || { n: 0, kd: 0 };
-          leads[k].n++; leads[k].kd += Number(j.total) || 0;
-        });
-        const rows = Object.entries(leads).map(([k, v]) => ({ src: k, ...v })).sort((a, b) => b.kd - a.kd);
-        if (!rows.length) return null;
-        return (
-          <div className="card" style={{ marginBottom: 16, overflowX: "auto" }}>
-            <div className="card-header"><h3>Lead sources</h3></div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><th style={th}>Source</th><th style={th}>Orders</th><th style={th}>Sales (KD)</th><th style={th}>% of sales</th><th style={th}>Avg ticket</th></tr></thead>
-              <tbody>
-                {rows.map(r => (
-                  <tr key={r.src}>
-                    <td style={{ ...td, fontWeight: 600 }}>{r.src}</td>
-                    <td style={td}>{r.n}</td>
-                    <td style={{ ...td, fontWeight: 700, color: "var(--accent)" }}>{fmtKD(r.kd)}</td>
-                    <td style={td}>{totalSales ? Math.round((r.kd / totalSales) * 100) : 0}%</td>
-                    <td style={td}>{fmtKD(r.n ? r.kd / r.n : 0)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        );
-      })()}
-
-      {!owner && zeroCostItems > 0 && (
-        <div style={{ fontSize: 12, color: "#B45309", marginBottom: 8 }}>
-          ⚠ {zeroCostItems} item{zeroCostItems > 1 ? "s" : ""} in this range missing a cost — please fill the cost when adding parts.
-        </div>
-      )}
-      <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 20 }}>
-        {owner ? "Profit = revenue minus product cost (labor counts as contribution). " : ""}Call counts and total inquiries live in Trengo and are not included here. Conversion above is quote-based.
-      </div>
-    </>
-  );
-}
-
-// ─── Quotes Dashboard (sales) ─────────────────────────────────────────────────
-// Full quote lifecycle: open → success (order created) or lost (with reason).
-// Stamped status is the source of truth; legacy quotes fall back to the
-// derived order match. Follow-up ladder: 24h → 3d → 7d, snooze overrides.
-function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdate }) {
-  const [statusF, setStatusF] = useState("all"); // all | success | open | followup | lost
-  const [agentF, setAgentF] = useState("all");
-  const [search, setSearch] = useState("");
-  const [action, setAction] = useState(null); // { id, type: "lost" | "snooze" }
-  const [lostReason, setLostReason] = useState(LOST_REASONS[0]);
-  const [snoozeDate, setSnoozeDate] = useState("");
-
-  // Date range (matches Reports presets). Default = ALL TIME so open
-  // follow-ups from previous days never vanish from the working list.
-  const [qFrom, setQFrom] = useState("");
-  const [qTo, setQTo] = useState("");
-  const qIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const qPreset = (key) => {
-    const d = new Date(); d.setHours(0, 0, 0, 0);
-    if (key === "all") { setQFrom(""); setQTo(""); return; }
-    if (key === "today") { setQFrom(qIso(d)); setQTo(qIso(d)); }
-    if (key === "week") { const s0 = new Date(d); s0.setDate(d.getDate() - d.getDay()); setQFrom(qIso(s0)); setQTo(qIso(d)); }
-    if (key === "month") { setQFrom(qIso(new Date(d.getFullYear(), d.getMonth(), 1))); setQTo(qIso(d)); }
-    if (key === "lastmonth") { setQFrom(qIso(new Date(d.getFullYear(), d.getMonth() - 1, 1))); setQTo(qIso(new Date(d.getFullYear(), d.getMonth(), 0))); }
-  };
-
-  const enriched = quotes.filter(q => {
-    if (!qFrom && !qTo) return true;
-    const d = q.created_at ? qIso(new Date(q.created_at)) : "";
-    if (qFrom && d < qFrom) return false;
-    if (qTo && d > qTo) return false;
-    return true;
-  }).map(q => {
-    const st = quoteStatus(q, jobs);
-    const fu = followupState(q, st.status);
-    const cust = customers.find(c => last8(c.mobile) && last8(c.mobile) === last8(q.customer_mobile));
-    return { ...q, _st: st.status, _job: st.job, _fu: fu, _cust: cust, _value: quoteValue(q) };
-  });
-
-  const agents = [...new Set(enriched.map(q => q.agent || "—"))].sort();
-  const total = enriched.length;
-  const successCount = enriched.filter(q => q._st === "success").length;
-  const lostCount = enriched.filter(q => q._st === "lost").length;
-  const openList = enriched.filter(q => q._st === "open");
-  const conv = total ? Math.round((successCount / total) * 100) : 0;                 // per quote
-  const convCust = customerConv(enriched, q => q._st === "success");                 // per customer (default)
-  const pipeline = openList.reduce((s, q) => s + q._value, 0);
-  const followupCount = openList.filter(q => q._fu.due).length;
-
-  const perAgent = agents.map(a => {
-    const list = enriched.filter(q => (q.agent || "—") === a);
-    const b = list.filter(q => q._st === "success").length;
-    return { agent: a, total: list.length, success: b, conv: list.length ? Math.round((b / list.length) * 100) : 0 };
-  }).sort((x, y) => y.total - x.total);
-
-  // "why we lose" breakdown (shown on the Lost filter)
-  const lostByReason = {};
-  enriched.filter(q => q._st === "lost").forEach(q => {
-    const r = q.lost_reason || "—";
-    lostByReason[r] = (lostByReason[r] || 0) + 1;
-  });
-
-  const filtered = enriched.filter(q => {
-    if (statusF === "success" && q._st !== "success") return false;
-    if (statusF === "open" && q._st !== "open") return false;
-    if (statusF === "lost" && q._st !== "lost") return false;
-    if (statusF === "followup" && !(q._st === "open" && q._fu.due)) return false;
-    if (agentF !== "all" && (q.agent || "—") !== agentF) return false;
-    if (search) {
-      const s = search.toLowerCase();
-      const hay = `${q.customer_mobile || ""} ${q.customer_name || ""} ${q._cust?.name || ""} ${q.lost_reason || ""} ${(q.lines || []).map(l => `${l.brand || ""} ${l.pattern || ""} ${l.size || ""}`).join(" ")}`.toLowerCase();
-      if (!hay.includes(s)) return false;
-    }
-    return true;
-  }).sort((a, b) => statusF === "followup"
-    ? new Date(a.created_at) - new Date(b.created_at)   // oldest first — coldest lead gets called first
-    : new Date(b.created_at) - new Date(a.created_at));
-
-  const QUICK = [
-    { key: "all", label: `All (${total})` },
-    { key: "success", label: `✓ Success (${successCount})` },
-    { key: "open", label: `Open (${openList.length})` },
-    { key: "followup", label: `⏰ Follow up (${followupCount})` },
-    { key: "lost", label: `✕ Lost (${lostCount})` },
-  ];
-
-  const markContacted = (q) => {
-    onQuoteUpdate(q.id, { last_contact_at: new Date().toISOString(), followup_count: (Number(q.followup_count) || 0) + 1, followup_at: null });
-    setAction(null);
-  };
-  const confirmLost = (q) => {
-    onQuoteUpdate(q.id, { status: "lost", lost_reason: lostReason, lost_at: new Date().toISOString() });
-    setAction(null);
-  };
-  const confirmSnooze = (q) => {
-    if (!snoozeDate) return;
-    onQuoteUpdate(q.id, { followup_at: new Date(`${snoozeDate}T09:00:00`).toISOString() });
-    setAction(null); setSnoozeDate("");
-  };
-  const reopen = (q) => onQuoteUpdate(q.id, { status: "open", lost_reason: null, lost_at: null, followup_at: null });
-
-  return (
-    <>
-      <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{convCust.customers}</div><div className="stat-lbl">Customers quoted · {total} quote{total !== 1 ? "s" : ""} sent</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{successCount}</div><div className="stat-lbl">Success</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{convCust.pct}%</div><div className="stat-lbl">Conversion — customers ({convCust.won}/{convCust.customers}) · per quote {conv}%</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {pipeline.toFixed(0)}</div><div className="stat-lbl">Open pipeline (est.)</div></div>
-      </div>
-
-      <div className="page-header">
-        <div className="page-title">Quotes</div>
-        <div className="filters">
-          {[["all", "All"], ["today", "Today"], ["week", "This Week"], ["month", "This Month"], ["lastmonth", "Last Month"]].map(([k, l]) => (
-            <button key={k} className={`btn btn-sm ${(k === "all" && !qFrom && !qTo) ? "btn-primary" : "btn-ghost"}`} onClick={() => qPreset(k)}>{l}</button>
-          ))}
-          <input type="date" className="filter-input" value={qFrom} onChange={e => setQFrom(e.target.value)} />
-          <input type="date" className="filter-input" value={qTo} onChange={e => setQTo(e.target.value)} />
-        </div>
-        <div className="filters">
-          <input className="filter-input" placeholder="Search mobile, name, tire…" value={search} onChange={e => setSearch(e.target.value)} style={{ width: 200 }} />
-        </div>
-      </div>
-
-      {/* Per-agent performance — tap to filter */}
-      {perAgent.length > 0 && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-          <button className={`btn btn-sm ${agentF === "all" ? "btn-primary" : "btn-ghost"}`} onClick={() => setAgentF("all")}>All agents</button>
-          {perAgent.map(p => (
-            <button key={p.agent} className={`btn btn-sm ${agentF === p.agent ? "btn-primary" : "btn-ghost"}`}
-              onClick={() => setAgentF(agentF === p.agent ? "all" : p.agent)}>
-              {p.agent} · {p.success}/{p.total} · {p.conv}%
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Status filter pills */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-        {QUICK.map(qk => (
-          <button key={qk.key} className={`btn btn-sm ${statusF === qk.key ? "btn-primary" : "btn-ghost"}`} onClick={() => setStatusF(qk.key)}>{qk.label}</button>
-        ))}
-      </div>
-
-      {/* Why we lose — reason breakdown, visible on the Lost filter */}
-      {statusF === "lost" && lostCount > 0 && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "#991B1B" }}>Why we lose:</span>
-          {Object.entries(lostByReason).sort((a, b) => b[1] - a[1]).map(([r, n]) => (
-            <span key={r} style={{ fontSize: 12, fontWeight: 600, color: "#991B1B", background: "#fff", border: "1px solid #FECACA", borderRadius: 6, padding: "2px 8px" }}>{r}: {n}</span>
-          ))}
-        </div>
-      )}
-
-      {filtered.length === 0 && <div className="empty"><h3>No quotes here</h3><p>Quotes sent from the Tire System appear automatically.</p></div>}
-
-      {filtered.map(q => {
-        const isSuccess = q._st === "success";
-        const isLost = q._st === "lost";
-        const due = q._st === "open" && q._fu.due;
-        const custName = q._cust?.name || q.customer_name || "";
-        // Staggered when flagged, OR positions are tagged, OR two lines differ (front≠rear).
-        const _ls = q.lines || [];
-        const _byPos = { front: _ls.find(l => l.position === "front"), rear: _ls.find(l => l.position === "rear") };
-        const _twoDiffer = _ls.length === 2 && (
-          `${_ls[0].brand}${_ls[0].pattern}${_ls[0].size}` !== `${_ls[1].brand}${_ls[1].pattern}${_ls[1].size}`
-        );
-        const isStag = q.staggered || (_byPos.front && _byPos.rear) || _twoDiffer;
-        const front = isStag ? (_byPos.front || _ls[0]) : null;
-        const rear = isStag ? (_byPos.rear || _ls[1]) : null;
-        const borderCol = isSuccess ? "var(--success)" : isLost ? "#DC2626" : due ? "#F59E0B" : "var(--border)";
-        return (
-          <div key={q.id} className="dist-card" style={{ borderLeft: `3px solid ${borderCol}`, opacity: isLost ? .8 : 1 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 14, fontFamily: "var(--font-head)" }}>
-                  {custName || "Unknown customer"} · <a href={`tel:${q.customer_mobile}`} style={{ color: "var(--accent)", fontWeight: 600 }}>{q.customer_mobile}</a>
-                </div>
-                <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>
-                  {fmtDate(q.created_at)} {fmtTime(q.created_at)} · {quoteAge(q.created_at)}{q.agent ? ` · ${q.agent}` : ""}{q.cash_pct ? ` · cash ${q.cash_pct}%` : ""}
-                  {Number(q.followup_count) > 0 ? ` · 📞 ×${q.followup_count}` : ""}
-                </div>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-                {isSuccess ? (
-                  <span className="status-pill" style={{ background: "#DCFCE7", color: "#15803D", cursor: q._job ? "pointer" : "default" }} onClick={() => q._job && onSelectJob(q._job)}>✓ Success{q._job ? " →" : ""}</span>
-                ) : isLost ? (
-                  <span className="status-pill" style={{ background: "#FEE2E2", color: "#991B1B" }}>✕ Lost</span>
-                ) : q._fu.snoozed ? (
-                  <span className="status-pill" style={{ background: "#EFF6FF", color: "#1D4ED8" }}>💤 {fmtDate(q.followup_at)}</span>
-                ) : due ? (
-                  <span className="status-pill" style={{ background: "#FEF3C7", color: "#92400E" }}>⏰ Follow up</span>
-                ) : (
-                  <span className="status-pill" style={{ background: "#F1F5F9", color: "#64748B" }}>Open</span>
-                )}
-                <span style={{ fontWeight: 700, color: "var(--accent)", fontSize: 13 }}>~KWD {q._value.toFixed(0)}</span>
-              </div>
-            </div>
-
-            {isLost && (
-              <div style={{ fontSize: 12, color: "#991B1B", fontWeight: 600, marginBottom: 6 }}>
-                ✕ {q.lost_reason || "No reason recorded"}{q.lost_at ? ` · ${fmtDate(q.lost_at)}` : ""}
-              </div>
-            )}
-
-            {q.kind === "service" && q.service_type === "Battery" && (q.lines || []).length > 1 ? (
-              <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
-                <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0369A1", marginBottom: 5 }}>🛠 BATTERY QUOTE — {q.lines.length} OPTIONS{q.car && (q.car.brand || q.car.model) ? ` · 🚗 ${[q.car.brand, q.car.model, q.car.year].filter(Boolean).join(" ")}` : ""}</div>
-                {(q.lines || []).map((l, li) => {
-                  const optTotal = (Number(l.qty) || 1) * (Number(l.unit_price) || 0) + (Number(q.labor) || 0) - (Number(q.discount) || 0);
-                  return (
-                    <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "4px 0", borderTop: li ? "1px solid var(--border)" : "none" }}>
-                      <div><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>= {optTotal.toFixed(3)} KD</span> <span style={{ color: "var(--muted)", fontSize: 11 }}>incl. labor</span></div>
-                      {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, l)}>Book</button>}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : q.kind === "service" ? (
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
-                <div>
-                  <div style={{ fontSize: 10.5, fontWeight: 800, color: "#0369A1", marginBottom: 3 }}>🛠 {(q.service_type || "SERVICE").toUpperCase()} QUOTE{q.car && (q.car.brand || q.car.model) ? ` · 🚗 ${[q.car.brand, q.car.model, q.car.year].filter(Boolean).join(" ")}` : ""}</div>
-                  {Array.isArray(q.services) && q.services.length > 1 ? (
-                    q.services.map((b, bi) => (
-                      <div key={bi} style={{ marginBottom: 4, paddingTop: bi ? 4 : 0, borderTop: bi ? "1px dashed var(--border)" : "none" }}>
-                        <div style={{ fontWeight: 800, fontSize: 11.5 }}>{b.type}{Object.values(b.variant || {}).length ? ` · ${Object.values(b.variant).join(" / ")}` : ""}</div>
-                        {(b.lines || []).map((l, li) => (
-                          <div key={li}><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(l.unit_price || 0).toFixed(3)} KD</span></div>
-                        ))}
-                        {Number(b.labor) > 0 && <div style={{ color: "var(--muted)" }}>Labor: {Number(b.labor).toFixed(3)} KD</div>}
-                      </div>
-                    ))
-                  ) : (
-                    (q.lines || []).map((l, li) => (
-                      <div key={li}><strong>{l.qty}× {l.name}</strong> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(l.unit_price || 0).toFixed(3)} KD</span></div>
-                    ))
-                  )}
-                  {!(Array.isArray(q.services) && q.services.length > 1) && Number(q.labor) > 0 && <div style={{ color: "var(--muted)" }}>Labor: {Number(q.labor).toFixed(3)} KD</div>}
-                  {Number(q.discount) > 0 && <div style={{ color: "var(--muted)" }}>Discount: -{Number(q.discount).toFixed(3)} KD</div>}
-                </div>
-                {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, null)}>Book</button>}
-              </div>
-            ) : isStag ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {staggeredOptions(q).map((opt, oi) => (
-                  <div key={oi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
-                    <div>
-                      <div><span style={{ color: "var(--muted)", fontWeight: 700 }}>Front</span> <strong>{opt.front?.brand} {opt.front?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {opt.front?.size}{opt.front?.year ? ` · ${opt.front.year}` : ""}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(opt.front?.price || 0).toFixed(0)} KD</span></div>
-                      <div style={{ marginTop: 2 }}><span style={{ color: "var(--muted)", fontWeight: 700 }}>Rear</span> <strong>{opt.rear?.brand} {opt.rear?.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {opt.rear?.size}{opt.rear?.year ? ` · ${opt.rear.year}` : ""}</span> <span style={{ color: "var(--accent)", fontWeight: 700 }}>@ {Number(opt.rear?.price || 0).toFixed(0)} KD</span></div>
-                    </div>
-                    {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, opt)}>Book</button>}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {(q.lines || []).map((line, li) => (
-                  <div key={li} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, border: "1px solid var(--border)", borderRadius: 8, padding: "8px 10px", background: "var(--bg)", fontSize: 12.5 }}>
-                    <span>
-                      <strong>{line.brand} {line.pattern}</strong> <span style={{ color: "var(--muted)" }}>· {line.size}{line.year ? ` · ${line.year}` : ""} · qty {q.qty || 4}</span>
-                      <span style={{ color: "var(--accent)", fontWeight: 700 }}> @ {Number(line.price || 0).toFixed(0)} KD</span>
-                    </span>
-                    {!isSuccess && <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => onBook(q, line)}>Book</button>}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Follow-up actions (open quotes only) */}
-            {q._st === "open" && (
-              <div style={{ marginTop: 8 }}>
-                {q._fu.suggestLost && (
-                  <div style={{ fontSize: 12, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "6px 10px", marginBottom: 6, fontWeight: 600 }}>
-                    ⚠ {q.followup_count} follow-ups with no booking — consider marking it lost.
-                  </div>
-                )}
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                  <button className="btn btn-ghost btn-sm" onClick={() => markContacted(q)}>📞 Contacted</button>
-                  <button className={`btn btn-sm ${action?.id === q.id && action?.type === "snooze" ? "btn-primary" : "btn-ghost"}`} onClick={() => setAction(action?.id === q.id && action?.type === "snooze" ? null : { id: q.id, type: "snooze" })}>💤 Snooze</button>
-                  <button className={`btn btn-sm ${action?.id === q.id && action?.type === "lost" ? "btn-primary" : "btn-ghost"}`} style={{ color: action?.id === q.id && action?.type === "lost" ? undefined : "var(--danger)" }} onClick={() => setAction(action?.id === q.id && action?.type === "lost" ? null : { id: q.id, type: "lost" })}>✕ Lost</button>
-                </div>
-                {action?.id === q.id && action?.type === "snooze" && (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-                    <input type="date" className="filter-input" value={snoozeDate} min={today()} onChange={e => setSnoozeDate(e.target.value)} />
-                    <button className="btn btn-primary btn-sm" disabled={!snoozeDate} onClick={() => confirmSnooze(q)}>Set follow-up date</button>
-                  </div>
-                )}
-                {action?.id === q.id && action?.type === "lost" && (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
-                    <select className="filter-input" value={lostReason} onChange={e => setLostReason(e.target.value)}>
-                      {LOST_REASONS.map(r => <option key={r}>{r}</option>)}
-                    </select>
-                    <button className="btn btn-sm" style={{ background: "#DC2626", color: "#fff", fontWeight: 700 }} onClick={() => confirmLost(q)}>Confirm lost</button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {isLost && (
-              <div style={{ marginTop: 8 }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => reopen(q)}>↩ Reopen</button>
-              </div>
-            )}
-
-            {isSuccess && q._job && (
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                → Order:
-                <span style={{ fontWeight: 600, color: "var(--text)", cursor: "pointer", textDecoration: "underline", textDecorationColor: "rgba(212,132,10,.4)" }} onClick={() => onSelectJob(q._job)}>
-                  {q._job.customer_name} · {fmtDate(q._job.scheduled_at)} · {q._job.assigned_truck}
-                </span>
-                <StatusPill status={q._job.status} />
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
-// ─── App Root ─────────────────────────────────────────────────────────────────
-// Remembered login (survives pull-to-refresh / page reloads; cleared on Sign out)
-const loadSession = () => {
-  try { return JSON.parse(localStorage.getItem("bnchr_session") || "null"); } catch { return null; }
+  return [];
+};
+const sqRenameLines = (lines, brand) => lines.map(l => {
+  if (l._auto) { const [pos, kind] = l._auto.split("-"); return { ...l, name: sqTplName(kind, brand, pos === "front" ? "Front" : "Rear") }; }
+  if (l._tpl) return { ...l, name: sqTplName(l._tpl, brand) };
+  return l;
+});
+const sqNewSvc = (type, brand) => {
+  const d = SQ_SERVICES[type];
+  const v = {};
+  Object.entries(d.variants || {}).forEach(([axis, opts]) => { v[axis] = opts[0]; });
+  return { id: `qs${Date.now()}${Math.floor(Math.random() * 999)}`, type, variant: v, labor: sqLabor(type, v), laborTouched: false, lines: sqInitialLines(type, v, brand) };
+};
+const sqMergeIncludes = (cur, add) => {
+  const parts = String(cur || "").split("·").map(x => x.trim()).filter(Boolean);
+  String(add || "").split("·").map(x => x.trim()).filter(Boolean).forEach(p => { if (!parts.includes(p)) parts.push(p); });
+  return parts.join(" · ");
 };
 
-export default function App() {
-  const [authed, setAuthed] = useState(() => !!loadSession());
-  const [role, setRole] = useState(() => loadSession()?.role || "sales");
-  const [loginTruck, setLoginTruck] = useState(activeTrucks()[0]); // chosen truck at login
-  const [, setCfgLoaded] = useState(0);
-  useEffect(() => { fetchTruckConfig().then(() => { setCfgLoaded(x => x + 1); setLoginTruck(t => activeTrucks().includes(t) ? t : activeTrucks()[0]); }); }, []);
-  const [sessionTruck, setSessionTruck] = useState(() => loadSession()?.truck || null); // locked truck (technician)
-  const [loginAgent, setLoginAgent] = useState(SALES_AGENTS[0]);  // chosen agent at login
-  const [sessionAgent, setSessionAgent] = useState(() => loadSession()?.agent || null); // locked agent (sales)
-  const [isOwner, setIsOwner] = useState(() => !!loadSession()?.owner); // profitability views
-  const [ownerMode, setOwnerMode] = useState(false); // discreet owner login (◆ on the login card)
-  const [pw, setPw] = useState("");
-  const [pwErr, setPwErr] = useState(false);
-  const [jobs, setJobs] = useState([]);
-  const [customers, setCustomers] = useState([]);
-  const [cars, setCars] = useState([]);
-  const [addresses, setAddresses] = useState([]);
-  const [quotes, setQuotes] = useState([]);
-  const [catalog, setCatalog] = useState([]); // parts catalog (engine oils, batteries)
-  const [truckCfg, setTruckCfg] = useState([]); // truck_config rows (Settings)
-  const [cfgTick, setCfgTick] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState("schedule");
-  const [selectedJob, setSelectedJob] = useState(null);
-  const [selectedCustomer, setSelectedCustomer] = useState(null);
-  const [showNew, setShowNew] = useState(false);
-  const [editingJob, setEditingJob] = useState(null);
-  const [prefillSlot, setPrefillSlot] = useState(null);
-  const [prefillOrder, setPrefillOrder] = useState(null);
-  const [upsellLeads, setUpsellLeads] = useState([]);
-  // Deep link from the Tire System: ?tire_id=…&qty=4&mobile=… → open New Order prefilled
-  const [deepLink, setDeepLink] = useState(() => {
-    try {
-      const q = new URLSearchParams(window.location.search);
-      if (q.get("tire_id")) return { tire_id: q.get("tire_id"), qty: Math.max(1, Number(q.get("qty")) || 4), mobile: (q.get("mobile") || "").trim() };
-    } catch {}
-    return null;
-  });
-  const [rescheduleJob, setRescheduleJob] = useState(null);
-  const [showNewCustomer, setShowNewCustomer] = useState(false);
-  const [newCustomerName, setNewCustomerName] = useState("");
-  const [newCustomerMobile, setNewCustomerMobile] = useState("");
-  const [newCustomerCallback, setNewCustomerCallback] = useState(null);
-  const [showAddCar, setShowAddCar] = useState(false);
-  const [addCarTarget, setAddCarTarget] = useState(null);
-  const [showAddAddr, setShowAddAddr] = useState(false);
-  const [addAddrTarget, setAddAddrTarget] = useState(null);
-  const [editCarTarget, setEditCarTarget] = useState(null);
-  const [editAddrTarget, setEditAddrTarget] = useState(null);
-  const [showEditCustomer, setShowEditCustomer] = useState(false);
-  const [usingMock, setUsingMock] = useState(false);
+function ServiceQuoteView({ showToast }) {
+  const [products, setProducts] = useState([]);
+  const [car, setCar] = useState({ brand: "", model: "", sub_model: "", year: "", vin: "" });
+  const [svcs, setSvcs] = useState([]); // sections open only when a service is tapped
+  const [discount, setDiscount] = useState("");
+  const [includes, setIncludes] = useState("");
+  const [detailed, setDetailed] = useState(true); // Breakdown is the default view
+  const previewRef = React.useRef(null);
+  const [pick, setPick] = useState(null); // { svcId, tpl }
+  const [pq, setPq] = useState("");
+  const [mobile, setMobile] = useState("");
+  const [agent, setAgent] = useState(() => { try { return localStorage.getItem("bnchr_agent") || ""; } catch { return ""; } });
+  const pickAgent = (a) => { setAgent(a); try { localStorage.setItem("bnchr_agent", a); } catch {} };
 
-  const saveSession = (truck, agent, owner = false) => {
-    try { localStorage.setItem("bnchr_session", JSON.stringify({ role, truck, agent: agent || null, owner })); } catch {}
-  };
-  const login = () => {
-    if (ownerMode) {
-      // owner door: Ali's password or master → sales dashboard as Ali, profitability unlocked
-      if (pw === SALES_AGENT_PASSWORDS.Ali || pw === PASSWORD) {
-        setRole("sales"); setSessionTruck(null); setSessionAgent("Ali"); setIsOwner(true);
-        setAuthed(true); setPwErr(false); saveSession(null, "Ali", true);
-      } else setPwErr(true);
-      return;
-    }
-    if (role === "technician") {
-      // each truck has its own password; log in locked to that truck
-      const entered = pw.trim();
-      const expected = String(TRUCK_PASSWORDS[loginTruck] || "").trim();
-      if (expected && entered === expected) { setSessionTruck(loginTruck); setSessionAgent(null); setIsOwner(false); setAuthed(true); setPwErr(false); saveSession(loginTruck, null); }
-      else setPwErr(true);
-    } else if (role === "sales" && pw === SALES_AGENT_PASSWORDS[loginAgent]) {
-      // per-agent login: orders auto-fill this agent; Ali's login unlocks profitability
-      const owner = OWNER_AGENTS.includes(loginAgent);
-      setSessionTruck(null); setSessionAgent(loginAgent); setIsOwner(owner); setAuthed(true); setPwErr(false); saveSession(null, loginAgent, owner);
-    } else {
-      const ok = role === "distributor" ? (pw === DIST_PASSWORD || pw === PASSWORD)
-        : role === "purchaser" ? (pw === PURCH_PASSWORD || pw === PASSWORD)
-        : pw === PASSWORD;
-      if (ok) { const owner = pw === PASSWORD; setSessionTruck(null); setSessionAgent(null); setIsOwner(owner); setAuthed(true); setPwErr(false); saveSession(null, null, owner); }
-      else setPwErr(true);
-    }
-  };
-
+  // ── live customer lookup by mobile (shared customers DB, read-only) ──
+  const [matchedCustomer, setMatchedCustomer] = useState(null);
+  const [customerCars, setCustomerCars] = useState([]);
+  const [selectedCarId, setSelectedCarId] = useState(null);
   useEffect(() => {
-    if (!authed) return;
-    setLoading(true);
-    fetchCarCatalog();
-    fetchAppSettings().then(setAppSettings);
-    Promise.all([fetchTruckConfig(), fetchJobs(), fetchCustomers(), fetchCars(), fetchAddresses(), fetchAllQuotes(), fetchCatalogItems(), fetchUpsellLeads()]).then(([tc, j, c, cr, ad, qs, cat, ul]) => {
-      setUpsellLeads(ul || []);
-      setTruckCfg(tc);
-      setJobs(j);
-      setQuotes(qs);
-      setCatalog(cat);
-      setCustomers(c);
-      setCars(cr);
-      setAddresses(ad);
-      setUsingMock(j.some(x => x.id?.startsWith("mock-")));
-      setLoading(false);
-    });
-  }, [authed]);
-
-  // Silent live sync: jobs + quotes every 60s, and instantly when the app
-  // returns to the foreground. Customers/cars/addresses reload on page load
-  // only (they change rarely and are heavy on mobile data).
-  useEffect(() => {
-    if (!authed) return;
-    const refreshLive = async () => {
-      if (document.visibilityState === "hidden") return;
+    const m8 = sqLast8(mobile);
+    if (m8.length < 8) { setMatchedCustomer(null); setCustomerCars([]); setSelectedCarId(null); return; }
+    let alive = true;
+    const t = setTimeout(async () => {
       try {
-        const [j, qs, ul] = await Promise.all([fetchJobs(), fetchAllQuotes(), fetchUpsellLeads()]);
-        let merged;
-        setJobs(prev => (merged = mergeJobs(prev, j)));
-        setQuotes(qs);
-        setUpsellLeads(ul || []);
-        setUsingMock(j.some(x => x.id?.startsWith("mock-")));
-        setSelectedJob(prev => prev ? ((merged || j).find(x => x.id === prev.id) || prev) : prev);
-      } catch {}
-    };
-    const iv = setInterval(refreshLive, 60000);
-    const onVis = () => { if (document.visibilityState === "visible") refreshLive(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
-  }, [authed]);
+        const { data } = await supabase.from("customers").select("id,name,mobile").like("mobile", "%" + m8).limit(5);
+        const cust = (data || []).find(c => sqLast8(c.mobile) === m8) || null;
+        if (!alive) return;
+        setMatchedCustomer(cust);
+        if (cust) {
+          const { data: cars } = await supabase.from("customer_cars").select("id,brand,model,sub_model,year,plate").eq("customer_id", cust.id).order("created_at", { ascending: false });
+          if (alive) setCustomerCars(cars || []);
+        } else { setCustomerCars([]); setSelectedCarId(null); }
+      } catch (e) { if (alive) { setMatchedCustomer(null); setCustomerCars([]); } }
+    }, 350);
+    return () => { alive = false; clearTimeout(t); };
+  }, [mobile]);
 
-  // Realtime push: any change to jobs/quotes on any device lands here within
-  // ~1s. Events are debounced 400ms, then jobs+quotes refetch (small tables).
-  // The 60s poll above stays as a fallback for dropped websockets on mobile.
+  const renameAll = (brand) => setSvcs(prev => prev.map(sv => ({ ...sv, lines: sqRenameLines(sv.lines, brand) })));
+  const pickCustomerCar = (c) => {
+    setSelectedCarId(c.id);
+    setCar({ brand: c.brand || "", model: c.model || "", sub_model: c.sub_model || "", year: String(c.year || ""), vin: c.plate || "" });
+    renameAll((c.brand || "").trim());
+  };
+  const setCarField = (patch) => {
+    setSelectedCarId(null);
+    const cascaded = { ...patch };
+    if (patch.brand !== undefined) { cascaded.model = ""; cascaded.sub_model = ""; }
+    else if (patch.model !== undefined) { cascaded.sub_model = ""; }
+    setCar(c => ({ ...c, ...cascaded }));
+    if (patch.brand !== undefined) renameAll((patch.brand || "").trim());
+  };
+
+  const [carCatalog, setCarCatalog] = useState([]);
+  const [fitments, setFitments] = useState([]);
   useEffect(() => {
-    if (!authed) return;
-    let t = null;
-    const bump = () => {
-      clearTimeout(t);
-      t = setTimeout(async () => {
-        try {
-          const [j, qs, ul] = await Promise.all([fetchJobs(), fetchAllQuotes(), fetchUpsellLeads()]);
-          let merged;
-          setJobs(prev => (merged = mergeJobs(prev, j)));
-          setQuotes(qs);
-          setUpsellLeads(ul || []);
-          setUsingMock(j.some(x => x.id?.startsWith("mock-")));
-          setSelectedJob(prev => prev ? ((merged || j).find(x => x.id === prev.id) || prev) : prev);
-        } catch {}
-      }, 400);
-    };
-    const ch = sbRealtime
-      .channel("bnchr-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "jobs" }, bump)
-      .on("postgres_changes", { event: "*", schema: "public", table: "quotes" }, bump)
-      .on("postgres_changes", { event: "*", schema: "public", table: "upsell_leads" }, bump)
-      .subscribe();
-    return () => { clearTimeout(t); sbRealtime.removeChannel(ch); };
-  }, [authed]);
+    supabase.from("service_products").select("*").eq("active", true).order("sku")
+      .then(({ data, error }) => { if (!error) setProducts(data || []); else showToast("⚠ Could not load catalog"); });
+    supabase.from("car_catalog").select("*").then(({ data }) => setCarCatalog(data || []));
+    supabase.from("engine_fitments").select("*").then(({ data }) => setFitments(data || []));
+    supabase.from("quotes").select("id,created_at,agent,customer_mobile,service_type,services,lines,labor,discount,car,quote_text")
+      .eq("kind", "service").order("created_at", { ascending: false }).limit(300)
+      .then(({ data }) => setQuoteHistory(data || []));
+  }, [showToast]);
 
-  useEffect(() => {
-    if (role === "technician") setTab("myjobs");
-    else if (role === "distributor") setTab("distributor");
-    else setTab("schedule");
-    setSelectedJob(null);
-    setSelectedCustomer(null);
-  }, [role]);
-
-  useEffect(() => {
-    if (!authed || loading || !deepLink) return;
-    if (role !== "sales" && role !== "purchaser") return;
-    const dl = deepLink; setDeepLink(null);
-    try { window.history.replaceState({}, "", window.location.pathname); } catch {}
-    (async () => {
-      const t = await fetchTireById(dl.tire_id);
-      const svc = newService("Tire Change & Balancing");
-      if (t) Object.assign(svc, {
-        tire_id: t.id, brand: t.brand, pattern: t.pattern, size: tireSize(t), year: t.year,
-        cost: t.cost, supplier: t.supplier, unit_price: Number(t.price) || 0,
-        load_index: t.load_index || "", speed_rating: t.speed_rating || "", country: t.country || "",
-        oem: t.oem || "", tire_note: t.notes || "",
-      });
-      svc.qty = dl.qty;
-      svc.labor = catalogLabor(svc.service_type, svc.variant, dl.qty);
-      const digits = (s) => (s || "").replace(/\D/g, "");
-      const customer = dl.mobile ? customers.find(x => digits(x.mobile).slice(-8) === digits(dl.mobile).slice(-8)) : null;
-      setPrefillOrder({ customer: customer || null, services: [svc], mobile: dl.mobile });
-      setShowNew(true);
-    })();
-  }, [authed, loading, deepLink, role, customers]);
-
-  const handleJobUpdate = (updated) => {
-    // Stamp local time so stale realtime echoes of our own in-flight saves
-    // (which carry an older/equal updated_at) can never overwrite this row.
-    const stamped = { ...updated, updated_at: new Date().toISOString() };
-    setJobs(prev => prev.map(j => j.id === stamped.id ? stamped : j));
-    if (selectedJob?.id === stamped.id) setSelectedJob(stamped);
-  };
-
-  const handleJobAction = async (job, patch) => {
-    const next = { ...job, ...patch };
-    handleJobUpdate(next);
-    await updateJob(job.id, patch);
-  };
-
-  const handleNewCustomer = (mobile, cb) => {
-    setNewCustomerMobile(mobile || "");
-    setNewCustomerName("");
-    setNewCustomerCallback(() => cb);
-    setShowNewCustomer(true);
-  };
-
-  const handleCustomerCreated = (c, newCars = [], newAddrs = []) => {
-    setCustomers(prev => [c, ...prev]);
-    if (newCars.length) setCars(prev => [...newCars, ...prev]);
-    if (newAddrs.length) setAddresses(prev => [...newAddrs, ...prev]);
-    if (newCustomerCallback) newCustomerCallback(c);
-    setShowNewCustomer(false);
-  };
-
-  const handleAddCar = (customer) => {
-    setAddCarTarget(customer);
-    setShowAddCar(true);
-  };
-
-  const handleNewOrderFor = (customer, sourceJob = null) => {
-    setSelectedCustomer(null);
-    setSelectedJob(null);
-    setPrefillSlot(null);
-    setPrefillOrder({ customer, sourceJob });
-    setShowNew(true);
-  };
-
-  // Reorder from any job card: match the customer record by id, then mobile.
-  const reorderJob = (job) => handleNewOrderFor(
-    customers.find(c => c.id === job.customer_id) ||
-    customers.find(c => last8(c.mobile) === last8(job.customer_mobile)) || null,
-    job
-  );
-
-  // ── Threads: revisits & upsells ──
-  const matchCustomerOf = (job) =>
-    customers.find(c => c.id === job.customer_id) ||
-    customers.find(c => last8(c.mobile) === last8(job.customer_mobile)) || null;
-
-  // Sales: create a linked follow-up order after customer feedback.
-  const revisitJob = (job) => {
-    setSelectedJob(null); setSelectedCustomer(null); setPrefillSlot(null);
-    setPrefillOrder({
-      customer: matchCustomerOf(job),
-      name: job.customer_name, mobile: job.customer_mobile,
-      revisitOf: job,
-      noteHint: "Revisit — customer feedback: ",
-      linkTo: { parent_job_id: rootJobId(job, jobs), link_type: "revisit" },
-      linkLabel: `🔁 Revisit — will be linked to ${job.customer_name}'s order of ${fmtDate(job.scheduled_at)}`,
+  // ── quote history: progressive filter by the selected car ──
+  const [quoteHistory, setQuoteHistory] = useState([]);
+  const [histOpen, setHistOpen] = useState(false);
+  const [histExpanded, setHistExpanded] = useState(null);
+  const norm = (x) => String(x || "").trim().toLowerCase();
+  const similarQuotes = useMemo(() => {
+    if (!norm(car.brand)) return [];
+    const m8 = sqLast8(mobile);
+    const matches = quoteHistory.filter(q => {
+      const qc = q.car || {};
+      if (norm(qc.brand) !== norm(car.brand)) return false;
+      if (norm(car.model) && norm(qc.model) !== norm(car.model)) return false;
+      if (norm(car.sub_model) && norm(qc.sub_model) !== norm(car.sub_model)) return false;
+      return true;
     });
-    setShowNew(true);
+    // the customer's own quotes pin to the top
+    return matches.sort((a, b) => {
+      const am = m8 && sqLast8(a.customer_mobile) === m8 ? 1 : 0;
+      const bm = m8 && sqLast8(b.customer_mobile) === m8 ? 1 : 0;
+      if (am !== bm) return bm - am;
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    }).slice(0, 20);
+  }, [quoteHistory, car.brand, car.model, car.sub_model, mobile]);
+  const histValue = (q) => {
+    if (Array.isArray(q.services) && q.services.length) {
+      const batteryOnly = q.services.length === 1 && q.services[0].type === "Battery" && (q.services[0].lines || []).length > 1;
+      if (batteryOnly) return null; // show "options" instead of a single number
+      return q.services.reduce((sum, b) => sum + (b.lines || []).reduce((x, l) => x + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0) + (Number(b.labor) || 0), 0) - (Number(q.discount) || 0);
+    }
+    return (q.lines || []).reduce((sum, l) => sum + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0) + (Number(q.labor) || 0) - (Number(q.discount) || 0);
   };
-
-  // Technician: log an upsell lead on a completed job.
-  const handleCreateUpsell = async (lead) => {
-    const r = await createUpsellLead(lead);
-    if (r) setUpsellLeads(prev => [r, ...prev]);
-    return !!r;
-  };
-
-  // Sales: dismiss an open lead with a reason.
-  const handleDismissLead = async (lead, reason) => {
-    setUpsellLeads(prev => prev.map(l => l.id === lead.id ? { ...l, status: "dismissed", dismiss_reason: reason } : l));
-    await updateUpsellLead(lead.id, { status: "dismissed", dismiss_reason: reason });
-  };
-
-  // Sales: convert an open lead into a linked order (credit frozen to the spotting truck).
-  const handleConvertLead = (lead) => {
-    const parent = jobs.find(j => j.id === lead.job_id) || null;
-    const cust = parent ? matchCustomerOf(parent) : (customers.find(c => last8(c.mobile) === last8(lead.customer_mobile)) || null);
-    // Link the car the upsell was spotted on — only if it's really one of this customer's cars.
-    const wantCarId = lead.car_id || (parent && parent.car_id) || null;
-    const carOk = wantCarId && cust && cars.some(c => c.id === wantCarId && c.customer_id === cust.id);
-    setSelectedJob(null); setSelectedCustomer(null); setPrefillSlot(null);
-    setPrefillOrder({
-      customer: cust,
-      name: lead.customer_name, mobile: lead.customer_mobile,
-      services: [{ ...newService(lead.service_type || SERVICE_NAMES[0]), labor: Number(SERVICE_CATALOG[lead.service_type]?.flatLabor) || 0, car_id: carOk ? wantCarId : null }],
-      revisitOf: parent || undefined, // reuse address carry-over
-      leadId: lead.id,
-      linkTo: {
-        parent_job_id: parent ? rootJobId(parent, jobs) : lead.job_id,
-        link_type: "upsell",
-        upsell_truck: lead.truck || null,
-        upsell_technician: lead.technician || null,
-      },
-      linkLabel: `⬆ Upsell spotted by ${lead.truck || "truck"}${lead.car_label ? ` on ${lead.car_label}` : ""} — will be linked to the original order`,
+  const histTypes = (q) => Array.isArray(q.services) && q.services.length
+    ? [...new Set(q.services.map(b => b.type))].join(" + ")
+    : (q.service_type || "Service");
+  const useAsTemplate = (q) => {
+    const blocks = (Array.isArray(q.services) && q.services.length)
+      ? q.services
+      : [{ type: q.service_type, variant: q.variant || {}, labor: q.labor, lines: q.lines || [] }];
+    const fresh = blocks.map(b => {
+      const type = SQ_SERVICES[b.type] ? b.type : "Part Replacement";
+      const sv = sqNewSvc(type, car.brand);
+      sv.variant = { ...sv.variant, ...(b.variant || {}) };
+      sv.labor = Number(b.labor) || sv.labor;
+      sv.laborTouched = true; // template's labor wins over the auto table
+      sv.lines = (b.lines || []).map(l => ({ ...l })); // fresh copies, fully editable
+      return sv;
     });
-    setShowNew(true);
+    setSvcs(fresh);
+    if (Number(q.discount) > 0) setDiscount(String(q.discount));
+    setHistOpen(false); setHistExpanded(null);
+    showToast("Template loaded — adjust and copy 📋");
   };
 
-  const handleBookQuote = (quote, line) => {
-    setSelectedJob(null);
-    setSelectedCustomer(null);
-    const built = quoteToService(quote, line);
-    const svcList = Array.isArray(built) ? built : [built];
-    const customer = customers.find(x => x.id === quote.customer_id) ||
-                     customers.find(x => last8(x.mobile) === last8(quote.customer_mobile)) || null;
-    // Service quotes carry the car: link the exact car when it's really this customer's,
-    // otherwise pre-fill the inline new-car form so sales only taps save.
-    if (quote.kind === "service") {
-      const carOk = quote.car_id && customer && cars.some(c => c.id === quote.car_id && c.customer_id === customer.id);
-      svcList.forEach(svc => {
-        if (carOk) svc.car_id = quote.car_id;
-        else if (quote.car && quote.car.brand) {
-          svc.car_id = null;
-        }
-      });
-      if (!carOk && quote.car && quote.car.brand && svcList[0]) {
-        svcList[0].new_car = { brand: quote.car.brand || "", model: quote.car.model || "", sub_model: quote.car.sub_model || "", year: String(quote.car.year || ""), plate: quote.car.vin || "" };
+  // ── DB-backed car options: curated lists ∪ live catalog (mined + agent entries) ──
+  const brandOptions = useMemo(() => [...new Set([...SQ_BRANDS, ...carCatalog.map(r => r.brand)])].sort(), [carCatalog]);
+  const modelOptions = (brand) => [...new Set([...sqModelsFor(brand), ...carCatalog.filter(r => r.brand === brand && r.model).map(r => r.model)])].sort();
+  const subModelOptions = (brand, model) => [...new Set([...sqSubModelsFor(brand, model), ...carCatalog.filter(r => r.brand === brand && r.model === model && r.sub_model).map(r => r.sub_model)])];
+
+  // ── fitment resolution: car → engine → what it takes ──
+  const resolveEngine = (c) => {
+    const exact = carCatalog.find(r => r.brand === c.brand && r.model === c.model && r.sub_model === (c.sub_model || "") && r.engine);
+    if (exact) return exact.engine;
+    const modelLevel = carCatalog.find(r => r.brand === c.brand && r.model === c.model && r.sub_model === "" && r.engine);
+    return modelLevel ? modelLevel.engine : null;
+  };
+  const resolveOilFitment = (c) => {
+    const eng = resolveEngine(c);
+    if (!eng) return null;
+    const f = fitments.find(x => x.brand === c.brand && x.engine_key === eng && x.service_type === "Oil & Filter");
+    return f ? { ...f, _engine: eng } : null;
+  };
+
+  // ── service blocks ──
+  const addService = (type) => {
+    const sv = sqNewSvc(type, car.brand);
+    if (type === "Oil & Filter") {
+      const fit = resolveOilFitment(car);
+      if (fit) {
+        const lines = [];
+        const litres = Math.max(1, Math.round(Number(fit.oil_litres) || 4));
+        const eoProd = fit.oil_product_sku ? products.find(p => p.sku === fit.oil_product_sku) : null;
+        if (eoProd) lines.push({ product_id: eoProd.id, sku: eoProd.sku, category: "engine_oil", name: eoProd.name, specs: eoProd.specs || {}, unit: "litre", qty: litres, unit_price: Number(eoProd.selling_price) || 0 });
+        else if (fit.oil_viscosity) lines.push({ name: `${fit.oil_viscosity} Engine Oil`, category: "engine_oil", specs: { viscosity: fit.oil_viscosity }, unit: "litre", qty: litres, unit_price: 0 });
+        const fProd = fit.oil_filter_sku ? products.find(p => p.sku === fit.oil_filter_sku) : null;
+        if (fProd) lines.push({ product_id: fProd.id, sku: fProd.sku, category: "filter", name: fProd.name, specs: fProd.specs || {}, unit: "pc", qty: 1, unit_price: Number(fProd.selling_price) || 0 });
+        else lines.push({ name: `${car.brand ? car.brand + " " : ""}Genuine Oil Filter${fit.oil_filter_part_no ? ` [Part No. ${fit.oil_filter_part_no}]` : ""}`, category: "filter", unit: "pc", qty: 1, unit_price: 0, _tpl: null });
+        sv.lines = lines;
+        sv._fit = { engine: fit._engine, verified: fit.verified };
       }
     }
-    setPrefillSlot(null);
-    setPrefillOrder({ customer, services: svcList, mobile: quote.customer_mobile, name: quote.customer_name || "", quoteId: quote.id });
-    setShowNew(true);
+    setSvcs(prev => [...prev, sv]);
+  };
+  // register unknown car combos so the catalog completes itself (unverified, reviewable)
+  const registerCarCombo = () => {
+    const b = (car.brand || "").trim(), m = (car.model || "").trim(), t = (car.sub_model || "").trim();
+    if (!b || !m) return;
+    const known = carCatalog.some(r => r.brand === b && r.model === m && r.sub_model === t);
+    if (known) return;
+    supabase.from("car_catalog").insert({ brand: b, model: m, sub_model: t, source: "agent", verified: false })
+      .then(({ data }) => {}).catch(() => {});
+    setCarCatalog(prev => [...prev, { brand: b, model: m, sub_model: t, engine: "", source: "agent", verified: false }]);
+  };
+  // save a manually-built oil quote as a fitment for this car's engine
+  const [fitKeyDraft, setFitKeyDraft] = useState("");
+  const saveFitmentFromBlock = async (sv) => {
+    const eng = fitKeyDraft.trim() || (car.sub_model || "").trim();
+    if (!car.brand || !eng) { showToast("Enter an engine key first (e.g. 1.5T)"); return; }
+    const eo = sv.lines.find(l => l.category === "engine_oil");
+    const fl = sv.lines.find(l => l.category === "filter");
+    const partNo = fl ? ((fl.name.match(/\[Part No\.\s*([^\]]+)\]/) || [])[1] || "") : "";
+    const row = {
+      brand: car.brand.trim(), engine_key: eng, service_type: "Oil & Filter",
+      oil_viscosity: eo && eo.specs ? (eo.specs.viscosity || null) : null,
+      oil_litres: eo ? Number(eo.qty) || null : null,
+      oil_product_sku: eo && eo.sku ? eo.sku : null,
+      oil_filter_sku: fl && fl.sku ? fl.sku : null,
+      oil_filter_part_no: partNo || null,
+      notes: `Saved from quote — ${[car.brand, car.model, car.sub_model].filter(Boolean).join(" ")}`,
+      verified: false, updated_at: new Date().toISOString(),
+    };
+    try {
+      const { data, error } = await supabase.from("engine_fitments")
+        .upsert(row, { onConflict: "brand,engine_key,service_type" }).select().single();
+      if (error) throw error;
+      setFitments(prev => [data, ...prev.filter(f => !(f.brand === row.brand && f.engine_key === eng && f.service_type === row.service_type))]);
+      // link the car in the catalog to this engine
+      supabase.from("car_catalog").update({ engine: eng })
+        .eq("brand", car.brand.trim()).eq("model", (car.model || "").trim()).eq("sub_model", (car.sub_model || "").trim())
+        .then(() => {});
+      setCarCatalog(prev => prev.map(r => (r.brand === car.brand.trim() && r.model === (car.model || "").trim() && r.sub_model === (car.sub_model || "").trim()) ? { ...r, engine: eng } : r));
+      setFitKeyDraft("");
+      showToast(`Fitment saved — next ${car.brand} ${eng} quote auto-fills ⚡`);
+    } catch (e) { showToast("⚠ Fitment save failed"); }
+  };
+  // Includes sentence follows the selected services: adding appends its points,
+  // removing a service drops them. (Manual edits hold until the service set changes.)
+  const typesKey = svcs.map(sv => sv.type).join("|");
+  useEffect(() => {
+    setIncludes(svcs.reduce((acc, sv) => sqMergeIncludes(acc, SQ_SERVICES[sv.type].includes), ""));
+  }, [typesKey]);
+  const rmService = (id) => setSvcs(prev => prev.filter(x => x.id !== id));
+  const updSvc = (id, patch) => setSvcs(prev => prev.map(x => x.id === id ? { ...x, ...patch } : x));
+  const pickVariant = (sv, axis, val) => {
+    const v = { ...sv.variant, [axis]: val };
+    const patch = { variant: v };
+    if (!sv.laborTouched) patch.labor = sqLabor(sv.type, v);
+    if ((sv.type === "Brake Pads" || sv.type === "Brake Disc") && axis === "sides") {
+      patch.lines = [...sqBrakeAutoLines(sv.type, val, car.brand), ...sv.lines.filter(l => !l._auto)];
+    }
+    updSvc(sv.id, patch);
+  };
+  const addLineTo = (svId, line) => setSvcs(prev => prev.map(x => x.id === svId ? { ...x, lines: [...x.lines, line] } : x));
+  const updLine = (svId, i, patch) => setSvcs(prev => prev.map(x => x.id === svId ? { ...x, lines: x.lines.map((l, li) => li === i ? { ...l, ...patch } : l) } : x));
+  const rmLine = (svId, i) => setSvcs(prev => prev.map(x => x.id === svId ? { ...x, lines: x.lines.filter((_, li) => li !== i) } : x));
+
+  const ql = pq.trim().toLowerCase();
+  const pickerCat = pick ? SQ_TPL_CAT[pick.tpl] : null;
+  const pickerResults = pick ? products
+    .filter(p => p.category === pickerCat)
+    .filter(p => !ql || [p.sku, p.brand, p.name, JSON.stringify(p.specs || {})].some(v => String(v || "").toLowerCase().includes(ql)))
+    .slice(0, 25) : [];
+  const addFromCatalog = (p) => {
+    addLineTo(pick.svcId, { product_id: p.id, sku: p.sku, category: p.category, name: p.name, specs: p.specs || {}, unit: p.unit || "pc", qty: p.unit === "litre" ? 4 : 1, unit_price: Number(p.selling_price) || 0 });
+    setPick(null); setPq("");
+  };
+  const addGenuineFromPicker = () => {
+    const nm = pick.tpl === "oil_filter" ? sqTplName("oil_filter", car.brand)
+      : pick.tpl === "filter" ? sqTplName("air_filter", car.brand)
+      : pick.tpl === "brake" ? (car.brand.trim() ? `${car.brand.trim()} Genuine ${svcs.find(x => x.id === pick.svcId)?.type || "Brake Pads"}` : (svcs.find(x => x.id === pick.svcId)?.type || "Brake Pads"))
+      : "";
+    if (nm) addLineTo(pick.svcId, { name: nm, category: SQ_TPL_CAT[pick.tpl] || "other", unit: "pc", qty: 1, unit_price: 0 });
+    setPick(null); setPq("");
   };
 
-  // Stamp a quote as Success the moment its order is created (source of truth)
-  const stampQuoteSuccess = (quoteId, job) => {
-    if (!quoteId || !job) return;
-    setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, status: "success", booked_job_id: job.id } : q));
-    updateQuote(quoteId, { status: "success", booked_job_id: job.id });
-  };
-  const handleQuoteUpdate = (quoteId, patch) => {
-    setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, ...patch } : q));
-    updateQuote(quoteId, patch);
+  // ── money ──
+  const kd = (n) => (Number(n) || 0).toFixed(3).replace(/\.?0+$/, "");
+  const svcLinesKD = (sv) => sv.lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.unit_price) || 0), 0);
+  const svcTotal = (sv) => svcLinesKD(sv) + (Number(sv.labor) || 0);
+  const totalKD = svcs.reduce((s, sv) => s + svcTotal(sv), 0) - (Number(discount) || 0);
+  const optionsMode = svcs.length === 1 && svcs[0].type === "Battery"; // battery-only quote = alternatives
+  const optSv = svcs[0] || { lines: [], labor: 0 };
+  const optionTotal = (l) => (Number(l.qty) || 1) * (Number(l.unit_price) || 0) + (Number(optSv.labor) || 0) - (Number(discount) || 0);
+  const warrantyOf = (l) => l.specs && l.specs.warranty_months ? `${l.specs.warranty_months} Months Warranty` : "";
+  const carLabel = [car.brand, car.model, car.sub_model, car.year].filter(Boolean).join(" \u200E"); // \u200E stops WhatsApp linking "911 2021" as a phone number
+  const titleTypes = [...new Set(svcs.map(sv => sv.type))].join(" + ") || "Service";
+
+  // ── quote texts ──
+  const DIV = "━━━━━━━━━━━━━━";
+  const compactText = useMemo(() => {
+    const rows = [];
+    rows.push("```BNCHR+ " + titleTypes + " Quote```");
+    rows.push("");
+    if (carLabel) rows.push("> " + carLabel);
+    rows.push(DIV);
+    if (optionsMode) {
+      rows.push("");
+      optSv.lines.forEach((l, i) => {
+        const w = warrantyOf(l);
+        rows.push(`${Number(l.qty) || 1}x ${l.name}${w ? ` [${w}]` : ""}`);
+        rows.push(`*Total ${kd(optionTotal(l))} KD*`);
+        if (i < optSv.lines.length - 1) rows.push("");
+      });
+      rows.push("");
+      rows.push(DIV);
+    } else {
+      rows.push("");
+      svcs.forEach((sv, si) => {
+        if (svcs.length > 1) rows.push("> " + sv.type);
+        sv.lines.forEach(l => {
+          const nm = l.category === "engine_oil" ? l.name.replace(" Engine Oil", "") : l.name;
+          rows.push(`${Number(l.qty) || 1}x ${nm}`);
+        });
+        if (si < svcs.length - 1) rows.push("");
+      });
+      rows.push("");
+      rows.push(`*Total ${kd(totalKD)} KD*`);
+      rows.push("");
+      rows.push(DIV);
+    }
+    if (includes.trim()) rows.push("> ✅ Includes: " + includes.trim());
+    return rows.join("\n");
+  }, [titleTypes, carLabel, svcs, includes, totalKD, discount, optionsMode]);
+
+  const detailedText = useMemo(() => {
+    const rows = [];
+    rows.push("```BNCHR+ " + titleTypes + " Quote```");
+    rows.push("");
+    if (carLabel) rows.push("> " + carLabel);
+    rows.push(DIV);
+    if (optionsMode) {
+      optSv.lines.forEach((l) => {
+        const q = Number(l.qty) || 1;
+        const amt = q * (Number(l.unit_price) || 0);
+        const w = warrantyOf(l);
+        rows.push(`${q}× ${l.name}`);
+        if (w) rows.push(`> [${w}]`);
+        rows.push(`> ${kd(amt)} KD${q > 1 ? ` (${kd(l.unit_price)} KD each)` : ""}`);
+        if (Number(optSv.labor) > 0) { rows.push("Labor & Home Service", `> ${kd(optSv.labor)} KD`); }
+        if (Number(discount) > 0) { rows.push("Discount", `> -${kd(discount)} KD`); }
+        rows.push("");
+        rows.push(`*Total ${kd(optionTotal(l))} KD*`);
+        rows.push(DIV);
+      });
+    } else {
+      rows.push("");
+      svcs.forEach((sv, si) => {
+        if (svcs.length > 1) rows.push("> " + sv.type);
+        sv.lines.forEach(l => {
+          const q = Number(l.qty) || 1;
+          const amt = q * (Number(l.unit_price) || 0);
+          rows.push(`${q}× ${l.name}`);
+          rows.push(`> ${kd(amt)} KD${q > 1 ? ` (${kd(l.unit_price)} KD each)` : ""}`);
+        });
+        if (Number(sv.labor) > 0) { rows.push("Labor & Home Service", `> ${kd(sv.labor)} KD`); }
+        if (si < svcs.length - 1) rows.push("");
+      });
+      if (Number(discount) > 0) { rows.push("Discount", `> -${kd(discount)} KD`); }
+      rows.push("");
+      rows.push(`*Total ${kd(totalKD)} KD*`);
+      rows.push("");
+      rows.push(DIV);
+    }
+    if (includes.trim()) rows.push("> ✅ Includes: " + includes.trim());
+    return rows.join("\n");
+  }, [titleTypes, carLabel, svcs, discount, includes, totalKD, optionsMode]);
+
+  const shareText = detailed ? detailedText : compactText;
+
+  const copyAndLog = async () => {
+    try {
+    const m = mobile.trim();
+    if (!m) { showToast("Enter customer mobile first"); return; }
+    if (!agent) { showToast("Select your name (agent) first"); return; }
+    if (!svcs.some(sv => sv.lines.length || Number(sv.labor) > 0)) { showToast("Add at least one item"); return; }
+    let copied = false, copyErr = "";
+    try {
+      const r = await bnchrCopy(shareText);
+      copied = r.ok; copyErr = r.err || "";
+    } catch (e) { copied = false; copyErr = (e && e.message) || "unexpected error"; }
+    if (!copied && previewRef.current) {
+      try { const r = document.createRange(); r.selectNodeContents(previewRef.current); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); } catch (e) {}
+    }
+    const single = svcs.length === 1 ? svcs[0] : null;
+    const row = {
+      customer_mobile: m, agent, kind: "service",
+      customer_id: matchedCustomer ? matchedCustomer.id : null,
+      car_id: selectedCarId || null,
+      services: svcs.map(sv => ({ type: sv.type, variant: sv.variant, labor: Number(sv.labor) || 0, lines: sv.lines })),
+      // legacy flat fields keep older readers + battery options detection working
+      service_type: single ? single.type : titleTypes,
+      variant: single ? single.variant : null,
+      car,
+      labor: svcs.reduce((s, sv) => s + (Number(sv.labor) || 0), 0),
+      discount: Number(discount) || 0,
+      lines: svcs.flatMap(sv => sv.lines),
+      quote_text: shareText,
+    };
+    try { supabase.from("quotes").insert(row).then(() => {}); } catch (e) {}
+    registerCarCombo(); // unknown brand/model/trim combos enter the catalog for review
+    showToast(copied ? "Quote copied & logged 📋" : `⚠ Copy blocked (${copyErr}) — logged; text is selected, press Ctrl/Cmd+C`);
+    } catch (e) { showToast(`⚠ Error: ${(e && e.message) || e}`); }
   };
 
-  const handleCarCreated = (car) => {
-    setCars(prev => [car, ...prev]);
-    setShowAddCar(false);
-  };
-
-  // Keep the customer's headline area in step with their addresses:
-  // the last address added or edited becomes the area shown on the card.
-  const syncCustomerArea = (customerId, area) => {
-    if (!customerId || !area) return;
-    setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, area } : c));
-    setSelectedCustomer(prev => (prev && prev.id === customerId) ? { ...prev, area } : prev);
-    updateCustomer(customerId, { area });
-  };
-  const handleAddressCreated = (addr) => {
-    setAddresses(prev => [addr, ...prev]);
-    setShowAddAddr(false);
-    syncCustomerArea(addr.customer_id, addr.area);
-  };
-  const handleAddAddress = (customer) => {
-    setAddAddrTarget(customer);
-    setShowAddAddr(true);
-  };
-
-  const handleCarUpdated = (car) => {
-    setCars(prev => prev.map(c => c.id === car.id ? car : c));
-    setShowAddCar(false); setEditCarTarget(null);
-    // Propagate the correction to ACTIVE orders referencing this car.
-    // Completed / cancelled / incomplete orders keep their historical snapshot.
-    const label = `${car.brand || ""} ${car.model || ""}${car.year ? " " + car.year : ""}`.replace(/\s+/g, " ").trim();
-    const frozen = (j) => DONE_STATUSES.includes(j.status) || j.status === "cancelled" || j.status === "incomplete";
-    setJobs(prev => prev.map(j => {
-      if (frozen(j)) return j;
-      const refsTop = j.car_id === car.id;
-      const refsItem = (j.items || []).some(it => it.car_id === car.id);
-      if (!refsTop && !refsItem) return j;
-      const patch = {};
-      if (refsTop) {
-        patch.car_brand = car.brand || "";
-        patch.car_model = car.model || "";
-        patch.car_year = car.year || "";
-        patch.car_plate = car.plate || "";
-      }
-      if (refsItem) patch.items = (j.items || []).map(it => it.car_id === car.id ? { ...it, car_label: label } : it);
-      updateJob(j.id, patch);
-      return { ...j, ...patch };
-    }));
-  };
-  const handleCarDeleted = (id) => {
-    setCars(prev => prev.filter(c => c.id !== id));
-    deleteCar(id);
-  };
-  const handleAddressUpdated = (a) => {
-    setAddresses(prev => prev.map(x => x.id === a.id ? a : x));
-    setShowAddAddr(false); setEditAddrTarget(null);
-    syncCustomerArea(a.customer_id, a.area);
-  };
-  const handleAddressDeleted = (id) => {
-    setAddresses(prev => prev.filter(x => x.id !== id));
-    deleteAddress(id);
-  };
-  const handleCustomerUpdated = (c) => {
-    setCustomers(prev => prev.map(x => x.id === c.id ? c : x));
-    setSelectedCustomer(c);
-    setShowEditCustomer(false);
-  };
-
-  const [appSettings, setAppSettings] = useState({});
-  const incentiveOn = appSettings.incentive_enabled === true;
-  const setIncentiveEnabled = async (on) => {
-    setAppSettings(p => ({ ...p, incentive_enabled: on }));
-    await saveAppSetting("incentive_enabled", on);
-  };
-  const allTabs = [
-    { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
-    { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
-    { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales"] },
-    { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
-    { key: "costs",      label: "Costs",           icon: "💰", roles: ["purchaser"] },
-    { key: "settings",   label: "Settings",        icon: "⚙️", roles: ["sales", "purchaser"] },
-    { key: "history",    label: "History",         icon: "🕘", roles: ["sales", "purchaser"] },
-    { key: "customers",  label: "Customers",       icon: "👥", roles: ["sales", "purchaser"] },
-    { key: "myjobs",     label: "My Jobs",         icon: "🔧", roles: ["technician"] },
-    { key: "target",     label: "Target",          icon: "🎯", roles: ["technician"] },
-    { key: "myhistory",  label: "History",         icon: "🕘", roles: ["technician"] },
-    { key: "distributor",label: "Collect",         icon: "📦", roles: ["distributor"] },
-    { key: "disthistory",label: "History",         icon: "🕘", roles: ["distributor"] },
-  ];
-  // Master/owner access sees every page (incl. purchaser Costs, tech views, distributor)
-  const tabs = allTabs
-    .filter(t => isOwner || t.roles.includes(role))
-    .filter(t => t.key !== "target" || incentiveOn || isOwner); // master switch gates the technician dashboard
-
-  if (!authed) {
-    return (
-      <>
-        <StyleTag />
-        <div className="login-wrap">
-          <div className="login-box" style={{ position: "relative" }}>
-            <button type="button" onClick={() => { setOwnerMode(o => !o); setPwErr(false); }}
-              style={{ position: "absolute", top: 10, right: 12, background: "none", border: "none", cursor: "pointer",
-                fontSize: 13, color: "var(--border)", padding: 4 }} aria-label="owner">◆</button>
-            <h1>BNCHR<span>+</span></h1>
-            <p>{ownerMode ? "Owner access" : "Scheduling System · Internal"}</p>
-            {!ownerMode && <div className="role-grid">
-              {ROLES.map(r => (
-                <button key={r.key} className={`role-btn ${role === r.key ? "active" : ""}`} onClick={() => { setRole(r.key); setPwErr(false); }}>{r.label}</button>
-              ))}
-            </div>}
-            {!ownerMode && role === "technician" && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, marginBottom: 6 }}>Select your truck</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {activeTrucks().map(t => {
-                    const c = truckColor(t);
-                    const active = loginTruck === t;
-                    return (
-                      <button key={t} type="button" onClick={() => { setLoginTruck(t); setPwErr(false); }}
-                        style={{ flex: 1, minWidth: 70, padding: "8px 4px", borderRadius: 8, cursor: "pointer", fontWeight: 700,
-                          background: active ? c.solid : c.bg, color: active ? (["T1","T2"].includes(t) ? "#1A1A1A" : "#fff") : c.text,
-                          border: `2px solid ${c.solid}` }}>
-                        {active ? "✓ " : ""}{t}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            {!ownerMode && role === "sales" && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, marginBottom: 6 }}>Who's working?</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {SALES_AGENTS.filter(a => !OWNER_AGENTS.includes(a)).map(a => {
-                    const active = loginAgent === a;
-                    return (
-                      <button key={a} type="button" onClick={() => { setLoginAgent(a); setPwErr(false); }}
-                        style={{ flex: 1, minWidth: 90, padding: "8px 4px", borderRadius: 8, cursor: "pointer", fontWeight: 700,
-                          background: active ? "var(--accent)" : "var(--bg)", color: active ? "#fff" : "var(--text)",
-                          border: `2px solid ${active ? "var(--accent)" : "var(--border)"}` }}>
-                        {active ? "✓ " : ""}{a}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            <input type="password" placeholder={role === "technician" ? `${loginTruck} password` : role === "sales" ? `${loginAgent}'s password (or team password)` : "Team password"} value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && login()} />
-            {pwErr && <div className="login-error">Incorrect password.</div>}
-            <button className="btn btn-primary" style={{ width: "100%" }} onClick={login}>Enter{role === "technician" ? ` as ${loginTruck}` : role === "sales" ? ` as ${loginAgent}` : ""}</button>
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  const goBack = () => { setSelectedJob(null); setSelectedCustomer(null); };
-
+  const inp = { ...S.input, padding: "9px 11px", fontSize: 13.5 };
+  const lbl = { fontSize: 11, fontWeight: 700, color: "#6B6B6B", marginBottom: 3 };
   return (
-    <>
-      <StyleTag />
-      <div className="app">
-        <div className="topbar">
-          <div className="topbar-left">
-            <div className="logo">BNCHR<span>+</span></div>
-            <span className="badge-role">{role}{sessionTruck ? ` · ${sessionTruck}` : ""}{sessionAgent ? ` · ${sessionAgent}` : ""}</span>
-            <nav className="nav-tabs">
-              {tabs.map(t => (
-                <button key={t.key} className={`nav-tab ${tab === t.key ? "active" : ""}`}
-                  onClick={() => { setTab(t.key); setSelectedJob(null); setSelectedCustomer(null); }}>
-                  {t.label}{t.key === "upsells" && upsellLeads.filter(l => l.status === "open").length > 0 ? <span style={{ marginLeft: 5, fontSize: 10.5, fontWeight: 800, background: "#15803D", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{upsellLeads.filter(l => l.status === "open").length}</span> : null}
-                </button>
-              ))}
-            </nav>
-          </div>
-          <div className="topbar-right">
-            {usingMock && <span style={{ fontSize: 11, color: "var(--accent)", border: "1px solid #FDE68A", background: "#FFFBEB", borderRadius: 6, padding: "2px 8px" }}>Demo Data</span>}
-            <button className="btn-logout" onClick={() => { setAuthed(false); setPw(""); setSessionTruck(null); setSessionAgent(null); try { localStorage.removeItem("bnchr_session"); } catch {} }}>Sign out</button>
-          </div>
+    <div>
+      <div style={{ fontSize: 19, fontWeight: 800 }}>Service Quote</div>
+      <div style={{ fontSize: 12.5, color: "#6B6B6B", marginBottom: 14 }}>Car → services & tiers → items from the catalog → WhatsApp-ready quote, logged for follow-up.</div>
+
+      <div style={{ background: "#fff", border: "1px solid #ECECE4", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: "#0F2419", marginBottom: 8 }}>STEP 1 · CUSTOMER</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input value={mobile} onChange={e => setMobile(e.target.value)} placeholder="Customer mobile *" style={{ ...inp, flex: "0 1 160px" }} className="inp" />
+          {["Alaa", "Hussain"].map(a => (
+            <button key={a} onClick={() => pickAgent(a)} className="seg" style={{ ...S.seg, ...(agent === a ? S.segOn : {}) }}>{a}</button>
+          ))}
         </div>
+      </div>
 
-        <div className="main">
-          {loading && <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>Loading…</div>}
-
-          {!loading && selectedJob && (
-            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onEdit={setEditingJob} onReorder={role === "sales" ? reorderJob : undefined} onRevisit={role === "sales" ? revisitJob : undefined} jobs={jobs} upsellLeads={upsellLeads} onOpenJob={setSelectedJob} onCreateUpsell={handleCreateUpsell} onConvertLead={handleConvertLead} onDismissLead={handleDismissLead} onAction={handleJobAction} />
-          )}
-
-          {!loading && !selectedJob && selectedCustomer && tab === "customers" && (
-            <CustomerProfileDetail
-              customer={selectedCustomer}
-              cars={cars}
-              addresses={addresses}
-              jobs={jobs}
-              onBack={() => setSelectedCustomer(null)}
-              onSelectJob={(job) => { setSelectedJob(job); }}
-              onAddCar={handleAddCar}
-              onAddAddress={handleAddAddress}
-              onEditCustomer={() => setShowEditCustomer(true)}
-              onEditCar={(car) => { setAddCarTarget(selectedCustomer); setEditCarTarget(car); setShowAddCar(true); }}
-              onDeleteCar={handleCarDeleted}
-              onEditAddress={(a) => { setAddAddrTarget(selectedCustomer); setEditAddrTarget(a); setShowAddAddr(true); }}
-              onDeleteAddress={handleAddressDeleted}
-              onNewOrder={() => handleNewOrderFor(selectedCustomer)}
-              onReorder={(job) => handleNewOrderFor(selectedCustomer, job)}
-            />
-          )}
-
-          {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
-            <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
-            <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "upsells" && (
-            <UpsellsView upsellLeads={upsellLeads} jobs={jobs} role={role} onConvert={handleConvertLead} onDismiss={handleDismissLead} onSelectJob={setSelectedJob} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
-            <>
-              <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
-              <IncentiveReport jobs={jobs} enabled={incentiveOn} onToggle={setIncentiveEnabled} />
-            </>
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "costs" && (
-            <CostsView jobs={jobs} onUpdate={async (id, patch) => { const job = jobs.find(j => j.id === id); if (job) handleJobUpdate({ ...job, ...patch }); await updateJob(id, patch); }} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "settings" && (
-            <TruckSettingsView owner={isOwner} rows={truckCfg} onReload={async () => { const tc = await fetchTruckConfig(); setTruckCfg(tc); setCfgTick(x => x + 1); }} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
-            <HistoryView jobs={jobs} onSelectJob={setSelectedJob} onEdit={role === "sales" ? setEditingJob : undefined} onReorder={role === "sales" ? reorderJob : undefined} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "customers" && (
-            <CustomersView customers={customers} cars={cars} jobs={jobs} onSelectCustomer={setSelectedCustomer} onNewCustomer={() => { setNewCustomerName(""); setNewCustomerMobile(""); setNewCustomerCallback(null); setShowNewCustomer(true); }} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "myjobs" && (
-            <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} onCreateUpsell={handleCreateUpsell} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "target" && (
-            <TechTargetView jobs={jobs} truck={sessionTruck} owner={isOwner} />
-          )}
-          {tab === "myhistory" && !selectedJob && (
-            <TechHistoryView jobs={jobs} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "distributor" && (
-            <DistributorView jobs={jobs} onUpdate={handleJobUpdate} />
-          )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "disthistory" && (
-            <DistributorHistoryView jobs={jobs} />
-          )}
-        </div>
-
-        {tabs.length > 1 && (
-          <nav className="bottom-nav">
-            {tabs.map(t => (
-              <button key={t.key} className={`bottom-nav-item ${tab === t.key ? "active" : ""}`}
-                onClick={() => { setTab(t.key); setSelectedJob(null); setSelectedCustomer(null); }}>
-                <span className="bottom-nav-icon" style={{ position: "relative" }}>{t.icon}{t.key === "upsells" && upsellLeads.filter(l => l.status === "open").length > 0 ? <span style={{ position: "absolute", top: -4, right: -10, fontSize: 9, fontWeight: 800, background: "#15803D", color: "#fff", borderRadius: 7, padding: "0px 4px" }}>{upsellLeads.filter(l => l.status === "open").length}</span> : null}</span>
-                {t.label}
+      {/* 1 · CAR */}
+      <div style={{ background: "#fff", border: "1px solid #ECECE4", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: "#0F2419", marginBottom: 8 }}>STEP 2 · CAR</div>
+        {matchedCustomer && (
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1D7A45", marginBottom: 8 }}>
+            ✓ {matchedCustomer.name || "Customer"} · {customerCars.length} car{customerCars.length === 1 ? "" : "s"} on file
+          </div>
+        )}
+        {sqLast8(mobile).length >= 8 && !matchedCustomer && (
+          <div style={{ fontSize: 12, color: "#8A8A7A", marginBottom: 8 }}>New customer — enter the car below; it will be saved when the quote is booked.</div>
+        )}
+        {customerCars.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {customerCars.map(c => (
+              <button key={c.id} onClick={() => pickCustomerCar(c)} className="seg"
+                style={{ ...S.seg, ...(selectedCarId === c.id ? S.segOn : {}), fontSize: 12 }}>
+                🚗 {[c.brand, c.model, c.sub_model, c.year].filter(Boolean).join(" ")}{c.plate ? ` · ${c.plate}` : ""}
               </button>
             ))}
-          </nav>
+            <button onClick={() => { setSelectedCarId(null); setCar({ brand: "", model: "", sub_model: "", year: "", vin: "" }); }} className="seg" style={{ ...S.seg, fontSize: 12 }}>+ New car</button>
+          </div>
         )}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 }}>
+          <div><div style={lbl}>Brand *</div><SqCombo value={car.brand} onChange={v => setCarField({ brand: v })} options={brandOptions} placeholder="Porsche" /></div>
+          <div><div style={lbl}>Year</div><SqCombo value={car.year} onChange={v => setCarField({ year: v })} options={SQ_YEARS} placeholder="2021" /></div>
+          <div><div style={lbl}>Model</div><SqCombo value={car.model} onChange={v => setCarField({ model: v })} options={modelOptions(car.brand)} placeholder="911" /></div>
+          <div><div style={lbl}>Sub-Model (optional)</div><SqCombo value={car.sub_model} onChange={v => setCarField({ sub_model: v })} options={subModelOptions(car.brand, car.model)} placeholder="Carrera" /></div>
+          <div><div style={lbl}>VIN (optional)</div><input value={car.vin} onChange={e => setCarField({ vin: e.target.value.toUpperCase() })} placeholder="WP0…" style={inp} className="inp" /></div>
+        </div>
       </div>
 
-      {rescheduleJob && (
-        <RescheduleModal
-          job={rescheduleJob}
-          jobs={jobs}
-          onClose={() => setRescheduleJob(null)}
-          onSaved={(updated) => { handleJobUpdate(updated); setRescheduleJob(null); }}
-        />
+      {/* 📋 similar quotes — progressive history filter by the selected car */}
+      {similarQuotes.length > 0 && (
+        <div style={{ background: "#fff", border: "1px solid #ECECE4", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <div onClick={() => setHistOpen(o => !o)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "#0F2419" }}>
+              📋 SIMILAR QUOTES ({similarQuotes.length}) — {[car.brand, car.model, car.sub_model].filter(Boolean).join(" ")}
+            </div>
+            <span style={{ fontSize: 12, color: "#8A8A7A" }}>{histOpen ? "▲ hide" : "▼ show"}</span>
+          </div>
+          {histOpen && (
+            <div style={{ marginTop: 8 }}>
+              {similarQuotes.map(q => {
+                const own = sqLast8(mobile) && sqLast8(q.customer_mobile) === sqLast8(mobile);
+                const val = histValue(q);
+                const open = histExpanded === q.id;
+                return (
+                  <div key={q.id} style={{ borderTop: "1px solid #F0F0EC", padding: "7px 0" }}>
+                    <div onClick={() => setHistExpanded(open ? null : q.id)} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}>
+                      <div style={{ fontSize: 12.5 }}>
+                        {own && <span style={{ fontSize: 10, fontWeight: 800, color: "#1D7A45", background: "#E8F4EC", borderRadius: 5, padding: "1px 6px", marginRight: 6 }}>THIS CUSTOMER</span>}
+                        <strong>{histTypes(q)}</strong>
+                        <span style={{ color: "#8A8A7A" }}> · {[q.car?.brand, q.car?.model, q.car?.sub_model, q.car?.year].filter(Boolean).join(" ")}</span>
+                        <span style={{ color: "#8A8A7A" }}> · {q.created_at ? new Date(q.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : ""}{q.agent ? ` · ${q.agent}` : ""}</span>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+                        <span style={{ fontWeight: 800, fontSize: 12.5 }}>{val == null ? "options" : `${(Number(val) || 0).toFixed(3).replace(/\.?0+$/, "")} KD`}</span>
+                        <button onClick={(e) => { e.stopPropagation(); useAsTemplate(q); }} className="seg" style={{ ...S.seg, fontSize: 11.5 }}>Use as template</button>
+                      </div>
+                    </div>
+                    {open && q.quote_text && (
+                      <pre style={{ background: "#FAFAF7", border: "1px solid #ECECE4", borderRadius: 8, padding: 10, fontSize: 11.5, whiteSpace: "pre-wrap", fontFamily: "inherit", margin: "6px 0 0" }}>{q.quote_text}</pre>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
-      {editingJob && (
-        <NewJobModal
-          defaultAgent={sessionAgent}
-          catalog={catalog}
-          onCustomerCreated={(c) => setCustomers(prev => [c, ...prev])}
-          editJob={editingJob}
-          customers={customers}
-          cars={cars}
-          addresses={addresses}
-          jobs={jobs}
-          onClose={() => setEditingJob(null)}
-          onEdited={(updated) => { handleJobUpdate(updated); setEditingJob(null); }}
-          onNewCustomer={handleNewCustomer}
-          onCarCreated={handleCarCreated}
-          onAddressCreated={handleAddressCreated}
-        />
-      )}
+      {/* 2 · SERVICES (add as many as needed) */}
+      <div style={{ background: "#fff", border: "1px solid #ECECE4", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: "#0F2419", marginBottom: 8 }}>STEP 3 · SERVICE — tap to add</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {Object.keys(SQ_SERVICES).map(n => (
+            <button key={n} onClick={() => addService(n)} className="seg" style={{ ...S.seg, fontSize: 12.5 }}>+ {n}</button>
+          ))}
+        </div>
+      </div>
 
-      {showNew && (
-        <NewJobModal
-          defaultAgent={sessionAgent}
-          catalog={catalog}
-          onCustomerCreated={(c) => setCustomers(prev => [c, ...prev])}
-          prefillOrder={prefillOrder}
-          customers={customers}
-          cars={cars}
-          addresses={addresses}
-          jobs={jobs}
-          prefill={prefillSlot}
-          onClose={() => { setShowNew(false); setPrefillSlot(null); setPrefillOrder(null); }}
-          onCreated={(j, quoteId) => {
-            setJobs(prev => [j, ...prev]);
-            stampQuoteSuccess(quoteId, j);
-            const leadId = prefillOrder?.leadId;
-            if (leadId) {
-              setUpsellLeads(prev => prev.map(l => l.id === leadId ? { ...l, status: "converted", converted_job_id: j.id } : l));
-              updateUpsellLead(leadId, { status: "converted", converted_job_id: j.id });
-            }
-          }}
-          onNewCustomer={handleNewCustomer}
-          onCarCreated={handleCarCreated}
-          onAddressCreated={handleAddressCreated}
-        />
-      )}
+      {/* service blocks */}
+      {svcs.map((sv, svi) => {
+        const d = SQ_SERVICES[sv.type];
+        return (
+          <div key={sv.id} style={{ background: "#fff", border: "1.5px solid #D8D8D0", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 800 }}>{sv.type}</div>
+              <button onClick={() => rmService(sv.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#C0392B" }}><X size={15} /></button>
+            </div>
+            {sv._fit && (
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: sv._fit.verified ? "#1D7A45" : "#8A6A00", background: sv._fit.verified ? "#E8F4EC" : "#FFFBEB", border: `1px solid ${sv._fit.verified ? "#BFDFC9" : "#FCD34D"}`, borderRadius: 8, padding: "6px 9px", marginBottom: 8 }}>
+                ⚡ Auto-filled from fitment · engine {sv._fit.engine} · {sv._fit.verified ? "verified" : "unverified — confirm before sending"}
+              </div>
+            )}
+            {sv.type === "Oil & Filter" && !sv._fit && sv.lines.some(l => l.category === "engine_oil") && car.brand && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 11.5, background: "#F6F8F6", border: "1px dashed #D8D8D0", borderRadius: 8, padding: "6px 9px", marginBottom: 8 }}>
+                <span style={{ fontWeight: 700, color: "#6B6B6B" }}>💾 Save as fitment for {[car.brand, car.model, car.sub_model].filter(Boolean).join(" ")} — engine key:</span>
+                <span style={{ width: 130, display: "inline-block" }}>
+                  <SqCombo value={fitKeyDraft} onChange={setFitKeyDraft}
+                    options={[...new Set(fitments.filter(f => f.brand === car.brand).map(f => f.engine_key))]}
+                    placeholder="1.5T / 3.0T…" />
+                </span>
+                <span style={{ fontSize: 10.5, color: "#8A8A7A" }}>the engine, not the trim — same engine can serve many models</span>
+                <button onClick={() => saveFitmentFromBlock(sv)} className="seg" style={{ ...S.seg, fontSize: 11.5 }}>Save fitment</button>
+              </div>
+            )}
+            {Object.entries(d.variants || {}).map(([axis, opts]) => (
+              <div key={axis} style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#8A8A7A", textTransform: "uppercase", width: 44 }}>{axis}</span>
+                {opts.map(o => (
+                  <button key={o} onClick={() => pickVariant(sv, axis, o)} className="seg" style={{ ...S.seg, ...(sv.variant[axis] === o ? S.segOn : {}), fontSize: 12 }}>{o}</button>
+                ))}
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
+              {(d.pickers || []).map(pt => (
+                <button key={pt.tpl} onClick={() => { setPick(pick && pick.svcId === sv.id && pick.tpl === pt.tpl ? null : { svcId: sv.id, tpl: pt.tpl }); setPq(""); }} className="seg"
+                  style={{ ...S.seg, ...(pick && pick.svcId === sv.id && pick.tpl === pt.tpl ? S.segOn : {}), fontSize: 12 }}>+ {pt.label}</button>
+              ))}
+              <button onClick={() => addLineTo(sv.id, { name: "", category: "other", unit: "pc", qty: 1, unit_price: 0 })} className="seg" style={{ ...S.seg, fontSize: 12 }}>+ Custom line</button>
+            </div>
 
-      {showNewCustomer && (
-        <NewCustomerModal
-          initialName={newCustomerName}
-          initialMobile={newCustomerMobile}
-          onClose={() => setShowNewCustomer(false)}
-          onCreated={handleCustomerCreated}
-        />
-      )}
+            {pick && pick.svcId === sv.id && (
+              <div style={{ border: "1px dashed #D8D8D0", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                <input autoFocus value={pq} onChange={e => setPq(e.target.value)} placeholder={`Search ${SVC_CATEGORIES[pickerCat]?.label || "catalog"}…`} style={{ ...inp, width: "100%", boxSizing: "border-box", marginBottom: 6 }} className="inp" />
+                <div style={{ maxHeight: 190, overflowY: "auto" }}>
+                  {pickerResults.map(p => (
+                    <div key={p.id} onClick={() => addFromCatalog(p)} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 8px", borderBottom: "1px solid #F0F0EC", cursor: "pointer", alignItems: "center" }}>
+                      <div><div style={{ fontSize: 12.5, fontWeight: 700 }}>{p.name}</div><div style={{ fontSize: 10.5, color: "#8A8A7A" }}>{p.sku}{p.category === "engine_oil" ? ` · ${sqEOSpecLine(p.specs)}` : ""}</div></div>
+                      <span style={{ fontWeight: 800, fontSize: 12.5, flexShrink: 0 }}>{p.selling_price != null ? `${Number(p.selling_price).toFixed(3)} KD` : "—"}</span>
+                    </div>
+                  ))}
+                  {pickerResults.length === 0 && <div style={{ fontSize: 12, color: "#8A8A7A", padding: 6 }}>Nothing in the catalog{ql ? " matches" : " for this yet"}.</div>}
+                </div>
+                {["oil_filter", "brake", "filter"].includes(pick.tpl) && (
+                  <button onClick={addGenuineFromPicker} style={{ marginTop: 6, background: "none", border: "1px solid #D8D8D0", borderRadius: 8, padding: "6px 10px", fontSize: 12, cursor: "pointer" }}>
+                    Use genuine {car.brand.trim() ? `(${car.brand.trim()})` : ""} — price manual
+                  </button>
+                )}
+              </div>
+            )}
 
-      {showAddCar && addCarTarget && (
-        <AddCarModal
-          customer={addCarTarget}
-          editCar={editCarTarget}
-          onClose={() => { setShowAddCar(false); setEditCarTarget(null); }}
-          onCreated={handleCarCreated}
-          onUpdated={handleCarUpdated}
-        />
-      )}
+            {sv.lines.map((l, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 7, flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 190px" }}>
+                  {l.product_id
+                    ? <div style={{ fontSize: 12.5, fontWeight: 600 }}>{l.name}<div style={{ fontSize: 10.5, color: "#8A8A7A", fontWeight: 400 }}>{l.sku}{l.category === "engine_oil" ? ` · ${sqEOSpecLine(l.specs)}` : ""}</div></div>
+                    : <input value={l.name} onChange={e => updLine(sv.id, i, { name: e.target.value, _tpl: null, _auto: l._auto })} placeholder="Item name" style={{ ...inp, width: "100%", boxSizing: "border-box" }} className="inp" />}
+                </div>
+                <input type="number" min="0" step="1" value={l.qty} onChange={e => { const v = e.target.value; updLine(sv.id, i, { qty: v === "" ? "" : String(Math.max(0, Math.floor(Number(v) || 0))) }); }} style={{ ...inp, width: 60 }} className="inp" title={`Qty (${l.unit})`} />
+                <input type="number" step="0.001" value={l.unit_price || ""} onChange={e => updLine(sv.id, i, { unit_price: e.target.value })} style={{ ...inp, width: 84 }} className="inp" title="Unit price KD" />
+                <span style={{ fontSize: 12.5, fontWeight: 800, width: 72, textAlign: "right" }}>{((Number(l.qty) || 0) * (Number(l.unit_price) || 0)).toFixed(3)}</span>
+                <button onClick={() => rmLine(sv.id, i)} style={{ background: "none", border: "none", cursor: "pointer", color: "#C0392B" }}><Trash2 size={14} /></button>
+              </div>
+            ))}
 
-      {showAddAddr && addAddrTarget && (
-        <AddAddressModal
-          customer={addAddrTarget}
-          editAddr={editAddrTarget}
-          onClose={() => { setShowAddAddr(false); setEditAddrTarget(null); }}
-          onCreated={handleAddressCreated}
-          onUpdated={handleAddressUpdated}
-        />
-      )}
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", borderTop: "1px solid #ECECE4", paddingTop: 8 }}>
+              <label style={{ fontSize: 12, color: "#6B6B6B", fontWeight: 700 }}>Labor <input type="number" step="0.5" value={sv.labor || ""} onChange={e => updSvc(sv.id, { labor: e.target.value, laborTouched: true })} style={{ ...inp, width: 74, marginLeft: 4 }} className="inp" /></label>
+              <div style={{ marginLeft: "auto", fontSize: 12.5, fontWeight: 800 }}>
+                {sv.type === "Battery" && optionsMode
+                  ? (sv.lines.length ? sv.lines.map((l, i) => <div key={i} style={{ textAlign: "right" }}>{l.name.split(" ").slice(0, 2).join(" ")}: {kd(optionTotal(l))} KD</div>) : "Add battery options")
+                  : `Service total: ${kd(svcTotal(sv))} KD`}
+              </div>
+            </div>
+          </div>
+        );
+      })}
 
-      {showEditCustomer && selectedCustomer && (
-        <EditCustomerModal
-          customer={selectedCustomer}
-          onClose={() => setShowEditCustomer(false)}
-          onUpdated={handleCustomerUpdated}
-        />
-      )}
-    </>
+      {/* 3 · QUOTE */}
+      <div style={{ background: "#fff", border: "1.5px solid #0F2419", borderRadius: 14, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "#0F2419" }}>STEP 4 · QUOTE</div>
+            <label style={{ fontSize: 12, color: "#6B6B6B", fontWeight: 700 }}>Discount <input type="number" step="0.5" value={discount} onChange={e => setDiscount(e.target.value)} placeholder="0" style={{ ...inp, width: 74, marginLeft: 4 }} className="inp" /></label>
+            {!optionsMode && <span style={{ fontSize: 13.5, fontWeight: 800 }}>Total: {kd(totalKD)} KD</span>}
+          </div>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={() => setDetailed(true)} className="seg" style={{ ...S.seg, ...(detailed ? S.segOn : {}), fontSize: 12 }}>Breakdown</button>
+            <button onClick={() => setDetailed(false)} className="seg" style={{ ...S.seg, ...(!detailed ? S.segOn : {}), fontSize: 12 }}>Simple</button>
+          </div>
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <div style={lbl}>✅ Includes (edit freely)</div>
+          <input value={includes} onChange={e => setIncludes(e.target.value)} style={{ ...inp, width: "100%", boxSizing: "border-box" }} className="inp" />
+        </div>
+        {svcs.length === 0
+          ? <div style={{ background: "#FAFAF7", border: "1px dashed #D8D8D0", borderRadius: 10, padding: 16, fontSize: 12.5, color: "#8A8A7A", textAlign: "center" }}>Tap a service in STEP 3 to start building the quote.</div>
+          : <pre ref={previewRef} style={{ background: "#FAFAF7", border: "1px solid #ECECE4", borderRadius: 10, padding: 12, fontSize: 12.5, whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0, userSelect: "text" }}>{shareText}</pre>}
+        <button onClick={copyAndLog} style={{ ...S.loginBtn, marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          <Copy size={15} /> Copy quote & log for follow-up
+        </button>
+      </div>
+    </div>
   );
 }
+
+const S = {
+  app: { minHeight: "100vh", background: "#FAFAF7", fontFamily: "'Inter', system-ui, sans-serif", color: "#1A1A1A" },
+  // Login
+  loginWrap: { minHeight: "100vh", background: "#FAFAF7", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', system-ui, sans-serif", padding: 20 },
+  loginCard: { background: "#fff", borderRadius: 16, padding: "36px 32px", width: "100%", maxWidth: 340, boxShadow: "0 12px 40px rgba(0,0,0,0.10)", border: "1px solid #ECECE4", textAlign: "center" },
+  loginSub: { color: "#6B6B6B", fontSize: 13, fontWeight: 600, letterSpacing: 0.3, marginTop: 4, marginBottom: 24 },
+  loginInput: { width: "100%", boxSizing: "border-box", padding: "12px 14px", fontSize: 15, border: "1.5px solid #D8D8D0", borderRadius: 10, outline: "none", textAlign: "center", fontFamily: "inherit" },
+  loginErr: { color: "#C0392B", fontSize: 12.5, fontWeight: 600, marginTop: 8 },
+  loginBtn: { width: "100%", marginTop: 16, padding: "12px 14px", fontSize: 15, fontWeight: 700, color: "#fff", background: "#0F2419", border: "none", borderRadius: 10, cursor: "pointer", fontFamily: "inherit" },
+  dbErrorBar: { background: "#FBEAE8", color: "#9B2C20", padding: "10px 16px", fontSize: 13, fontWeight: 600, textAlign: "center", borderBottom: "1px solid #F0C9C4" },
+  header: { background: "#0F2419", position: "sticky", top: 0, zIndex: 10, borderBottom: "2px solid #C9A84C" },
+  headerInner: { maxWidth: 920, margin: "0 auto", padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 },
+  logo: { display: "flex", flexDirection: "column" },
+  logoMark: { fontSize: 24, fontWeight: 900, color: "#fff", letterSpacing: "-0.04em", lineHeight: 1, fontFamily: "'Arial Black', 'Helvetica Neue', sans-serif", fontStretch: "condensed" },
+  logoReg: { fontSize: 9, fontWeight: 700, color: "#fff", marginTop: 2 },
+  logoSub: { fontSize: 11, color: "#8FB3A0", marginTop: 3, letterSpacing: "0.04em" },
+  nav: { display: "flex", gap: 6 },
+  navBtn: { display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: "none", background: "transparent", color: "#8FB3A0", fontSize: 13, fontWeight: 600, cursor: "pointer", transition: "all .15s" },
+  navBtnActive: { background: "#1D5C3A", color: "#fff" },
+  main: { maxWidth: 920, margin: "0 auto", padding: "20px 18px 80px" },
+  card: { background: "#fff", borderRadius: 14, padding: 18, marginBottom: 16, border: "1px solid #EDEDE6", boxShadow: "0 1px 3px rgba(0,0,0,0.03)" },
+  modeRow: { display: "flex", gap: 8, marginBottom: 16 },
+  seg: { display: "flex", alignItems: "center", gap: 7, padding: "9px 16px", borderRadius: 9, border: "1.5px solid #E2E2D8", background: "#fff", color: "#666", fontSize: 13.5, fontWeight: 600, cursor: "pointer" },
+  segOn: { borderColor: "#1D5C3A", background: "#1D5C3A", color: "#fff" },
+  label: { display: "block", fontSize: 12, fontWeight: 600, color: "#555", marginBottom: 6, marginTop: 2 },
+  input: { width: "100%", padding: "11px 13px", borderRadius: 9, border: "1.5px solid #E2E2D8", fontSize: 14, fontFamily: "inherit", color: "#1a1a1a", outline: "none", boxSizing: "border-box", background: "#fff" },
+  inputAuto: { background: "#F5F5F0", color: "#666" },
+  parsed: { fontSize: 12, color: "#1D5C3A", marginTop: 7, fontWeight: 600 },
+  sugBox: { position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#fff", border: "1px solid #E2E2D8", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 20, overflow: "hidden" },
+  sugItem: { display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "10px 14px", border: "none", borderBottom: "1px solid #F0F0EA", background: "#fff", cursor: "pointer", fontSize: 14 },
+  sugSize: { fontWeight: 700, color: "#1a1a1a", fontFamily: "monospace" },
+  sugCount: { fontSize: 11.5, color: "#1D5C3A", fontWeight: 600, background: "#E7F2EB", padding: "2px 8px", borderRadius: 5 },
+  histWrap: { marginTop: 14 },
+  histLabel: { fontSize: 11, fontWeight: 700, color: "#999", textTransform: "uppercase", letterSpacing: "0.04em" },
+  histChips: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 },
+  histChip: { display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 11px", borderRadius: 7, border: "1px solid #E2E2D8", background: "#FCFCFA", color: "#444", fontSize: 12, fontWeight: 600, cursor: "pointer" },
+  catHistoryWrap: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginTop: 12, paddingTop: 12, borderTop: "1px solid #F0F0EA" },
+  bulkSizeLabel: { fontSize: 14, fontWeight: 800, color: "#1A4F8A", marginTop: 2, letterSpacing: 0.3 },
+  bulkModeWrap: { display: "inline-flex", gap: 0, background: "#F0F0EA", borderRadius: 9, padding: 3, marginBottom: 4 },
+  bulkModeBtn: { padding: "6px 18px", fontSize: 12.5, fontWeight: 700, color: "#777", background: "transparent", border: "none", borderRadius: 7, cursor: "pointer" },
+  bulkModeBtnOn: { background: "#fff", color: "#0F2419", boxShadow: "0 1px 3px rgba(0,0,0,0.08)" },
+  parsedMuted: { fontSize: 12, color: "#999", marginTop: 7 },
+  chkRow: { display: "flex", alignItems: "center", gap: 9, marginTop: 12, fontSize: 13, color: "#555", cursor: "pointer" },
+  carOpts: { display: "flex", flexDirection: "column", gap: 7, marginTop: 12 },
+  carChip: { textAlign: "left", padding: "10px 14px", borderRadius: 9, border: "1.5px solid #E2E2D8", background: "#fff", fontSize: 13, fontWeight: 600, color: "#444", cursor: "pointer" },
+  carChipOn: { borderColor: "#1D5C3A", background: "#E7F2EB", color: "#1D5C3A" },
+  sizeHeader: { display: "flex", alignItems: "baseline", justifyContent: "space-between", borderBottom: "2px solid #0F2419", paddingBottom: 10 },
+  sizeHeaderLabel: { fontSize: 20, fontWeight: 800, color: "#0F2419", letterSpacing: "-0.01em" },
+  sizeHeaderCount: { fontSize: 12, color: "#999", fontWeight: 600 },
+  catTag: { display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 11px", borderRadius: 7, fontSize: 13, fontWeight: 700 },
+  catDot: { width: 8, height: 8, borderRadius: "50%" },
+  catAr: { fontWeight: 600, opacity: 0.7, marginLeft: 2 },
+  tireRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "11px 12px", borderRadius: 9, marginTop: 8, border: "1px solid #EDEDE6", background: "#FCFCFA", flexWrap: "wrap" },
+  tireRowAvail: { background: "#F4FBF6", borderColor: "#CDE8D7" },
+  tireMain: { display: "flex", flex: 1, minWidth: 200, alignItems: "flex-start" },
+  tireLine: { fontSize: 14, fontWeight: 600, color: "#1a1a1a", lineHeight: 1.35 },
+  markingNote: { fontSize: 11.5, color: "#8A6A00", background: "#FBF4DF", padding: "3px 9px", borderRadius: 5, marginTop: 5, display: "inline-block", fontWeight: 600 },
+  markGroup: { fontSize: 11, fontWeight: 800, color: "#1D5C3A", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 6, borderBottom: "2px solid #E7F2EB", paddingBottom: 4 },
+  markRow: { display: "flex", gap: 12, padding: "8px 0", borderBottom: "1px solid #F0F0EA", alignItems: "flex-start" },
+  markCode: { fontSize: 13, fontWeight: 800, color: "#8A6A00", background: "#FBF4DF", padding: "3px 10px", borderRadius: 6, minWidth: 48, textAlign: "center" },
+  markMeaning: { fontSize: 13, fontWeight: 600, color: "#1a1a1a" },
+  markBrands: { fontSize: 11, color: "#999", marginTop: 2 },
+  tireMeta: { display: "flex", alignItems: "center", gap: 8, marginTop: 5, flexWrap: "wrap" },
+  priceTag: { fontSize: 14, fontWeight: 800, color: "#1D5C3A" },
+  costTag: { fontSize: 11.5, color: "#999" },
+  profitBadge: { fontSize: 12, fontWeight: 800, padding: "2px 9px", borderRadius: 6 },
+  profitMargin: { fontWeight: 600, opacity: 0.75, fontSize: 10.5 },
+  sortWrap: { display: "flex", alignItems: "center", gap: 4 },
+  sortLabel: { fontSize: 11, color: "#999", fontWeight: 600, marginRight: 2 },
+  sortBtn: { padding: "4px 10px", borderRadius: 6, border: "1px solid #E2E2D8", background: "#fff", fontSize: 11.5, fontWeight: 700, color: "#666", cursor: "pointer" },
+  sortBtnOn: { background: "#1A4F8A", borderColor: "#1A4F8A", color: "#fff" },
+  sortDirBtn: { background: "#F4F1E8", borderColor: "#D8D0BC", color: "#5A4A2A", marginLeft: 4 },
+  availFilterBar: { display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" },
+  availFilterBtn: { padding: "8px 16px", borderRadius: 9, border: "1.5px solid #E2E2D8", background: "#fff", fontSize: 13, fontWeight: 700, color: "#666", cursor: "pointer" },
+  availFilterBtnOn: { background: "#0F2419", borderColor: "#0F2419", color: "#fff" },
+  catStockBtn: { display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 7, border: "1.5px solid #E2E2D8", background: "#fff", fontSize: 11.5, fontWeight: 700, color: "#888", cursor: "pointer", whiteSpace: "nowrap" },
+  availBadgeRO: { display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, whiteSpace: "nowrap" },
+  // Delete confirmation
+  delTarget: { background: "#FAFAF7", border: "1px solid #ECECE4", borderRadius: 9, padding: "11px 13px" },
+  cancelBtn: { flex: 1, padding: "11px 14px", fontSize: 14, fontWeight: 700, color: "#555", background: "#F0F0EA", border: "none", borderRadius: 9, cursor: "pointer" },
+  deleteConfirmBtn: { flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "11px 14px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#C0392B", border: "none", borderRadius: 9, cursor: "pointer" },
+  // Bulk edit
+  bulkBtn: { display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", fontSize: 12.5, fontWeight: 700, color: "#0F2419", background: "#F4F1E8", border: "1px solid #D8D0BC", borderRadius: 8, cursor: "pointer" },
+  bulkTableWrap: { maxHeight: "56vh", overflowY: "auto", marginTop: 6 },
+  bulkRow: { display: "flex", alignItems: "center", gap: 8, padding: "8px 4px", borderBottom: "1px solid #F0F0EA" },
+  bulkHeadRow: { fontSize: 11, fontWeight: 700, color: "#999", textTransform: "uppercase", letterSpacing: 0.3, position: "sticky", top: 0, background: "#fff", borderBottom: "1.5px solid #E2E2D8" },
+  bulkCol: { flex: 1, display: "flex", alignItems: "center", gap: 3 },
+  bulkTireName: { fontSize: 13, fontWeight: 700, color: "#1A1A1A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  bulkTireSub: { fontSize: 11, color: "#999", marginTop: 1 },
+  bulkInput: { flex: 1, width: "100%", boxSizing: "border-box", padding: "7px 8px", fontSize: 13, border: "1.5px solid #E2E2D8", borderRadius: 7, outline: "none", fontFamily: "inherit", minWidth: 0 },
+  bulkMargin: { borderColor: "#C9A84C", background: "#FDFBF4" },
+  agreedTag: { marginLeft: 6, fontSize: 9.5, fontWeight: 700, color: "#8A6A00", background: "#FBF4DF", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: 0.3 },
+  applyFormulaBtn: { cursor: "pointer", color: "#1A4F8A", background: "#EEF3F9", borderColor: "#C5D8EC", fontWeight: 700, fontSize: 11, whiteSpace: "nowrap" },
+  bulkAuto: { background: "#F0F7F2", borderColor: "#BFE0CC", color: "#1D7A45", fontWeight: 700 },
+  bulkProfit: { fontSize: 12.5, fontWeight: 800 },
+  bulkPct: { fontSize: 11, color: "#999", fontWeight: 600 },
+  saveAllBtn: { display: "inline-flex", alignItems: "center", gap: 6, padding: "11px 20px", fontSize: 14, fontWeight: 700, color: "#fff", background: "#0F2419", border: "none", borderRadius: 9, cursor: "pointer" },
+  profInd: { border: "1.5px solid", borderRadius: 10, padding: "10px 12px", marginTop: 12, background: "#FCFCFA" },
+  profIndRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  profIndRow2: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 6 },
+  profIndAmt: { fontSize: 15, fontWeight: 800, padding: "3px 10px", borderRadius: 7 },
+  profIndMargin: { fontSize: 12.5, color: "#555", fontWeight: 600 },
+  profIndTier: { fontSize: 11.5, fontWeight: 700, textTransform: "capitalize" },
+  profIndSet: { fontSize: 12.5, fontWeight: 800, color: "#1A4F8A" },
+  profIndTarget: { fontSize: 11.5, color: "#888" },
+  profIndNote: { fontSize: 11, color: "#1A4F8A", marginTop: 6, fontWeight: 600, fontStyle: "italic" },
+  reapplyBtn: { padding: "6px 12px", borderRadius: 7, border: "1px solid #E2E2D8", background: "#fff", fontSize: 11.5, fontWeight: 700, color: "#1A4F8A", cursor: "pointer" },
+  viewAllBtn: { display: "flex", alignItems: "center", gap: 6, width: "100%", justifyContent: "center", padding: "9px", borderRadius: 8, border: "1px dashed #C8C8BE", background: "#FCFCFA", fontSize: 12.5, fontWeight: 700, color: "#666", cursor: "pointer", marginTop: 14 },
+  supplierTag: { fontSize: 11, color: "#666", background: "#F0F0EC", padding: "2px 8px", borderRadius: 5 },
+  skuTag: { fontSize: 10.5, color: "#999", fontFamily: "monospace", background: "#F7F7F2", padding: "2px 7px", borderRadius: 5 },
+  dupBanner: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "11px 14px", borderRadius: 9, background: "#FDF6E3", border: "1.5px solid #F0D070", fontSize: 13, fontWeight: 600, color: "#8A6A00", marginTop: 14 },
+  dupCancelBtn: { padding: "7px 14px", borderRadius: 7, border: "1px solid #E2E2D8", background: "#fff", fontSize: 12.5, fontWeight: 700, color: "#666", cursor: "pointer" },
+  dupAddBtn: { padding: "7px 14px", borderRadius: 7, border: "none", background: "#C0392B", color: "#fff", fontSize: 12.5, fontWeight: 700, cursor: "pointer" },
+  brandFix: { fontSize: 10, fontWeight: 700, color: "#8A6A00", background: "#FBF4DF", border: "1px solid #F0D070", borderRadius: 5, padding: "2px 6px", cursor: "pointer", textAlign: "left", maxWidth: 130, lineHeight: 1.3 },
+  patSugWrap: { display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", maxWidth: 220, marginTop: 2 },
+  patSugLabel: { fontSize: 9.5, fontWeight: 700, color: "#1A4F8A", textTransform: "uppercase" },
+  patSugChip: { fontSize: 10, fontWeight: 600, color: "#1A4F8A", background: "#F2F7FC", border: "1px solid #C5DBF0", borderRadius: 5, padding: "2px 7px", cursor: "pointer" },
+  ddPanel: { position: "absolute", top: "100%", left: 0, zIndex: 50, marginTop: 3, minWidth: 200, maxWidth: 280, maxHeight: 240, overflowY: "auto", background: "#fff", border: "1px solid #D8D8D0", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.14)" },
+  ddItem: { padding: "8px 11px", fontSize: 13, color: "#222", cursor: "pointer", borderBottom: "1px solid #F4F4EE", whiteSpace: "nowrap" },
+  ddItemHover: { background: "#F0F6F2" },
+  ddItemActive: { background: "#E7F2EB", fontWeight: 700, color: "#1D5C3A" },
+  patSuggWrap: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4, maxWidth: 200 },
+  patSuggLabel: { fontSize: 9.5, color: "#999", fontWeight: 600 },
+  patSuggChip: { fontSize: 10, fontWeight: 700, color: "#1A4F8A", background: "#F2F7FC", border: "1px solid #BCD4EC", borderRadius: 5, padding: "2px 7px", cursor: "pointer" },
+  offroadTag: { fontSize: 10.5, color: "#B05A1A", background: "#FBEFE3", padding: "2px 8px", borderRadius: 5, fontWeight: 700 },
+  tireActions: { display: "flex", alignItems: "center", gap: 6 },
+  availBtn: { display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", borderRadius: 7, border: "1.5px solid", fontSize: 12, fontWeight: 700, cursor: "pointer" },
+  availOn: { borderColor: "#1D5C3A", background: "#1D5C3A", color: "#fff" },
+  availStale: { borderColor: "#C0392B", background: "#C0392B", color: "#fff" },
+  availGrey: { borderColor: "#8A8A7A", background: "#8A8A7A", color: "#fff" },
+  staleBanner: { display: "flex", alignItems: "center", gap: 9, width: "100%", padding: "11px 15px", borderRadius: 10, border: "1.5px solid #F0D070", background: "#FDF6E3", cursor: "pointer", marginBottom: 14 },
+  staleBannerText: { fontSize: 13.5, fontWeight: 700, color: "#8A6A00" },
+  staleRedPill: { fontSize: 12, fontWeight: 800, color: "#C0392B", background: "#FBE5E1", padding: "3px 9px", borderRadius: 6 },
+  staleGreyPill: { fontSize: 12, fontWeight: 800, color: "#6A6A5A", background: "#EDEDE6", padding: "3px 9px", borderRadius: 6 },
+  staleRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid #F0F0EA" },
+  staleTireName: { fontSize: 13.5, fontWeight: 700, color: "#1a1a1a" },
+  staleTireSize: { fontSize: 11.5, color: "#999", marginTop: 2 },
+  selCount: { fontSize: 12.5, fontWeight: 700, color: "#C9A84C", alignSelf: "center" },
+  availOff: { borderColor: "#E2E2D8", background: "#fff", color: "#999" },
+  availWrap: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 },
+  freshLabel: { fontSize: 10.5, fontWeight: 700, whiteSpace: "nowrap" },
+  iconBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 34, height: 34, borderRadius: 7, border: "1px solid #E2E2D8", background: "#fff", color: "#666", cursor: "pointer" },
+  empty: { padding: "20px 0", textAlign: "center", color: "#999", fontSize: 13.5 },
+  shareBar: { position: "sticky", bottom: 16, display: "flex", flexDirection: "column", gap: 10, padding: 12, background: "#0F2419", borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.2)" },
+  shareRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" },
+  copyMain: { display: "flex", alignItems: "center", gap: 7, padding: "10px 20px", borderRadius: 8, border: "none", background: "#C9A84C", color: "#0F2419", fontSize: 13.5, fontWeight: 800, cursor: "pointer" },
+  qtyWrap: { display: "flex", alignItems: "center", gap: 7 },
+  langWrap: { display: "flex", gap: 3, background: "#0A1A12", padding: 3, borderRadius: 8 },
+  langBtn: { padding: "6px 12px", borderRadius: 6, border: "none", background: "transparent", color: "#8FB3A0", fontSize: 12.5, fontWeight: 700, cursor: "pointer" },
+  langBtnOn: { background: "#C9A84C", color: "#0F2419" },
+  qtyLabel: { fontSize: 11.5, color: "#8FB3A0", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em" },
+  qtyBtns: { display: "flex", gap: 3, background: "#0A1A12", padding: 3, borderRadius: 8 },
+  qtyBtn: { width: 30, height: 30, borderRadius: 6, border: "none", background: "transparent", color: "#8FB3A0", fontSize: 14, fontWeight: 700, cursor: "pointer" },
+  qtyBtnOn: { background: "#C9A84C", color: "#0F2419" },
+  qtyFixed: { fontSize: 13, color: "#fff", fontWeight: 700, background: "#0A1A12", padding: "7px 12px", borderRadius: 8 },
+  clBtn: { display: "flex", alignItems: "center", gap: 5, padding: "8px 13px", borderRadius: 8, border: "1.5px solid #2E5C45", background: "transparent", color: "#8FB3A0", fontSize: 12.5, fontWeight: 700, cursor: "pointer" },
+  clBtnOn: { background: "#C9A84C", borderColor: "#C9A84C", color: "#0F2419" },
+  laborHint: { fontSize: 12, color: "#C9A84C", fontWeight: 700 },
+  cashWrap: { display: "flex", alignItems: "center", gap: 6 },
+  cashBtnOn: { background: "#1D7A45", color: "#fff", borderColor: "#1D7A45" },
+  cashNote: { marginTop: 8, fontSize: 11.5, color: "#8A6A00", background: "#FBF4DF", borderRadius: 8, padding: "7px 11px", lineHeight: 1.45 },
+  previewBtn: { display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 8, border: "1px solid #2E5C45", background: "transparent", color: "#8FB3A0", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  copyBtn: { display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 8, border: "1px solid #E2E2D8", background: "#fff", color: "#444", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  waBtn: { display: "flex", alignItems: "center", gap: 7, padding: "10px 18px", borderRadius: 8, border: "none", background: "#25D366", color: "#fff", fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
+  modalWrap: { position: "fixed", inset: 0, background: "rgba(15,36,25,0.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18, zIndex: 50 },
+  modal: { background: "#fff", borderRadius: 14, padding: 20, maxWidth: 540, width: "100%", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" },
+  modalHead: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
+  modalTitle: { fontSize: 17, fontWeight: 800, color: "#0F2419", margin: 0 },
+  preview: { background: "#F5F5F0", borderRadius: 9, padding: 14, fontSize: 12.5, lineHeight: 1.6, whiteSpace: "pre-wrap", fontFamily: "'SF Mono', Menlo, monospace", color: "#1a1a1a", margin: 0, border: "1px solid #E8E8E0", direction: "ltr", textAlign: "left", userSelect: "text", WebkitUserSelect: "text" },
+  h2: { fontSize: 18, fontWeight: 800, color: "#0F2419", margin: "0 0 6px" },
+  sub: { fontSize: 13, color: "#777", margin: "0 0 16px", lineHeight: 1.5 },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 },
+  previewLine: { border: "2px solid", borderRadius: 11, padding: 14, marginBottom: 18, background: "#FCFCFA" },
+  previewText: { fontSize: 15, fontWeight: 700, color: "#1a1a1a", lineHeight: 1.4 },
+  previewSize: { fontSize: 12.5, color: "#888", marginTop: 5, fontFamily: "monospace" },
+  searchIcon: { position: "absolute", left: 12, top: 12, color: "#999" },
+  filterChip: { padding: "8px 13px", borderRadius: 8, border: "1.5px solid #E2E2D8", background: "#fff", fontSize: 12.5, fontWeight: 700, color: "#666", cursor: "pointer" },
+  filterChipOn: { background: "#1D5C3A", borderColor: "#1D5C3A", color: "#fff" },
+  drawerWrap: { position: "fixed", inset: 0, background: "rgba(15,36,25,0.5)", display: "flex", justifyContent: "flex-end", zIndex: 50 },
+  drawer: { background: "#fff", width: "100%", maxWidth: 380, height: "100%", padding: 20, overflowY: "auto", boxShadow: "-8px 0 30px rgba(0,0,0,0.2)" },
+  filterGroup: { marginTop: 18 },
+  filterLabel: { display: "block", fontSize: 12, fontWeight: 700, color: "#555", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.03em" },
+  filterChipRow: { display: "flex", flexWrap: "wrap", gap: 6 },
+  fChip: { padding: "7px 12px", borderRadius: 7, border: "1.5px solid #E2E2D8", background: "#fff", fontSize: 12.5, fontWeight: 600, color: "#444", cursor: "pointer" },
+  fChipOn: { background: "#1D5C3A", borderColor: "#1D5C3A", color: "#fff" },
+  catalogHead: { fontSize: 12.5, color: "#999", fontWeight: 600, marginBottom: 10 },
+  dlBtn: { display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 7, border: "1px solid #E2E2D8", background: "#fff", color: "#1D5C3A", fontSize: 12, fontWeight: 700, cursor: "pointer" },
+  draftHint: { fontSize: 12, color: "#888", marginBottom: 12, lineHeight: 1.5 },
+  quickFormat: { fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: "#1D5C3A", background: "#E7F2EB", padding: "2px 7px", borderRadius: 5, display: "inline-block", marginTop: 4 },
+  quickInline: { fontFamily: "monospace", fontSize: 11.5, fontWeight: 700, color: "#8A6A00", background: "#FBF4DF", padding: "1px 6px", borderRadius: 4 },
+  qHelp: { marginTop: 10, padding: "10px 12px", borderRadius: 9, background: "#F4FBF6", border: "1px solid #D8EADE" },
+  qHelpLabel: { fontSize: 11, fontWeight: 700, color: "#1D5C3A", textTransform: "uppercase", letterSpacing: "0.03em" },
+  qHelpRow: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 },
+  qHelpChip: { display: "flex", flexDirection: "column", gap: 1, padding: "4px 9px", borderRadius: 6, background: "#fff", border: "1px solid #D8EADE", minWidth: 50 },
+  qHelpField: { fontSize: 9, fontWeight: 700, color: "#999", textTransform: "uppercase" },
+  qHelpVal: { fontSize: 12.5, fontWeight: 700, color: "#1a1a1a", fontFamily: "monospace" },
+  draftCard: { border: "1px solid #E2E2D8", borderRadius: 10, padding: 12, marginBottom: 10, background: "#FCFCFA" },
+  draftTop: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 },
+  draftSrc: { fontSize: 11, color: "#999", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
+  draftGrid: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" },
+  draftLabel: { fontSize: 10, fontWeight: 700, color: "#888", textTransform: "uppercase" },
+  draftSetGain: { fontSize: 10, color: "#1D7A45", fontWeight: 700, textAlign: "center" },
+  draftPriceNote: { fontSize: 11, color: "#1A4F8A", marginTop: 8, fontWeight: 600, fontStyle: "italic", background: "#F4F8FC", padding: "5px 10px", borderRadius: 6, display: "inline-block" },
+  draftInput: { padding: "7px 9px", borderRadius: 7, border: "1.5px solid #E2E2D8", fontSize: 13, fontFamily: "inherit", color: "#1a1a1a", outline: "none", boxSizing: "border-box", background: "#fff" },
+  catalogRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 0", borderBottom: "1px solid #F0F0EA", flexWrap: "wrap" },
+  catMini: { fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 5 },
+  histRow: { display: "flex", gap: 10, padding: "10px 0", borderBottom: "1px solid #F0F0EA" },
+  histMain: { fontSize: 13.5, fontWeight: 600, color: "#1a1a1a" },
+  histMargin: { color: "#1D5C3A", fontWeight: 700 },
+  histMeta: { fontSize: 11.5, color: "#999", marginTop: 3 },
+  toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#0F2419", color: "#fff", padding: "11px 20px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 8, zIndex: 100, boxShadow: "0 8px 24px rgba(0,0,0,0.25)" },
+};
+
+const CSS = `
+* { box-sizing: border-box; }
+body { margin: 0; }
+.inp:focus { border-color: #1D5C3A !important; box-shadow: 0 0 0 3px rgba(29,92,58,0.1); }
+.navbtn:hover { color: #fff; }
+.seg:hover { border-color: #1D5C3A; }
+.iconbtn:hover { background: #F0F0EC; border-color: #1D5C3A; color: #1D5C3A; }
+.availbtn:hover { opacity: 0.85; }
+.primary:hover { opacity: 0.9; }
+.ghost:hover { background: #F5F5F0; }
+.carChip:hover { border-color: #1D5C3A; }
+.filterChip:hover { border-color: #1D5C3A; }
+.qtybtn:hover { color: #fff; }
+.clbtn:hover { border-color: #C9A84C; }
+.sugitem:hover { background: #F4FBF6 !important; }
+.histchip:hover { border-color: #1D5C3A; background: #fff; }
+.sortbtn:hover { border-color: #1A4F8A; }
+.langbtn:hover { color: #fff; }
+.staleBanner:hover { border-color: #C9A84C; background: #FCF0D0; }
+input[type=checkbox] { accent-color: #1D5C3A; width: 16px; height: 16px; cursor: pointer; }
+@media (max-width: 560px) {
+  .navbtn span { display: none; }
+}
+`;
