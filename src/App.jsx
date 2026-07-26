@@ -841,9 +841,14 @@ async function saveAppSetting(key, value) {
 // revisit → voided (and the revisit visit itself earns 0) · pot accrues from order #1
 // but UNLOCKS at the truck's monthly target (100 base · 150 if 2 trucks · 180 if 1;
 // = the company's break-even line) · four KWD 5 bonuses.
-const INCENT = { perOrder: 0.25, upsellRate: 1.0, bonusKD: 5, maxCapacity: 200 };
+const INCENT = { perOrder: 0.25, upsellRate: 1.0, bonusKD: 5, maxCapacity: 200, profitGateKD: 500 };
 const incentiveTarget = (nActive) => nActive >= 3 ? 100 : nActive === 2 ? 150 : 180;
-function computeIncentives(jobs, refDate) {
+// Official scheme (doc 21/5/2026):
+// Stream 1 (base): 0.250/order/person — needs BOTH net profit >= 500 AND truck >= target; all orders count from #1.
+// Stream 2 (upsell): 1.000/upsell/person — ALWAYS paid, even loss months.
+// Revisit: the order that caused it is voided; the revisit visit earns 0.
+// Five KWD 5 bonuses in profitable months; ties SPLIT equally; zero-revisit splits among qualifiers.
+function computeIncentives(jobs, refDate, fixedExpenses = 12500) {
   const y = refDate.getFullYear(), m = refDate.getMonth();
   const inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
   const doneAt = (j) => j.completed_at || j.scheduled_at || j.created_at;
@@ -854,35 +859,46 @@ function computeIncentives(jobs, refDate) {
   const target = incentiveTarget(trucks.length);
   const rows = trucks.map(t => {
     const tj = done.filter(j => j.assigned_truck === t);
-    let pot = 0, base = 0, ups = 0, voided = 0;
+    let baseN = 0, ups = 0, voided = 0;
     tj.forEach(j => {
       if (j.link_type === "revisit" || revisitedParents.has(j.id)) { voided++; return; }
-      if (j.link_type === "upsell") { ups++; pot += INCENT.upsellRate; }
-      else { base++; pot += INCENT.perOrder; }
+      baseN++;
+      if (j.link_type === "upsell") ups++;
     });
     const revenue = tj.reduce((sm, j) => sm + (Number(j.total) || 0), 0);
     const cost = tj.reduce((sm, j) => sm + (j.items || []).reduce((x, it) => x + (Number(it.cost) || 0) * (Number(it.qty) || 1), 0), 0);
     const reviews = tj.map(j => Number(j.review_rating)).filter(r => r >= 1);
     const revisitsCaused = jobs.filter(j => j.link_type === "revisit" && inMonth(j.created_at) && (byId.get(j.parent_job_id) || {}).assigned_truck === t).length;
     return {
-      truck: t, orders: tj.length, base, ups, voided,
-      pot: Math.round(pot * 1000) / 1000,
-      unlocked: tj.length >= target,
+      truck: t, orders: tj.length, baseN, ups, voided,
+      basePot: Math.round(baseN * INCENT.perOrder * 1000) / 1000,
+      upsellPay: Math.round(ups * INCENT.upsellRate * 1000) / 1000,
       revenue, profit: revenue - cost,
-      avgReview: reviews.length ? Math.round((reviews.reduce((a, b) => a + b, 0) / reviews.length) * 100) / 100 : null,
+      avgReview: reviews.length ? Math.round((reviews.reduce((a2, b2) => a2 + b2, 0) / reviews.length) * 100) / 100 : null,
       nReviews: reviews.length, revisitsCaused,
+      targetHit: tj.length >= target,
     };
   });
-  // KWD 5 bonus leaders (ties: everyone tied wins the flag; zero-revisit = all with 0)
-  const flag = (key, best) => rows.forEach(r => { r[key] = best != null && rows.length > 1 ? best(r) : false; });
-  const maxOrders = Math.max(...rows.map(r => r.orders), 0);
-  const maxProfit = Math.max(...rows.map(r => r.profit), 0);
-  const maxReview = Math.max(...rows.map(r => r.avgReview || 0), 0);
-  flag("bonusOrders", r => maxOrders > 0 && r.orders === maxOrders);
-  flag("bonusProfit", r => maxProfit > 0 && r.profit === maxProfit);
-  flag("bonusReview", r => maxReview > 0 && (r.avgReview || 0) === maxReview);
-  flag("bonusZeroRevisit", r => r.orders > 0 && r.revisitsCaused === 0);
-  return { target, rows, trucksActive: trucks.length };
+  const monthGross = rows.reduce((sm, r) => sm + r.profit, 0);
+  const monthNet = Math.round((monthGross - (Number(fixedExpenses) || 0)) * 100) / 100;
+  const profitGate = monthNet >= INCENT.profitGateKD;
+  rows.forEach(r => { r.baseUnlocked = profitGate && r.targetHit; });
+  const cats = [["bOrders", (r) => r.orders], ["bReviews", (r) => r.avgReview || 0], ["bRevenue", (r) => r.revenue], ["bProfit", (r) => r.profit]];
+  rows.forEach(r => { r.bonusShare = {}; r.bonusTotal = 0; });
+  if (profitGate && rows.length) {
+    cats.forEach(([key, fn]) => {
+      const max = Math.max(...rows.map(fn));
+      if (max > 0) {
+        const winners = rows.filter(r => fn(r) === max);
+        winners.forEach(r => { r.bonusShare[key] = Math.round((INCENT.bonusKD / winners.length) * 1000) / 1000; });
+      }
+    });
+    const zeroQ = rows.filter(r => r.orders > 0 && r.revisitsCaused === 0);
+    zeroQ.forEach(r => { r.bonusShare.bZero = Math.round((INCENT.bonusKD / zeroQ.length) * 1000) / 1000; });
+    rows.forEach(r => { r.bonusTotal = Math.round(Object.values(r.bonusShare).reduce((a2, b2) => a2 + b2, 0) * 1000) / 1000; });
+  }
+  rows.forEach(r => { r.payout = Math.round(((r.baseUnlocked ? r.basePot : 0) + r.upsellPay + r.bonusTotal) * 1000) / 1000; });
+  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate };
 }
 async function fetchTruckConfig() {
   try {
@@ -4059,21 +4075,23 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
 }
 
 // ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
-function IncentiveReport({ jobs, enabled, onToggle }) {
-  const [mo, setMo] = useState(0); // 0 = this month, -1 = last…
+function IncentiveReport({ jobs, enabled, onToggle, fixedExpenses, onSaveFixed }) {
+  const [mo, setMo] = useState(0);
   const [truckFilter, setTruckFilter] = useState("all");
+  const [feDraft, setFeDraft] = useState(String(fixedExpenses));
   const ref = new Date();
   ref.setMonth(ref.getMonth() + mo);
-  const { target, rows: allRows, trucksActive } = computeIncentives(jobs, ref);
+  const { target, rows: allRows, trucksActive, monthNet, profitGate } = computeIncentives(jobs, ref, fixedExpenses);
   const rows = truckFilter === "all" ? allRows : allRows.filter(r => r.truck === truckFilter);
   const monthName = ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
+  const badgeNames = { bOrders: "🏆 orders", bReviews: "⭐ reviews", bRevenue: "💵 revenue", bProfit: "💰 profit", bZero: "✨ zero-revisit" };
   return (
     <div className="card" style={{ marginTop: 14 }}>
       <div className="card-body" style={{ padding: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
           <div style={{ fontSize: 15, fontWeight: 800 }}>🎯 Technician Incentive — {monthName}</div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <button className="btn btn-ghost btn-sm" onClick={() => setMo(m => m - 1)}>‹</button>
             <button className="btn btn-ghost btn-sm" disabled={mo >= 0} onClick={() => setMo(m => m + 1)}>›</button>
             <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: enabled ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
@@ -4082,8 +4100,18 @@ function IncentiveReport({ jobs, enabled, onToggle }) {
             </label>
           </div>
         </div>
-        <div style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 10px" }}>
-          Target {target}/truck ({trucksActive} truck{trucksActive === 1 ? "" : "s"} active) · 0.250/order · upsell ×4 · revisited orders void · pot unlocks at target · KWD 5 bonuses per person
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", margin: "10px 0", background: profitGate ? "#E8F4EC" : "#FEF2F2", border: `1px solid ${profitGate ? "#BFDFC9" : "#FECACA"}`, borderRadius: 10, padding: "8px 12px" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 800, color: profitGate ? "#1D7A45" : "#B91C1C" }}>
+            {profitGate ? "🟢 PROFIT GATE OPEN" : "🔴 PROFIT GATE CLOSED"} — est. net {kd(monthNet)} (needs ≥ {kd(INCENT.profitGateKD)})
+          </span>
+          <span style={{ fontSize: 11.5, color: "var(--muted)", display: "flex", gap: 5, alignItems: "center" }}>
+            fixed expenses/month:
+            <input value={feDraft} onChange={e => setFeDraft(e.target.value)} onBlur={() => onSaveFixed(Number(feDraft) || 0)} className="filter-input" style={{ width: 84, padding: "3px 7px", fontSize: 11.5 }} />
+            KWD · gates base + bonuses; upsells always pay
+          </span>
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
+          Target {target}/truck ({trucksActive} active) · base 0.250/order (needs gate + target; all orders from #1) · upsell 1.000 always · revisited orders void · 5× KWD 5 bonuses, ties split
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
           {["all", ...allRows.map(r => r.truck)].map(t => (
@@ -4096,56 +4124,57 @@ function IncentiveReport({ jobs, enabled, onToggle }) {
         <div style={{ overflowX: "auto" }}>
           <table className="rep-table" style={{ width: "100%", fontSize: 12.5 }}>
             <thead><tr>
-              <th style={{ textAlign: "left" }}>Truck</th><th>Orders</th><th>vs target</th><th>Upsells ×4</th><th>Voided</th>
-              <th>★ Review</th><th>Revisits caused</th><th>Profit</th><th>Bonuses</th><th style={{ textAlign: "right" }}>Payout / person</th>
+              <th style={{ textAlign: "left" }}>Truck</th><th>Orders</th><th>vs target</th><th>Base (gated)</th><th>Upsells</th><th>Voided</th>
+              <th>★</th><th>Revisits</th><th>Revenue</th><th>Profit</th><th>Bonuses</th><th style={{ textAlign: "right" }}>Payout / person</th>
             </tr></thead>
             <tbody>
-              {rows.map(r => {
-                const badges = [r.bonusOrders && "🥇 orders", r.bonusReview && "⭐ review", r.bonusProfit && "💰 profit", r.bonusZeroRevisit && "✨ zero-revisit"].filter(Boolean);
-                const bonusKD = badges.length * INCENT.bonusKD;
-                const payout = (r.unlocked ? r.pot : 0) + bonusKD;
-                return (
-                  <tr key={r.truck}>
-                    <td style={{ fontWeight: 800 }}>{r.truck}</td>
-                    <td style={{ textAlign: "center" }}>{r.orders}</td>
-                    <td style={{ textAlign: "center", fontWeight: 700, color: r.unlocked ? "var(--success)" : "#B45309" }}>{Math.round((r.orders / target) * 100)}%{r.unlocked ? " ✓" : ""}</td>
-                    <td style={{ textAlign: "center" }}>{r.ups}</td>
-                    <td style={{ textAlign: "center", color: r.voided ? "var(--danger)" : "var(--muted)" }}>{r.voided}</td>
-                    <td style={{ textAlign: "center" }}>{r.avgReview ? `${r.avgReview} (${r.nReviews})` : "—"}</td>
-                    <td style={{ textAlign: "center", color: r.revisitsCaused ? "var(--danger)" : "var(--success)" }}>{r.revisitsCaused}</td>
-                    <td style={{ textAlign: "center" }}>{kd(r.profit)}</td>
-                    <td style={{ fontSize: 11.5 }}>{badges.join(" · ") || "—"}</td>
-                    <td style={{ textAlign: "right", fontWeight: 800 }}>{kd(payout)}<div style={{ fontSize: 10.5, fontWeight: 500, color: "var(--muted)" }}>{r.unlocked ? "" : `pot ${kd(r.pot)} locked · `}bonuses {bonusKD}</div></td>
-                  </tr>
-                );
-              })}
+              {rows.map(r => (
+                <tr key={r.truck}>
+                  <td style={{ fontWeight: 800 }}>{r.truck}</td>
+                  <td style={{ textAlign: "center" }}>{r.orders}</td>
+                  <td style={{ textAlign: "center", fontWeight: 700, color: r.targetHit ? "var(--success)" : "#B45309" }}>{Math.round((r.orders / target) * 100)}%{r.targetHit ? " ✓" : ""}</td>
+                  <td style={{ textAlign: "center", color: r.baseUnlocked ? "var(--success)" : "var(--muted)" }}>
+                    {r.baseUnlocked ? `KWD ${r.basePot.toFixed(3)}` : `🔒 ${r.basePot.toFixed(3)}`}
+                    {!r.baseUnlocked && <div style={{ fontSize: 10 }}>{!profitGate ? "profit gate" : "below target"}</div>}
+                  </td>
+                  <td style={{ textAlign: "center", fontWeight: 700, color: "var(--success)" }}>{r.ups} · KWD {r.upsellPay.toFixed(3)}</td>
+                  <td style={{ textAlign: "center", color: r.voided ? "var(--danger)" : "var(--muted)" }}>{r.voided}</td>
+                  <td style={{ textAlign: "center" }}>{r.avgReview ? `${r.avgReview} (${r.nReviews})` : "—"}</td>
+                  <td style={{ textAlign: "center", color: r.revisitsCaused ? "var(--danger)" : "var(--success)" }}>{r.revisitsCaused}</td>
+                  <td style={{ textAlign: "center" }}>{kd(r.revenue)}</td>
+                  <td style={{ textAlign: "center" }}>{kd(r.profit)}</td>
+                  <td style={{ fontSize: 11 }}>{Object.entries(r.bonusShare).map(([k, v]) => `${badgeNames[k]} ${v.toFixed(2)}`).join(" · ") || "—"}</td>
+                  <td style={{ textAlign: "right", fontWeight: 800 }}>{kd(r.payout)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Payout = unlocked pot + KWD 5 per bonus (per person). Bonus winners are provisional until month end.</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Payout/person = unlocked base + upsells (always) + bonus shares. Winners provisional until month end; ties split.</div>
       </div>
     </div>
   );
 }
 
 // ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
-function TechTargetView({ jobs, truck, owner }) {
+function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
   const trucksAll = activeTrucks();
   const [viewTruck, setViewTruck] = useState(truck || trucksAll[0] || "");
   const now = new Date();
-  const { target, rows } = computeIncentives(jobs, now);
+  const { target, rows, monthNet, profitGate } = computeIncentives(jobs, now, fixedExpenses);
   const activeTruckKey = owner ? viewTruck : truck;
-  const me = rows.find(r => r.truck === activeTruckKey) || { orders: 0, base: 0, ups: 0, voided: 0, pot: 0, unlocked: false, avgReview: null, nReviews: 0, revisitsCaused: 0, profit: 0 };
+  const me = rows.find(r => r.truck === activeTruckKey) || { orders: 0, baseN: 0, ups: 0, voided: 0, basePot: 0, upsellPay: 0, payout: 0, targetHit: false, baseUnlocked: false, bonusShare: {}, avgReview: null, nReviews: 0, revisitsCaused: 0, profit: 0, revenue: 0 };
   const day = now.getDate();
   const daysIn = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const pace = day > 0 ? Math.round((me.orders / day) * daysIn) : 0;
   const pct = Math.min(100, Math.round((me.orders / target) * 100));
   const monthName = now.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   const bonuses = [
-    { label: "Most orders", won: me.bonusOrders, hint: `${me.orders} orders` },
-    { label: "Best reviews", won: me.bonusReview, hint: me.avgReview ? `★ ${me.avgReview} (${me.nReviews})` : "no reviews yet" },
-    { label: "Highest profit", won: me.bonusProfit, hint: `KWD ${(me.profit || 0).toFixed(0)}` },
-    { label: "Zero revisits", won: me.bonusZeroRevisit, hint: me.revisitsCaused === 0 ? "clean so far ✨" : `${me.revisitsCaused} caused` },
+    { key: "bOrders", label: "🏆 Most orders", hint: `${me.orders} orders` },
+    { key: "bReviews", label: "⭐ Best reviews", hint: me.avgReview ? `★ ${me.avgReview} (${me.nReviews})` : "no reviews yet" },
+    { key: "bRevenue", label: "💵 Highest revenue", hint: `KWD ${(me.revenue || 0).toFixed(0)}` },
+    { key: "bProfit", label: "💰 Highest profit", hint: `KWD ${(me.profit || 0).toFixed(0)}` },
+    { key: "bZero", label: "✨ Zero revisits", hint: me.revisitsCaused === 0 ? "clean so far" : `${me.revisitsCaused} caused` },
   ];
   return (
     <div style={{ maxWidth: 560, margin: "0 auto" }}>
@@ -4163,39 +4192,56 @@ function TechTargetView({ jobs, truck, owner }) {
       <div className="card" style={{ padding: 16, marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
           <div style={{ fontSize: 17, fontWeight: 800 }}>🎯 {activeTruckKey} — {monthName}</div>
-          <div style={{ fontSize: 12, color: "var(--muted)" }}>target adjusts with active trucks</div>
+          <div style={{ fontSize: 11.5, fontWeight: 800, color: profitGate ? "var(--success)" : "#B45309" }}>
+            {profitGate ? "🟢 company profit gate OPEN" : `🔴 profit gate: KWD ${Math.max(0, (INCENT.profitGateKD - monthNet)).toFixed(0)} to open`}
+          </div>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 12 }}>
           <div style={{ fontSize: 34, fontWeight: 800 }}>{me.orders}<span style={{ fontSize: 15, color: "var(--muted)", fontWeight: 600 }}> / {target} orders</span></div>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: pace >= target ? "var(--success)" : "#B45309" }}>pace: ~{pace} by month end</div>
         </div>
         <div style={{ background: "var(--border)", borderRadius: 99, height: 14, marginTop: 8, overflow: "hidden" }}>
-          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 99, background: me.unlocked ? "var(--success)" : "linear-gradient(90deg,#F59E0B,#FBBF24)", transition: "width .4s" }} />
+          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 99, background: me.baseUnlocked ? "var(--success)" : "linear-gradient(90deg,#F59E0B,#FBBF24)", transition: "width .4s" }} />
         </div>
-        <div style={{ marginTop: 14, background: me.unlocked ? "#E8F4EC" : "#FFFBEB", border: `1.5px solid ${me.unlocked ? "#BFDFC9" : "#FCD34D"}`, borderRadius: 12, padding: "12px 14px" }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: me.unlocked ? "#1D7A45" : "#92400E" }}>
-            {me.unlocked ? "✅ INCENTIVE UNLOCKED — every order keeps paying" : `🔒 ACCRUED — unlocks at ${target} orders (${target - me.orders} to go)`}
+        <div style={{ marginTop: 12, background: "#E8F4EC", border: "1.5px solid #BFDFC9", borderRadius: 12, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+          <div>
+            <div style={{ fontSize: 11.5, fontWeight: 800, color: "#1D7A45" }}>⚡ UPSELLS — ALWAYS PAID, every month, no conditions</div>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>{me.ups} upsell{me.ups === 1 ? "" : "s"} × KWD 1.000</div>
           </div>
-          <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4, color: me.unlocked ? "#1D7A45" : "#92400E" }}>
-            KWD {(me.pot || 0).toFixed(3)} <span style={{ fontSize: 13, fontWeight: 600 }}>per technician</span>
+          <div style={{ fontSize: 24, fontWeight: 800, color: "#1D7A45" }}>KWD {(me.upsellPay || 0).toFixed(3)}</div>
+        </div>
+        <div style={{ marginTop: 8, background: me.baseUnlocked ? "#E8F4EC" : "#FFFBEB", border: `1.5px solid ${me.baseUnlocked ? "#BFDFC9" : "#FCD34D"}`, borderRadius: 12, padding: "10px 14px" }}>
+          <div style={{ fontSize: 11.5, fontWeight: 800, color: me.baseUnlocked ? "#1D7A45" : "#92400E" }}>
+            {me.baseUnlocked
+              ? "✅ BASE INCENTIVE UNLOCKED — all orders paying from #1"
+              : `🔒 BASE ACCRUING — unlocks with: ${me.targetHit ? "✓" : "✗"} target ${target} (${Math.max(0, target - me.orders)} to go) + ${profitGate ? "✓" : "✗"} company profit ≥ 500`}
           </div>
-          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
-            {me.base}× orders @ 0.250 · {me.ups}× upsell orders @ 1.000{me.voided ? ` · ${me.voided} voided by revisit` : ""}
+          <div style={{ fontSize: 24, fontWeight: 800, marginTop: 3, color: me.baseUnlocked ? "#1D7A45" : "#92400E" }}>
+            KWD {(me.basePot || 0).toFixed(3)} <span style={{ fontSize: 12, fontWeight: 600 }}>per technician</span>
           </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
+            {me.baseN}× orders @ 0.250{me.voided ? ` · ${me.voided} voided by revisit` : ""}
+          </div>
+        </div>
+        <div style={{ marginTop: 10, textAlign: "right", fontSize: 13, fontWeight: 800 }}>
+          If the month ended today: <span style={{ color: "var(--success)" }}>KWD {(me.payout || 0).toFixed(3)}</span> / person
         </div>
       </div>
-
       <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>🏆 KWD 5 bonuses — live standings</div>
-        {bonuses.map(b => (
-          <div key={b.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 13, fontWeight: 700 }}>{b.won ? "🥇" : "▫️"} {b.label}</div>
-            <div style={{ fontSize: 12.5, color: b.won ? "var(--success)" : "var(--muted)", fontWeight: b.won ? 800 : 500 }}>{b.won ? "LEADING — " : ""}{b.hint}</div>
-          </div>
-        ))}
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Winners are decided at month end. Upsells pay ×4 — spot them, report them, win.</div>
+        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>🏆 KWD 5 bonuses — live standings</div>
+        <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 6 }}>paid in profitable months · ties split · zero-revisit shared by all clean trucks</div>
+        {bonuses.map(b2 => {
+          const share = me.bonusShare ? me.bonusShare[b2.key] : null;
+          return (
+            <div key={b2.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderTop: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{share ? "🥇" : "▫️"} {b2.label}</div>
+              <div style={{ fontSize: 12.5, color: share ? "var(--success)" : "var(--muted)", fontWeight: share ? 800 : 500 }}>
+                {share ? `WINNING KWD ${share.toFixed(2)} — ` : ""}{b2.hint}
+              </div>
+            </div>
+          );
+        })}
       </div>
-
       <div className="card" style={{ padding: 16 }}>
         <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Trucks this month</div>
         {rows.map(r => (
@@ -4204,6 +4250,7 @@ function TechTargetView({ jobs, truck, owner }) {
             <span>{r.orders} orders · {r.ups} upsells{r.avgReview ? ` · ★${r.avgReview}` : ""}</span>
           </div>
         ))}
+        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>Every order = 0.250 each once unlocked. Every upsell = 1.000 cash, guaranteed. One revisit voids that order — quality protects it all.</div>
       </div>
     </div>
   );
@@ -8165,7 +8212,9 @@ export default function App() {
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
             <>
               <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
-              <IncentiveReport jobs={jobs} enabled={incentiveOn} onToggle={setIncentiveEnabled} />
+              <IncentiveReport jobs={jobs} enabled={incentiveOn} onToggle={setIncentiveEnabled}
+                fixedExpenses={Number(appSettings.fixed_expenses) || 12500}
+                onSaveFixed={(n) => { setAppSettings(p => ({ ...p, fixed_expenses: n })); saveAppSetting("fixed_expenses", n); }} />
             </>
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "costs" && (
@@ -8184,7 +8233,7 @@ export default function App() {
             <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} onCreateUpsell={handleCreateUpsell} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "target" && (
-            <TechTargetView jobs={jobs} truck={sessionTruck} owner={isOwner} />
+            <TechTargetView jobs={jobs} truck={sessionTruck} owner={isOwner} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
           )}
           {tab === "myhistory" && !selectedJob && (
             <TechHistoryView jobs={jobs} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} />
