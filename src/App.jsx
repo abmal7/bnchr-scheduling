@@ -4367,7 +4367,7 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
   );
 }
 
-function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onRevisit, jobs, upsellLeads, onOpenJob, onCreateUpsell, onConvertLead, onNotYetLead, onFollowUpLead, onReopenLead, role }) {
+function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onRevisit, jobs, upsellLeads, onOpenJob, onCreateUpsell, onConvertLead, onNotYetLead, onFollowUpLead, onReopenLead, onAction, role }) {
   const [j, setJ] = useState(job);
   useEffect(() => { setJ(job); }, [job]); // follow live updates (edits, realtime sync)
   const [showCancel, setShowCancel] = useState(false);
@@ -4521,7 +4521,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
             <span style={{ fontSize: 12.5, fontWeight: 700 }}>⭐ Customer review</span>
             <span style={{ display: "flex", alignItems: "center" }}>
               {[1, 2, 3, 4, 5].map(n => (
-                <span key={n} onClick={() => onUpdate(job.id, { review_rating: Number(j.review_rating) === n ? null : n })}
+                <span key={n} onClick={() => onAction && onAction(job, { review_rating: Number(j.review_rating) === n ? null : n })}
                   style={{ cursor: "pointer", fontSize: 23, lineHeight: 1, color: (Number(j.review_rating) || 0) >= n ? "#F59E0B" : "var(--border)", padding: "0 2px" }}>★</span>
               ))}
               {Number(j.review_rating) > 0
