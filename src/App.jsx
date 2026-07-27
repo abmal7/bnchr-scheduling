@@ -1550,7 +1550,7 @@ async function createJob(job) {
 }
 // Real columns on the jobs table — every PATCH is filtered to these, so a
 // stray UI-only key can never reject the whole save.
-const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date","no_products_reason","paid_date","review_rating"]);
+const JOB_COLUMNS = new Set(["customer_id","customer_name","customer_mobile","area","governorate","block","street","lane","house","map_link","car_brand","car_model","car_year","car_plate","car_id","services","items","service_type","service_details","qty","labor_charge","total","sales_match_confirmed","assigned_truck","assigned_technician","start_hour","duration","overtime","is_overtime","scheduled_date","scheduled_at","lead_from","sales_agent","xero_ref","invoice_no","payment_through","payment_status","payment_link","notes","status","parts_status","truck_status","parts_released","techs_released","parts_received","tech_arrival_match","checks","ver_times","item_checks","tech_checks","tech_checks_order","tech_checks_car","collected_items","tech_mismatch","partial_completion","unfitted_items","cancel_reason","cancelled_at","incomplete_reason","incomplete_at","items_edited_at","updated_at","started_at","completed_at","service_mileage","service_mileage_unit","invoice_shared","check_notes","car_mileages","parent_job_id","link_type","upsell_truck","upsell_technician","upsell_response","sale_date","no_products_reason","paid_date","review_rating","payment_plan"]);
 // Merge a refetched jobs list over local state: a fetched row wins only if
 // strictly NEWER (updated_at). Ties = stale realtime echoes of our own PATCH
 // → keep the local optimistic row (kills the check→uncheck→check flicker).
@@ -3628,7 +3628,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
             {/* 4 — Admin */}
             <div className="form-section-title">4 · Admin</div>
             <div className="form-field"><label>Lead From</label><select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select></div>
-            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Taly","Sparts","Warranty","Cash","KNET"].map(s => <option key={s}>{s}</option>)}</select></div>
+            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Taly","Sparts","Warranty","Cash","KNET"].map(s => <option key={s} value={s}>{s === "Tabby" ? "Tabby (7% fee)" : s === "Taly" ? "Taly (5.5% fee)" : s}</option>)}</select></div>
             <div className="form-field"><label>Sales Agent</label>
               <select value={f.sales_agent} onChange={set("sales_agent")}>
                 <option value="">Select agent…</option>
@@ -3775,6 +3775,44 @@ const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 
 // ─── Job Detail (with order actions) ─────────────────────────────────────────
 // ─── Threads: revisits & upsells linked to an original order ──────────────────
+// ── payment plans: Kuwait salary-day scheduling ──
+const SALARY_DAYS = [["10th", 10], ["20th", 20], ["25th", 25], ["End of month", "eom"]];
+const nextSalaryDate = (day) => {
+  const now = new Date();
+  const mk = (y, m) => day === "eom" ? new Date(y, m + 1, 0) : new Date(y, m, day);
+  let d = mk(now.getFullYear(), now.getMonth());
+  if (d <= now) d = mk(now.getFullYear(), now.getMonth() + 1);
+  return d.toISOString().split("T")[0];
+};
+const addMonthsSalary = (iso, n, day) => {
+  const d = new Date(iso);
+  const y = d.getFullYear(), m = d.getMonth() + n;
+  const r = day === "eom" ? new Date(y, m + 1, 0) : new Date(y, m, day);
+  return r.toISOString().split("T")[0];
+};
+const buildInstallments = (total, months, dayKey) => {
+  const first = nextSalaryDate(dayKey);
+  const per = Math.floor((total / months) * 1000) / 1000;
+  const rows = [];
+  for (let i = 0; i < months; i++) {
+    rows.push({ amount: i === months - 1 ? Math.round((total - per * (months - 1)) * 1000) / 1000 : per, due: i === 0 ? first : addMonthsSalary(first, i, dayKey) });
+  }
+  return rows;
+};
+const planOf = (j) => (j && j.payment_plan && Array.isArray(j.payment_plan.installments)) ? j.payment_plan : null;
+const planDueRows = (j) => { const p = planOf(j); return p ? p.installments.filter(i => !i.paid_at) : []; };
+const planOutstanding = (j) => planDueRows(j).reduce((s2, i) => s2 + (Number(i.amount) || 0), 0);
+const planOverdueRows = (j) => planDueRows(j).filter(i => i.due && i.due < todayISODate());
+const collectReminderTpls = (j, inst) => {
+  const name = String(j.customer_name || "").trim().split(" ")[0] || "";
+  const amt = (Number(inst.amount) || 0).toFixed(3);
+  const svc = j.service_type || "your order";
+  return {
+    en: `Hello ${name} 🌟 BNCHR+ here. A friendly reminder: as agreed, KWD ${amt} for ${svc} is due on ${inst.due}. You can pay by KNET link or cash — thank you! 🙏`,
+    ar: `مرحبا ${name} 🌟 معاك بنشر بلس. تذكير ودي: حسب الاتفاق، دفعة ${amt} د.ك لطلبك مستحقة بتاريخ ${inst.due}. تقدر تدفع عبر رابط كي-نت أو نقداً — شكراً لك 🙏`,
+  };
+};
+
 // ── upsell lifecycle helpers ──
 // Order finished with the customer but never completed in the system?
 // Past its last scheduled hour (+1h grace), still not done/cancelled.
@@ -4005,6 +4043,93 @@ function TechUpsellForm({ job, onCreate, autoOpen, onDone, onCancel }) {
 }
 
 // ─── Upsells page: the technician-generated funnel, with its own simple report ──
+// ═══ 💰 Collections — every promised payment, overdue first ═══════════════════
+function CollectionsView({ jobs, onSelectJob, onAction }) {
+  const [lang, setLang] = useState("en");
+  const [methodBy, setMethodBy] = useState({});
+  const [copiedId, setCopiedId] = useState(null);
+  const rows = [];
+  jobs.forEach(j => {
+    const p = planOf(j);
+    if (!p || j.status === "cancelled") return;
+    p.installments.forEach((inst, idx) => { if (!inst.paid_at) rows.push({ j, inst, idx }); });
+  });
+  rows.sort((a, b) => String(a.inst.due).localeCompare(String(b.inst.due)));
+  const overdue = rows.filter(r => r.inst.due < todayISODate());
+  const week = (() => { const d = new Date(); d.setDate(d.getDate() + 7); return d.toISOString().split("T")[0]; })();
+  const dueWeek = rows.filter(r => r.inst.due >= todayISODate() && r.inst.due <= week);
+  const outKD = rows.reduce((s2, r) => s2 + (Number(r.inst.amount) || 0), 0);
+  const collectedKD = jobs.reduce((s2, j) => {
+    const p = planOf(j); if (!p) return s2;
+    const mo = new Date().toISOString().slice(0, 7);
+    return s2 + (Number(p.paid_now) || 0) * 0 + p.installments.filter(i => i.paid_at && String(i.paid_at).slice(0, 7) === mo).reduce((x, i) => x + (Number(i.amount) || 0), 0);
+  }, 0);
+  const recordPay = (r) => {
+    const method = methodBy[r.j.id + ":" + r.idx] || "KNET";
+    const inst = planOf(r.j).installments.map((it, x) => x === r.idx ? { ...it, paid_at: new Date().toISOString(), method } : it);
+    const allPaid = inst.every(it => it.paid_at);
+    onAction(r.j, {
+      payment_plan: { ...planOf(r.j), installments: inst },
+      payment_status: allPaid ? "paid" : "partial",
+      ...(allPaid ? { paid_date: today() } : {}),
+    });
+  };
+  const chip = (label, val, sub, color) => (
+    <div style={{ flex: "1 1 130px", minWidth: 130, border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--card)" }}>
+      <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: color || "var(--text)", marginTop: 2 }}>{val}</div>
+      {sub && <div style={{ fontSize: 10.5, color: "var(--muted)" }}>{sub}</div>}
+    </div>
+  );
+  return (
+    <>
+      <div className="page-title">Collections</div>
+      <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>Every promised payment in one list — a promise without follow-up is a donation.</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {chip("Outstanding", `KWD ${outKD.toFixed(3)}`, `${rows.length} due payment${rows.length === 1 ? "" : "s"}`)}
+        {chip("⚠ Overdue", overdue.length, overdue.length ? `KWD ${overdue.reduce((s2, r) => s2 + Number(r.inst.amount || 0), 0).toFixed(3)} — call first` : "none 🎉", overdue.length ? "#DC2626" : "#15803D")}
+        {chip("Due in 7 days", dueWeek.length, "get ahead of them")}
+        {chip("Collected this month", `KWD ${collectedKD.toFixed(3)}`, "via plans", "#15803D")}
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)" }}>Reminder language:</span>
+        {["en", "ar"].map(lg => <button key={lg} className="btn btn-ghost btn-sm" style={{ fontWeight: lang === lg ? 800 : 500, background: lang === lg ? "var(--card)" : "none", border: lang === lg ? "1px solid var(--border)" : "none" }} onClick={() => setLang(lg)}>{lg === "en" ? "English" : "عربي"}</button>)}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {rows.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13, padding: 20, textAlign: "center" }}>No pending payment plans. 🎉</div>}
+        {rows.map(r => {
+          const od = r.inst.due < todayISODate();
+          const key = r.j.id + ":" + r.idx;
+          return (
+            <div key={key} style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${od ? "#DC2626" : "#B45309"}`, borderRadius: 10, padding: "10px 12px", background: "var(--card)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                <div style={{ fontSize: 13 }}>
+                  <strong>{r.j.customer_name || "Customer"}</strong>
+                  <span style={{ color: "var(--muted)" }}> · {r.j.customer_mobile}</span>
+                  <button type="button" className="btn btn-ghost btn-sm" style={{ marginLeft: 4 }} onClick={() => onSelectJob(r.j)}>{r.j.invoice_no || fmtDate(r.j.scheduled_at)} →</button>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: od ? "#DC2626" : "var(--text)" }}>
+                  KWD {Number(r.inst.amount).toFixed(3)} · {od ? `⚠ overdue (${r.inst.due})` : `due ${r.inst.due}`}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+                <select className="filter-select" value={methodBy[key] || "KNET"} onChange={e => setMethodBy(p => ({ ...p, [key]: e.target.value }))} style={{ fontSize: 11.5, padding: "4px 6px" }}>
+                  {["KNET", "Cash", "Link", "Tabby", "Taly"].map(x => <option key={x}>{x}</option>)}
+                </select>
+                <button type="button" className="btn btn-primary btn-sm" onClick={() => recordPay(r)}>✓ Record payment</button>
+                <button type="button" className="btn btn-sm" style={{ background: "#DCFCE7", border: "1px solid #86EFAC", fontWeight: 700 }}
+                  onClick={async () => { const ok = await schedCopy(collectReminderTpls(r.j, r.inst)[lang]); setCopiedId(ok ? key : null); }}>
+                  {copiedId === key ? "✓ copied" : "📱 Copy reminder"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 function UpsellsView({ upsellLeads, jobs, role, onConvert, onNotYet, onFollowUp, onReopen, onSelectJob }) {
   const [filter, setFilter] = useState("due"); // due | open | not_yet | converted | all
   const [truckF, setTruckF] = useState("all");
@@ -4368,6 +4493,7 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
 }
 
 function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onRevisit, jobs, upsellLeads, onOpenJob, onCreateUpsell, onConvertLead, onNotYetLead, onFollowUpLead, onReopenLead, onAction, role }) {
+  const [planUI, setPlanUI] = useState({ open: false, type: "later", amtNow: "", months: 2, day: 10, custom: "" });
   const [j, setJ] = useState(job);
   useEffect(() => { setJ(job); }, [job]); // follow live updates (edits, realtime sync)
   const [showCancel, setShowCancel] = useState(false);
@@ -4513,6 +4639,119 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
           </div>
         </div>
       )}
+
+      {/* 🗓 flexible payment plan — pay later / partial / in-house installments */}
+      {!["technician", "distributor"].includes(role) && (() => {
+        const plan = planOf(j);
+        const [showB, amtNow, months, dayKey] = [planUI.open, planUI.amtNow, planUI.months, planUI.day];
+        const total = Number(j.total) || 0;
+        const isPaidJob = j.payment_status === "paid";
+        const recordPay = (idx, method) => {
+          const p = planOf(j);
+          const inst = p.installments.map((it, x) => x === idx ? { ...it, paid_at: new Date().toISOString(), method } : it);
+          const allPaid = inst.every(it => it.paid_at);
+          patchJob({
+            payment_plan: { ...p, installments: inst },
+            payment_status: allPaid ? "paid" : "partial",
+            ...(allPaid ? { paid_date: today() } : {}),
+          });
+        };
+        const savePlan = (type) => {
+          let installments = [];
+          if (type === "later") installments = [{ amount: total, due: dayKey === "custom" ? planUI.custom : nextSalaryDate(dayKey) }];
+          if (type === "partial") {
+            const nowAmt = Math.min(total, Number(amtNow) || 0);
+            if (!(nowAmt > 0)) return;
+            installments = [{ amount: Math.round((total - nowAmt) * 1000) / 1000, due: dayKey === "custom" ? planUI.custom : nextSalaryDate(dayKey) }];
+            patchJob({ payment_plan: { type, paid_now: nowAmt, created_at: new Date().toISOString(), installments }, payment_status: "partial" });
+            setPlanUI({ open: false, type: "later", amtNow: "", months: 2, day: 10, custom: "" });
+            return;
+          }
+          if (type === "installments") installments = buildInstallments(total, months, dayKey === "custom" ? 10 : dayKey);
+          patchJob({ payment_plan: { type, created_at: new Date().toISOString(), installments }, payment_status: j.payment_status === "paid" ? "paid" : "pending" });
+          setPlanUI({ open: false, type: "later", amtNow: "", months: 2, day: 10, custom: "" });
+        };
+        return (
+          <div className="card">
+            <div className="card-body" style={{ padding: "12px 16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700 }}>🗓 Payment plan</span>
+                {!plan && !isPaidJob && (
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPlanUI(p => ({ ...p, open: !p.open }))}>{showB ? "close" : "+ set a plan"}</button>
+                )}
+                {plan && !isPaidJob && (
+                  <button type="button" className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => patchJob({ payment_plan: null, payment_status: "pending" })}>remove plan</button>
+                )}
+              </div>
+              {plan && (
+                <div style={{ marginTop: 8 }}>
+                  {plan.paid_now > 0 && <div style={{ fontSize: 12, color: "#15803D", fontWeight: 700 }}>✓ Paid on order day: KWD {Number(plan.paid_now).toFixed(3)}</div>}
+                  {plan.installments.map((it, i) => {
+                    const overdue = !it.paid_at && it.due < todayISODate();
+                    return (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid var(--border)", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 12.5, fontWeight: 700, color: it.paid_at ? "#15803D" : overdue ? "#DC2626" : "var(--text)" }}>
+                          {it.paid_at ? "✓" : overdue ? "⚠" : "○"} KWD {Number(it.amount).toFixed(3)} · {it.due}
+                          {it.paid_at ? <span style={{ fontWeight: 500, color: "var(--muted)" }}> · paid {String(it.paid_at).split("T")[0]}{it.method ? ` (${it.method})` : ""}</span> : overdue ? " · overdue" : ""}
+                        </span>
+                        {!it.paid_at && (
+                          <span style={{ display: "flex", gap: 5, alignItems: "center" }}>
+                            <select className="filter-select" value={planUI["m" + i] || "KNET"} onChange={e => setPlanUI(p => ({ ...p, ["m" + i]: e.target.value }))} style={{ fontSize: 11.5, padding: "3px 6px" }}>
+                              {["KNET", "Cash", "Link", "Tabby", "Taly"].map(x => <option key={x}>{x}</option>)}
+                            </select>
+                            <button type="button" className="btn btn-primary btn-sm" onClick={() => recordPay(i, planUI["m" + i] || "KNET")}>Record payment</button>
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {planOutstanding(j) > 0 && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>Outstanding: <strong>KWD {planOutstanding(j).toFixed(3)}</strong> · follow-ups live in the 💰 Collections tab</div>}
+                </div>
+              )}
+              {showB && !plan && (
+                <div style={{ marginTop: 10, background: "var(--bg)", border: "1px dashed var(--border)", borderRadius: 10, padding: 10 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                    {[["later", "Pay later"], ["partial", "Partial now"], ["installments", "Installments"]].map(([k, lb]) => (
+                      <button key={k} type="button" className="btn btn-sm" onClick={() => setPlanUI(p => ({ ...p, type: k }))}
+                        style={{ fontWeight: 700, background: planUI.type === k ? "var(--ink)" : "var(--card)", color: planUI.type === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
+                    ))}
+                  </div>
+                  {planUI.type === "partial" && (
+                    <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+                      Paid now (KWD): <input className="filter-input" type="number" step="0.001" value={amtNow} onChange={e => setPlanUI(p => ({ ...p, amtNow: e.target.value }))} style={{ width: 90 }} />
+                      <span style={{ color: "var(--muted)" }}>→ remaining KWD {Math.max(0, total - (Number(amtNow) || 0)).toFixed(3)}</span>
+                    </div>
+                  )}
+                  {planUI.type === "installments" && (
+                    <div style={{ marginBottom: 8, display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+                      Months: {[2, 3, 4].map(mn => (
+                        <button key={mn} type="button" className="btn btn-ghost btn-sm" style={{ fontWeight: months === mn ? 800 : 500, background: months === mn ? "var(--card)" : "none", border: months === mn ? "1px solid var(--border)" : "none" }} onClick={() => setPlanUI(p => ({ ...p, months: mn }))}>{mn}</button>
+                      ))}
+                      <span style={{ color: "var(--muted)" }}>KWD {(total / months).toFixed(3)} / month</span>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 8, fontSize: 12 }}>
+                    {planUI.type === "installments" ? "First due on salary day:" : "Due on salary day:"}
+                    {SALARY_DAYS.map(([lb, d]) => (
+                      <button key={lb} type="button" className="btn btn-ghost btn-sm" style={{ fontWeight: dayKey === d ? 800 : 500, background: dayKey === d ? "var(--card)" : "none", border: dayKey === d ? "1px solid var(--border)" : "none" }} onClick={() => setPlanUI(p => ({ ...p, day: d }))}>{lb}</button>
+                    ))}
+                    {planUI.type !== "installments" && (
+                      <input className="filter-input" type="date" value={planUI.custom} onChange={e => setPlanUI(p => ({ ...p, day: "custom", custom: e.target.value }))} style={{ fontSize: 11.5, padding: "3px 6px" }} />
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
+                    {planUI.type === "installments"
+                      ? buildInstallments(total, months, dayKey === "custom" ? 10 : dayKey).map(x => `KWD ${x.amount.toFixed(3)} on ${x.due}`).join(" · ")
+                      : `KWD ${(planUI.type === "partial" ? Math.max(0, total - (Number(amtNow) || 0)) : total).toFixed(3)} due ${dayKey === "custom" ? (planUI.custom || "…") : nextSalaryDate(dayKey)}`}
+                  </div>
+                  <button type="button" className="btn btn-primary btn-sm" onClick={() => savePlan(planUI.type)}>Save plan</button>
+                </div>
+              )}
+              {!plan && !showB && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>For loyal customers: pay-later, partial, or 2–4 month installments on Kuwait salary days — 0% fee vs Taly 5.5% / Tabby 7%.</div>}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ⭐ customer review — sales asks after completion; feeds the review bonus */}
       {jobSuccessful(j) && !["technician", "distributor"].includes(role) && (
@@ -8217,6 +8456,7 @@ export default function App() {
   const allTabs = [
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
+    { key: "collections", label: "Collections",  icon: "💰", roles: ["sales"] },
     { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales"] },
     { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
     { key: "costs",      label: "Costs",           icon: "💰", roles: ["purchaser"] },
@@ -8353,6 +8593,9 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "collections" && (
+            <CollectionsView jobs={jobs} onSelectJob={setSelectedJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "upsells" && (
             <UpsellsView upsellLeads={upsellLeads} jobs={jobs} role={role} onConvert={handleConvertLead} onNotYet={handleNotYetLead} onFollowUp={handleFollowUpLead} onReopen={handleReopenLead} onSelectJob={setSelectedJob} />
