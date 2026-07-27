@@ -400,7 +400,7 @@ function TruckDayView({ jobs, truck, dateStr, duration, selectedHour, onPick, ex
           const tc = truckColor(truck);
           let bg = "#fff", color = "var(--text)", cursor = "pointer", border = "1px solid var(--border)", borderLeft = null, shadow = "none";
           let right = "Free", rightColor = "var(--muted)";
-          if (taken) { bg = tc.bg; color = tc.text; cursor = onJobClick ? "pointer" : "not-allowed"; border = "1px solid transparent"; borderLeft = `3px solid ${tc.solid}`; right = occ ? slotLabel(occ, " · ") : "Booked"; rightColor = tc.text; }
+          if (taken) { bg = tc.bg; color = tc.text; cursor = onJobClick ? "pointer" : "not-allowed"; border = "1px solid transparent"; borderLeft = `3px solid ${tc.solid}`; right = occ ? `${isUnclosedOrder(occ) ? "⏰ " : ""}${slotLabel(occ, " · ")}` : "Booked"; rightColor = tc.text; }
           else if (sel) { bg = "var(--accent)"; color = "#fff"; border = "1px solid var(--accent)"; right = "Selected ✓"; rightColor = "rgba(255,255,255,.9)"; shadow = "0 2px 8px rgba(0,0,0,.15)"; }
           else if (!fits) { bg = ot ? "#FFFBEB" : "#FAFAF8"; color = "#B49A6A"; cursor = "not-allowed"; border = "1px dashed #E8D9B5"; right = "—"; rightColor = "#C9B687"; }
           else if (ot) { bg = "#FFFBEB"; color = "#92400E"; border = "1px dashed #F59E0B"; right = "Free"; rightColor = "#B45309"; }
@@ -2846,7 +2846,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
                       }}>
                       {start && occ ? (
                         <>
-                          <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isDone ? "✓ " : ""}{isOT ? "⏱ " : ""}{shortService(occ.service_type)}</div>
+                          <div style={{ fontSize: 10, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{isDone ? "✓ " : ""}{isUnclosedOrder(occ) ? "⏰ " : ""}{isOT ? "⏱ " : ""}{shortService(occ.service_type)}</div>
                           <div style={{ fontSize: 9.5, fontWeight: 700, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={occ.customer_name || ""}>{occ.customer_name || ""}</div>
                           <div style={{ fontSize: 9, fontWeight: 600, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.customer_mobile || ""}</div>
                           <div style={{ fontSize: 9, opacity: .8, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{occ.area || ""}</div>
@@ -3776,6 +3776,18 @@ const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 // ─── Job Detail (with order actions) ─────────────────────────────────────────
 // ─── Threads: revisits & upsells linked to an original order ──────────────────
 // ── upsell lifecycle helpers ──
+// Order finished with the customer but never completed in the system?
+// Past its last scheduled hour (+1h grace), still not done/cancelled.
+const isUnclosedOrder = (j) => {
+  if (!j || jobSuccessful(j) || j.status === "cancelled") return false;
+  if (!j.scheduled_at) return false;
+  const hours = jobHours(j);
+  if (!hours.length) return false;
+  const end = new Date(j.scheduled_at);
+  end.setHours(Math.max(...hours) + 1 + 1, 0, 0, 0); // slot end + 1h grace
+  return end < new Date();
+};
+
 const upsellStatusOf = (l) => l.status === "dismissed" ? "not_yet" : (l.status || "open");
 const todayISODate = () => new Date().toISOString().split("T")[0];
 const leadDueNow = (l) => {
@@ -5339,6 +5351,8 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck, onCreateUpsell }
   };
   const [pickTruck, setPickTruck] = useState(activeTrucks()[0]);
   const myTruck = lockedTruck || pickTruck;
+  const unclosed = jobs.filter(j => j.assigned_truck === myTruck && isUnclosedOrder(j))
+    .sort((a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
   const todayJobs = jobs
     .filter(j => j.assigned_truck === myTruck && j.techs_released && j.status !== "cancelled")
     .filter(j => { const d = j.scheduled_at ? new Date(j.scheduled_at).toISOString().split("T")[0] : ""; return d === today(); })
@@ -5392,6 +5406,17 @@ function MyJobsView({ jobs, onUpdate, onSelectJob, lockedTruck, onCreateUpsell }
     <>
       <div className="page-header">
         <div className="page-title">My Jobs — {fmtDate(new Date().toISOString())}</div>
+      {unclosed.length > 0 && (
+        <div style={{ background: "#FEF2F2", border: "1.5px solid #FCA5A5", borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#B91C1C" }}>⚠ {unclosed.length} unclosed order{unclosed.length > 1 ? "s" : ""} — finished with the customer but not in the system</div>
+          <div style={{ fontSize: 11.5, color: "#7F1D1D", margin: "2px 0 6px" }}>Unclosed orders don't count for your target or incentive 🎯 — close them now:</div>
+          {unclosed.map(j => (
+            <button key={j.id} type="button" className="btn btn-sm" style={{ background: "#fff", border: "1px solid #FCA5A5", marginRight: 6, marginBottom: 4, fontWeight: 700 }} onClick={() => onSelectJob(j)}>
+              {fmtDate(j.scheduled_at)} · {j.customer_name || j.invoice_no || "order"} →
+            </button>
+          ))}
+        </div>
+      )}
         {lockedTruck ? (
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, color: truckColor(myTruck).text, background: truckColor(myTruck).bg, border: `2px solid ${truckColor(myTruck).solid}`, borderRadius: 8, padding: "5px 12px", fontSize: 14 }}>
             <span style={{ width: 10, height: 10, borderRadius: 3, background: truckColor(myTruck).solid }} /> {myTruck}
