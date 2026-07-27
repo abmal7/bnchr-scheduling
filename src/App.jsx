@@ -1887,7 +1887,7 @@ const css = `
     .bottom-nav { display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 150;
       overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
       background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -2px 10px rgba(0,0,0,.06);
-      padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); justify-content: space-around; }
+      padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); justify-content: flex-start; }
     .bottom-nav::-webkit-scrollbar { display: none; }
     .bottom-nav-item { flex: 1 0 auto; min-width: 68px; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 2px;
       padding: 6px 4px; border-radius: 10px; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 600; }
@@ -3775,49 +3775,136 @@ const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 
 // ─── Job Detail (with order actions) ─────────────────────────────────────────
 // ─── Threads: revisits & upsells linked to an original order ──────────────────
-function UpsellLeadCard({ lead, role, onConvert, onDismiss, showCustomer }) {
-  const [dismissing, setDismissing] = useState(false);
-  const [reason, setReason] = useState("Customer declined");
+// ── upsell lifecycle helpers ──
+const upsellStatusOf = (l) => l.status === "dismissed" ? "not_yet" : (l.status || "open");
+const todayISODate = () => new Date().toISOString().split("T")[0];
+const leadDueNow = (l) => {
+  const st = upsellStatusOf(l);
+  if (st === "converted") return false;
+  if (!l.next_follow_up) return st === "open"; // never touched → needs a first touch
+  return l.next_follow_up <= todayISODate();
+};
+const leadOverdueDays = (l) => {
+  if (!l.next_follow_up || upsellStatusOf(l) === "converted") return 0;
+  const d = Math.floor((new Date(todayISODate()) - new Date(l.next_follow_up)) / 86400000);
+  return d > 0 ? d : 0;
+};
+async function schedCopy(text) {
+  try { if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; } } catch (e) {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.top = "-9999px";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand("copy"); document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
+// WhatsApp follow-up templates — bilingual, built from the lead itself
+const upsellTemplates = (l) => {
+  const name = String(l.customer_name || "").trim().split(" ")[0] || "";
+  const car = l.car_label || "your car";
+  const carAr = l.car_label || "سيارتك";
+  const svc = l.service_type || "the service we flagged";
+  return [
+    { key: "First touch",
+      en: `Hello ${name} 🌟 This is BNCHR+. During our recent visit to your ${car}, our technician noticed that ${svc} needs attention. We'd be happy to take care of it at your location — shall we send you a quote?`,
+      ar: `مرحبا ${name} 🌟 معاك بنشر بلس. أثناء زيارتنا الأخيرة لسيارتك ${carAr} لاحظ الفني أن ${svc} يحتاج اهتمام. يسعدنا نخدمك في موقعك — نرسل لك عرض السعر؟` },
+    { key: "Reminder",
+      en: `Hello ${name} 👋 BNCHR+ here — just following up on the ${svc} we flagged on your ${car}. We can book a time that suits you this week, home service as always 🚐`,
+      ar: `مرحبا ${name} 👋 بنشر بلس — نذكرك بخصوص ${svc} لسيارتك ${carAr}. نقدر نحدد موعد يناسبك هذا الأسبوع، والخدمة في موقعك 🚐` },
+    { key: "Better offer",
+      en: `Hello ${name}, good news from BNCHR+ 🎁 We have a better option for the ${svc} on your ${car}. Would you like the updated quote?`,
+      ar: `مرحبا ${name}، أخبار طيبة من بنشر بلس 🎁 عندنا خيار أفضل بخصوص ${svc} لسيارتك ${carAr}. تحب نرسل لك العرض المحدث؟` },
+  ];
+};
+
+function UpsellLeadCard({ lead, role, onConvert, onNotYet, onFollowUp, onReopen, showCustomer }) {
+  const [notYetting, setNotYetting] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
+  const [tplLang, setTplLang] = useState("en");
+  const [copiedKey, setCopiedKey] = useState(null);
   const age = leadAgeDays(lead);
-  const open = lead.status === "open";
+  const st = upsellStatusOf(lead);
+  const open = st === "open";
+  const overdue = leadOverdueDays(lead);
+  const due = leadDueNow(lead);
+  const touches = Array.isArray(lead.followups) ? lead.followups.length : 0;
   const photos = Array.isArray(lead.photo_urls) ? lead.photo_urls : [];
+  const canWork = role === "sales" && st !== "converted";
+  const NOT_YET_REASONS = ["Price — offer alternative", "Not now — follow up later", "Did it elsewhere", "Unreachable", "Not needed after check", "Other"];
+  const fu = lead.next_follow_up;
+  const fuLabel = !fu ? "no follow-up set — set one ↓"
+    : overdue > 0 ? `⚠ overdue ${overdue}d (${fu})`
+    : fu === todayISODate() ? "📞 due today"
+    : `next: ${fu}`;
   return (
-    <div style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${open ? leadAgeColor(age) : "var(--border)"}`, borderRadius: 8, padding: "10px 12px", background: "var(--card)" }}>
+    <div style={{ border: "1px solid var(--border)", borderLeft: `3px solid ${st === "converted" ? "var(--border)" : due ? (overdue ? "#DC2626" : "#B45309") : open ? leadAgeColor(age) : "#94A3B8"}`, borderRadius: 8, padding: "10px 12px", background: "var(--card)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ fontWeight: 700, fontSize: 13 }}>
           ⬆ {lead.service_type || "Service"}
           {showCustomer && lead.customer_name ? <span style={{ fontWeight: 500, color: "var(--muted)" }}> · {lead.customer_name}{lead.customer_mobile ? ` · ${lead.customer_mobile}` : ""}</span> : null}
         </div>
-        <div style={{ fontSize: 11.5, fontWeight: 700, color: open ? leadAgeColor(age) : "var(--muted)" }}>
-          {open ? (age === 0 ? "today" : `${age} day${age > 1 ? "s" : ""} old`) : lead.status === "converted" ? "✓ converted" : "✕ dismissed"}
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: st === "converted" ? "#15803D" : st === "not_yet" ? "#6B7280" : leadAgeColor(age) }}>
+          {st === "converted" ? "✓ converted" : st === "not_yet" ? "⏳ not yet" : (age === 0 ? "today" : `${age} day${age > 1 ? "s" : ""} old`)}
         </div>
       </div>
       <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>
         Spotted by <strong style={{ color: "var(--text)" }}>{lead.truck || "—"}</strong>{lead.technician ? ` · ${lead.technician}` : ""} · {fmtDate(lead.created_at)}
         {lead.car_label ? <> · 🚗 <strong style={{ color: "var(--text)" }}>{lead.car_label}</strong></> : null}
+        {touches > 0 && <> · <strong style={{ color: "var(--text)" }}>{touches} touch{touches > 1 ? "es" : ""}</strong></>}
       </div>
       {lead.note && <div style={{ fontSize: 12.5, marginTop: 6 }}>{lead.note}</div>}
+      {st === "not_yet" && lead.not_yet_reason && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>⏳ {lead.not_yet_reason}</div>}
       {photos.length > 0 && (
         <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
           {photos.map((u, i) => <a key={i} href={u} target="_blank" rel="noreferrer"><img src={u} alt="" style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, border: "1px solid var(--border)" }} /></a>)}
         </div>
       )}
-      {lead.status === "dismissed" && lead.dismiss_reason && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>Reason: {lead.dismiss_reason}</div>}
-      {open && role === "sales" && (onConvert || onDismiss) && (
-        !dismissing ? (
-          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-            {onConvert && <button type="button" className="btn btn-primary btn-sm" onClick={() => onConvert(lead)}>✓ Convert to order</button>}
-            {onDismiss && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDismissing(true)}>✕ Dismiss</button>}
-          </div>
-        ) : (
-          <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <select className="filter-select" value={reason} onChange={e => setReason(e.target.value)}>
-              {["Customer declined", "Not needed after check", "Too expensive for customer", "Customer will do elsewhere", "Duplicate", "Other"].map(r => <option key={r}>{r}</option>)}
-            </select>
-            <button type="button" className="btn btn-sm" style={{ background: "var(--danger)", color: "#fff" }} onClick={() => { onDismiss(lead, reason); setDismissing(false); }}>Confirm dismiss</button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDismissing(false)}>Back</button>
-          </div>
-        )
+      {canWork && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: overdue ? "#DC2626" : due ? "#B45309" : "var(--muted)", marginBottom: 6 }}>{fuLabel}</div>
+          {!notYetting ? (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              {onConvert && <button type="button" className="btn btn-primary btn-sm" onClick={() => onConvert(lead)}>✓ Convert to order</button>}
+              <span style={{ position: "relative" }}>
+                <button type="button" className="btn btn-sm" style={{ background: "#DCFCE7", border: "1px solid #86EFAC", fontWeight: 700 }} onClick={() => setTplOpen(o => !o)}>📱 Follow up</button>
+                {tplOpen && (
+                  <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 60, marginTop: 4, width: 300, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.15)", padding: 8 }}>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                      {["en", "ar"].map(lg => <button key={lg} type="button" className="btn btn-ghost btn-sm" style={{ fontWeight: tplLang === lg ? 800 : 500, background: tplLang === lg ? "var(--bg)" : "none" }} onClick={() => setTplLang(lg)}>{lg === "en" ? "English" : "عربي"}</button>)}
+                    </div>
+                    {upsellTemplates(lead).map(t => (
+                      <div key={t.key} style={{ borderTop: "1px solid var(--border)", padding: "6px 0" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 11.5, fontWeight: 800 }}>{t.key}</span>
+                          <button type="button" className="btn btn-ghost btn-sm" onClick={async () => {
+                            const ok = await schedCopy(tplLang === "ar" ? t.ar : t.en);
+                            setCopiedKey(ok ? t.key : null);
+                            if (ok && onFollowUp) onFollowUp(lead, { log: `WhatsApp: ${t.key} (${tplLang})` });
+                          }}>{copiedKey === t.key ? "✓ copied" : "copy"}</button>
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--muted)", direction: tplLang === "ar" ? "rtl" : "ltr", textAlign: tplLang === "ar" ? "right" : "left" }}>{tplLang === "ar" ? t.ar : t.en}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </span>
+              {onFollowUp && [["3d", 3], ["1w", 7], ["2w", 14], ["1M", 30]].map(([lb, d]) => (
+                <button key={lb} type="button" className="btn btn-ghost btn-sm" title={`follow up in ${lb}`} onClick={() => onFollowUp(lead, { days: d })}>{lb}</button>
+              ))}
+              {open && onNotYet && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setNotYetting(true)}>⏳ Not Yet</button>}
+              {st === "not_yet" && onReopen && <button type="button" className="btn btn-sm" style={{ background: "var(--ink)", color: "#fff", fontWeight: 700 }} onClick={() => onReopen(lead)}>↻ Reopen</button>}
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)" }}>⏳ Why not yet?</span>
+              {["Price — offer alternative", "Not now — follow up later", "Did it elsewhere", "Unreachable", "Not needed after check", "Other"].map(r => (
+                <button key={r} type="button" className="btn btn-ghost btn-sm" onClick={() => { onNotYet(lead, r); setNotYetting(false); }}>{r}</button>
+              ))}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setNotYetting(false)}>← back</button>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -3906,46 +3993,56 @@ function TechUpsellForm({ job, onCreate, autoOpen, onDone, onCancel }) {
 }
 
 // ─── Upsells page: the technician-generated funnel, with its own simple report ──
-function UpsellsView({ upsellLeads, jobs, role, onConvert, onDismiss, onSelectJob }) {
-  const [filter, setFilter] = useState("open"); // open | converted | dismissed | all
+function UpsellsView({ upsellLeads, jobs, role, onConvert, onNotYet, onFollowUp, onReopen, onSelectJob }) {
+  const [filter, setFilter] = useState("due"); // due | open | not_yet | converted | all
   const [truckF, setTruckF] = useState("all");
   const [q, setQ] = useState("");
-
   const leads = upsellLeads || [];
   const jobOf = (l) => l.converted_job_id ? jobs.find(j => j.id === l.converted_job_id) : null;
 
-  // ── KPIs ──
-  const open = leads.filter(l => l.status === "open");
-  const converted = leads.filter(l => l.status === "converted");
-  const dismissed = leads.filter(l => l.status === "dismissed");
-  const decided = converted.length + dismissed.length;
+  const open = leads.filter(l => upsellStatusOf(l) === "open");
+  const notYet = leads.filter(l => upsellStatusOf(l) === "not_yet");
+  const converted = leads.filter(l => upsellStatusOf(l) === "converted");
+  const dueList = leads.filter(leadDueNow);
+  const overdueN = dueList.filter(l => leadOverdueDays(l) > 0).length;
+  const decided = converted.length + notYet.length;
   const convRate = decided ? Math.round((converted.length / decided) * 100) : null;
   const convJobs = converted.map(jobOf).filter(Boolean);
-  const convKD = convJobs.reduce((s, j) => s + (Number(j.total) || 0), 0);
-  const completedKD = convJobs.filter(j => jobSuccessful(j)).reduce((s, j) => s + (Number(j.total) || 0), 0);
+  const convKD = convJobs.reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
+  const completedKD = convJobs.filter(j => jobSuccessful(j)).reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
 
-  // ── Per truck (the incentive view: credit stays with the spotting truck) ──
   const trucks = {};
   leads.forEach(l => {
     const t = l.truck || "—";
-    trucks[t] = trucks[t] || { t, spotted: 0, open: 0, converted: 0, completed: 0, kd: 0 };
+    trucks[t] = trucks[t] || { t, spotted: 0, working: 0, converted: 0, completed: 0, kd: 0 };
     trucks[t].spotted++;
-    if (l.status === "open") trucks[t].open++;
-    if (l.status === "converted") {
+    if (upsellStatusOf(l) !== "converted") trucks[t].working++;
+    if (upsellStatusOf(l) === "converted") {
       trucks[t].converted++;
       const cj = jobOf(l);
       if (cj && jobSuccessful(cj)) { trucks[t].completed++; trucks[t].kd += Number(cj.total) || 0; }
     }
   });
-  const truckRows = Object.values(trucks).sort((a, b) => b.kd - a.kd || b.converted - a.converted);
+  const truckRows = Object.values(trucks).sort((a2, b2) => b2.kd - a2.kd || b2.converted - a2.converted);
 
-  // ── List ──
   const ql = q.trim().toLowerCase();
   const shown = leads
-    .filter(l => filter === "all" ? true : l.status === filter)
+    .filter(l => {
+      const st = upsellStatusOf(l);
+      if (filter === "due") return leadDueNow(l);
+      if (filter === "all") return true;
+      return st === filter;
+    })
     .filter(l => truckF === "all" ? true : l.truck === truckF)
     .filter(l => !ql || [l.customer_name, l.customer_mobile, l.service_type, l.car_label, l.truck, l.technician].some(v => String(v || "").toLowerCase().includes(ql)))
-    .sort((a, b) => filter === "open" ? new Date(a.created_at) - new Date(b.created_at) : new Date(b.created_at) - new Date(a.created_at));
+    .sort((a2, b2) => {
+      if (filter === "due") {
+        const oa = leadOverdueDays(b2) - leadOverdueDays(a2);
+        if (oa !== 0) return oa;
+        return new Date(a2.created_at) - new Date(b2.created_at);
+      }
+      return new Date(b2.created_at) - new Date(a2.created_at);
+    });
 
   const chip = (label, val, sub, color) => (
     <div style={{ flex: "1 1 120px", minWidth: 120, border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--card)" }}>
@@ -3960,12 +4057,13 @@ function UpsellsView({ upsellLeads, jobs, role, onConvert, onDismiss, onSelectJo
   return (
     <>
       <div className="page-title">Upsells</div>
-      <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>Opportunities spotted by the trucks. Credit always stays with the truck that spotted it — whoever completes the order.</div>
+      <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>A pipeline, not a graveyard: nothing is ever lost — only Not Yet. Credit stays with the spotting truck, whenever it converts.</div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-        {chip("Open", open.length, open.length ? "oldest first below" : "all handled 🎉", open.some(l => leadAgeDays(l) >= 7) ? "#DC2626" : open.some(l => leadAgeDays(l) >= 3) ? "#B45309" : undefined)}
-        {chip("Converted", converted.length, decided ? `${convRate}% of decided` : null, "#15803D")}
-        {chip("Dismissed", dismissed.length, null)}
+        {chip("📞 Due now", dueList.length, overdueN ? `${overdueN} overdue` : dueList.length ? "call list below" : "all caught up 🎉", overdueN ? "#DC2626" : dueList.length ? "#B45309" : "#15803D")}
+        {chip("Pipeline (open)", open.length, "being worked")}
+        {chip("⏳ Not yet", notYet.length, "reopenable — keep trying")}
+        {chip("✓ Converted", converted.length, decided ? `${convRate}% of decided` : null, "#15803D")}
         {chip("Converted value", `KWD ${convKD.toFixed(0)}`, "all converted orders")}
         {chip("Completed value", `KWD ${completedKD.toFixed(0)}`, "counts for incentives", "#15803D")}
       </div>
@@ -3975,13 +4073,13 @@ function UpsellsView({ upsellLeads, jobs, role, onConvert, onDismiss, onSelectJo
           <div className="card-header"><h3>Per truck</h3><span style={{ fontSize: 11.5, color: "var(--muted)" }}>completed = converted order finished (official incentive count)</span></div>
           <div className="card-body" style={{ padding: 0, overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><th style={th}>Truck</th><th style={th}>Spotted</th><th style={th}>Open</th><th style={th}>Converted</th><th style={th}>Completed</th><th style={{ ...th, textAlign: "right" }}>KD (completed)</th></tr></thead>
+              <thead><tr><th style={th}>Truck</th><th style={th}>Spotted</th><th style={th}>In pipeline</th><th style={th}>Converted</th><th style={th}>Completed</th><th style={{ ...th, textAlign: "right" }}>KD (completed)</th></tr></thead>
               <tbody>
                 {truckRows.map(r => (
                   <tr key={r.t}>
                     <td style={{ ...td, fontWeight: 700 }}>{r.t}</td>
                     <td style={td}>{r.spotted}</td>
-                    <td style={{ ...td, color: r.open ? "#B45309" : "var(--muted)", fontWeight: r.open ? 700 : 400 }}>{r.open}</td>
+                    <td style={{ ...td, color: r.working ? "#B45309" : "var(--muted)", fontWeight: r.working ? 700 : 400 }}>{r.working}</td>
                     <td style={td}>{r.converted}</td>
                     <td style={{ ...td, fontWeight: 700, color: "#15803D" }}>{r.completed}</td>
                     <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{r.kd.toFixed(0)}</td>
@@ -3994,25 +4092,24 @@ function UpsellsView({ upsellLeads, jobs, role, onConvert, onDismiss, onSelectJo
       )}
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
-        {["open", "converted", "dismissed", "all"].map(f => (
-          <button key={f} type="button" className={`btn btn-sm ${filter === f ? "btn-primary" : "btn-ghost"}`} onClick={() => setFilter(f)} style={{ textTransform: "capitalize" }}>
-            {f}{f === "open" && open.length ? ` (${open.length})` : ""}
-          </button>
+        {[["due", `📞 Due (${dueList.length})`], ["open", "Open"], ["not_yet", "⏳ Not yet"], ["converted", "✓ Converted"], ["all", "All"]].map(([k, lb]) => (
+          <button key={k} className="btn btn-sm" onClick={() => setFilter(k)}
+            style={{ fontWeight: 700, background: filter === k ? "var(--ink)" : "var(--card)", color: filter === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
         ))}
         <select className="filter-select" value={truckF} onChange={e => setTruckF(e.target.value)}>
           <option value="all">All trucks</option>
-          {[...new Set(leads.map(l => l.truck).filter(Boolean))].sort().map(t => <option key={t}>{t}</option>)}
+          {[...new Set(leads.map(l => l.truck).filter(Boolean))].map(t => <option key={t}>{t}</option>)}
         </select>
-        <input className="filter-input" placeholder="Search name, mobile, service…" value={q} onChange={e => setQ(e.target.value)} style={{ flex: "1 1 180px" }} />
+        <input className="filter-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search customer / car / service…" style={{ flex: "1 1 160px" }} />
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {shown.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "18px 4px" }}>No upsells here{filter !== "all" ? ` — try another filter` : " yet. They'll appear when technicians spot opportunities on completed jobs."}</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {shown.length === 0 && <div style={{ color: "var(--muted)", fontSize: 13, padding: 20, textAlign: "center" }}>{filter === "due" ? "Nothing due — the pipeline is worked. 🎉" : "No leads here."}</div>}
         {shown.map(l => {
           const cj = jobOf(l);
           return (
             <div key={l.id}>
-              <UpsellLeadCard lead={l} role={role} showCustomer onConvert={onConvert} onDismiss={onDismiss} />
+              <UpsellLeadCard lead={l} role={role} showCustomer onConvert={onConvert} onNotYet={onNotYet} onFollowUp={onFollowUp} onReopen={onReopen} />
               {cj && (
                 <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "4px 0 0 12px", fontSize: 12 }}>
                   <span style={{ color: "var(--muted)" }}>↳ order:</span>
@@ -4031,7 +4128,7 @@ function UpsellsView({ upsellLeads, jobs, role, onConvert, onDismiss, onSelectJo
   );
 }
 
-function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, onDismissLead }) {
+function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, onNotYetLead, onFollowUpLead, onReopenLead }) {
   const parent = j.parent_job_id ? (jobs || []).find(x => x.id === j.parent_job_id) : null;
   const children = (jobs || []).filter(x => x.parent_job_id === j.id);
   const leads = (upsellLeads || []).filter(l => l.job_id === j.id);
@@ -4069,7 +4166,7 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
             : <div style={{ fontSize: 12, color: "var(--muted)" }}>🔗 Linked to an original order (not loaded)</div>
           )}
           {children.map(ch => linkRow(ch, ch.link_type || "revisit"))}
-          {leads.map(l => <UpsellLeadCard key={l.id} lead={l} role={role} onConvert={onConvertLead} onDismiss={onDismissLead} />)}
+          {leads.map(l => <UpsellLeadCard key={l.id} lead={l} role={role} onConvert={onConvertLead} onNotYet={onNotYetLead} onFollowUp={onFollowUpLead} onReopen={onReopenLead} />)}
         </div>
       </div>
     </div>
@@ -4258,7 +4355,7 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
   );
 }
 
-function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onRevisit, jobs, upsellLeads, onOpenJob, onCreateUpsell, onConvertLead, onDismissLead, role }) {
+function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onRevisit, jobs, upsellLeads, onOpenJob, onCreateUpsell, onConvertLead, onNotYetLead, onFollowUpLead, onReopenLead, role }) {
   const [j, setJ] = useState(job);
   useEffect(() => { setJ(job); }, [job]); // follow live updates (edits, realtime sync)
   const [showCancel, setShowCancel] = useState(false);
@@ -4369,7 +4466,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
       </div>
 
       {/* ── Thread: original / revisits / upsells linked to this order ── */}
-      <ThreadSection j={j} jobs={jobs} upsellLeads={upsellLeads} role={role} onOpenJob={onOpenJob} onConvertLead={onConvertLead} onDismissLead={onDismissLead} />
+      <ThreadSection j={j} jobs={jobs} upsellLeads={upsellLeads} role={role} onOpenJob={onOpenJob} onConvertLead={onConvertLead} onNotYetLead={onNotYetLead} onFollowUpLead={onFollowUpLead} onReopenLead={onReopenLead} />
 
       {/* ── Technician: spot an upsell on a completed job ── */}
       {role === "technician" && jobSuccessful(j) && !isCancelled && onCreateUpsell && (
@@ -7928,10 +8025,34 @@ export default function App() {
     return !!r;
   };
 
-  // Sales: dismiss an open lead with a reason.
-  const handleDismissLead = async (lead, reason) => {
-    setUpsellLeads(prev => prev.map(l => l.id === lead.id ? { ...l, status: "dismissed", dismiss_reason: reason } : l));
-    await updateUpsellLead(lead.id, { status: "dismissed", dismiss_reason: reason });
+  // Sales: mark a lead "Not Yet" — never lost, always reopenable. "Not now"/price
+  // reasons auto-schedule a comeback follow-up a month out so it cycles back to Due.
+  const handleNotYetLead = async (lead, reason) => {
+    let nf = lead.next_follow_up || null;
+    if (/not now|price/i.test(reason)) {
+      const d = new Date(); d.setDate(d.getDate() + 30);
+      nf = d.toISOString().split("T")[0];
+    }
+    const patch = { status: "not_yet", not_yet_reason: reason, next_follow_up: nf };
+    setUpsellLeads(prev => prev.map(l => l.id === lead.id ? { ...l, ...patch } : l));
+    await updateUpsellLead(lead.id, patch);
+  };
+  // Log a touch and/or snooze the follow-up date.
+  const handleFollowUpLead = async (lead, { days, log } = {}) => {
+    const patch = {};
+    if (days != null) {
+      const d = new Date(); d.setDate(d.getDate() + days);
+      patch.next_follow_up = d.toISOString().split("T")[0];
+    }
+    const entry = { at: new Date().toISOString(), note: log || (days != null ? `snoozed ${days}d` : "touch") };
+    patch.followups = [...(Array.isArray(lead.followups) ? lead.followups : []), entry];
+    setUpsellLeads(prev => prev.map(l => l.id === lead.id ? { ...l, ...patch } : l));
+    await updateUpsellLead(lead.id, patch);
+  };
+  const handleReopenLead = async (lead) => {
+    const patch = { status: "open", next_follow_up: todayISODate() };
+    setUpsellLeads(prev => prev.map(l => l.id === lead.id ? { ...l, ...patch } : l));
+    await updateUpsellLead(lead.id, patch);
   };
 
   // Sales: convert an open lead into a linked order (credit frozen to the spotting truck).
@@ -8179,7 +8300,7 @@ export default function App() {
           {loading && <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>Loading…</div>}
 
           {!loading && selectedJob && (
-            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onEdit={setEditingJob} onReorder={role === "sales" ? reorderJob : undefined} onRevisit={role === "sales" ? revisitJob : undefined} jobs={jobs} upsellLeads={upsellLeads} onOpenJob={setSelectedJob} onCreateUpsell={handleCreateUpsell} onConvertLead={handleConvertLead} onDismissLead={handleDismissLead} onAction={handleJobAction} />
+            <JobDetail job={selectedJob} role={role} onBack={goBack} onUpdate={handleJobUpdate} onReschedule={setRescheduleJob} onEdit={setEditingJob} onReorder={role === "sales" ? reorderJob : undefined} onRevisit={role === "sales" ? revisitJob : undefined} jobs={jobs} upsellLeads={upsellLeads} onOpenJob={setSelectedJob} onCreateUpsell={handleCreateUpsell} onConvertLead={handleConvertLead} onNotYetLead={handleNotYetLead} onFollowUpLead={handleFollowUpLead} onReopenLead={handleReopenLead} onAction={handleJobAction} />
           )}
 
           {!loading && !selectedJob && selectedCustomer && tab === "customers" && (
@@ -8209,7 +8330,7 @@ export default function App() {
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "upsells" && (
-            <UpsellsView upsellLeads={upsellLeads} jobs={jobs} role={role} onConvert={handleConvertLead} onDismiss={handleDismissLead} onSelectJob={setSelectedJob} />
+            <UpsellsView upsellLeads={upsellLeads} jobs={jobs} role={role} onConvert={handleConvertLead} onNotYet={handleNotYetLead} onFollowUp={handleFollowUpLead} onReopen={handleReopenLead} onSelectJob={setSelectedJob} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
             <>
