@@ -1885,9 +1885,11 @@ const css = `
     .topbar { padding: 0 12px; }
     .main { padding: 14px 12px 84px; }
     .bottom-nav { display: flex; position: fixed; bottom: 0; left: 0; right: 0; z-index: 150;
+      overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
       background: var(--surface); border-top: 1px solid var(--border); box-shadow: 0 -2px 10px rgba(0,0,0,.06);
       padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); justify-content: space-around; }
-    .bottom-nav-item { flex: 1; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    .bottom-nav::-webkit-scrollbar { display: none; }
+    .bottom-nav-item { flex: 1 0 auto; min-width: 68px; background: none; border: none; display: flex; flex-direction: column; align-items: center; gap: 2px;
       padding: 6px 4px; border-radius: 10px; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 600; }
     .bottom-nav-item.active { color: var(--accent); background: #FFF7EC; }
     .bottom-nav-icon { font-size: 18px; line-height: 1; }
