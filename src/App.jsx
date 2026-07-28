@@ -1893,6 +1893,8 @@ const css = `
       padding: 6px 4px; border-radius: 10px; cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 600; }
     .bottom-nav-item.active { color: var(--accent); background: #FFF7EC; }
     .bottom-nav-icon { font-size: 18px; line-height: 1; }
+    @keyframes bnchrPop { 0% { transform: scale(.6); opacity: 0; } 60% { transform: scale(1.06); } 100% { transform: scale(1); opacity: 1; } }
+    @keyframes bnchrFall { 0% { transform: translateY(-30px) rotate(0deg); opacity: 1; } 100% { transform: translateY(240px) rotate(320deg); opacity: 0; } }
   }
 `;
 
@@ -4405,6 +4407,34 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
   const pace = day > 0 ? Math.round((me.orders / day) * daysIn) : 0;
   const pct = Math.min(100, Math.round((me.orders / target) * 100));
   const monthName = now.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  // ── unlock celebrations: one-time moments, remembered per truck per month ──
+  const [celeb, setCeleb] = useState(null);
+  const moKey = now.toISOString().slice(0, 7);
+  const seenKey = (ev) => `bnchr_celeb:${activeTruckKey}:${moKey}:${ev}`;
+  const seen = (ev) => { try { return localStorage.getItem(seenKey(ev)) === "1"; } catch (e) { return true; } };
+  const markSeen = (ev) => { try { localStorage.setItem(seenKey(ev), "1"); } catch (e) {} };
+  useEffect(() => {
+    if (!activeTruckKey || me.orders === 0) return;
+    if (me.baseUnlocked && !seen("unlocked")) {
+      markSeen("unlocked"); markSeen("target"); markSeen("gate");
+      setCeleb({ icon: "🎉", title: "BASE UNLOCKED!", msg: `KWD ${(me.basePot || 0).toFixed(3)} secured for every ${activeTruckKey} technician — and every extra order adds 0.250 each. Keep going!` });
+    } else if (me.targetHit && !seen("target")) {
+      markSeen("target");
+      setCeleb({ icon: "🎯", title: "TARGET HIT!", msg: `${activeTruckKey} reached ${target} orders — base pot secured${profitGate ? " and PAYING" : ". It pays the moment the company profit gate opens — push together!"}` });
+    } else if (profitGate && !seen("gate")) {
+      markSeen("gate");
+      setCeleb({ icon: "🔓", title: "PROFIT GATE OPEN!", msg: `The company crossed KWD 500 net this month — base incentives are live for every truck at target.` });
+    }
+  }, [me.baseUnlocked, me.targetHit, profitGate, activeTruckKey]);
+  useEffect(() => {
+    if (!celeb) return;
+    const t = setTimeout(() => setCeleb(null), 7000);
+    return () => clearTimeout(t);
+  }, [celeb]);
+  const gatePct = Math.max(0, Math.min(100, Math.round(((monthNet + 0) / INCENT.profitGateKD) * 100)));
+  const remaining = Math.max(0, target - me.orders);
+  const daysLeft = Math.max(1, daysIn - day + 1);
+  const perDay = Math.ceil(remaining / daysLeft);
   const bonuses = [
     { key: "bOrders", label: "🏆 Most orders", hint: `${me.orders} orders` },
     { key: "bReviews", label: "⭐ Best reviews", hint: me.avgReview ? `★ ${me.avgReview} (${me.nReviews})` : "no reviews yet" },
@@ -4425,6 +4455,21 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
           <span style={{ fontSize: 11.5, color: "var(--muted)", alignSelf: "center" }}>viewing as this truck's technicians</span>
         </div>
       )}
+      <div className="card" style={{ padding: "13px 16px", marginBottom: 12, background: profitGate ? "linear-gradient(135deg,#14532D,#166534)" : "var(--card)", color: profitGate ? "#fff" : "var(--text)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 800 }}>🌡 COMPANY PROFIT — the gate we open together</div>
+          <div style={{ fontSize: 12.5, fontWeight: 800, color: profitGate ? "#BBF7D0" : "#B45309" }}>
+            {profitGate ? "🔓 OPEN — base pay is live" : `KWD ${Math.max(0, INCENT.profitGateKD - monthNet).toFixed(0)} to unlock everyone's base pay`}
+          </div>
+        </div>
+        <div style={{ position: "relative", background: profitGate ? "rgba(255,255,255,.25)" : "var(--border)", borderRadius: 99, height: 12, marginTop: 8, overflow: "hidden" }}>
+          <div style={{ width: `${gatePct}%`, height: "100%", borderRadius: 99, background: profitGate ? "linear-gradient(90deg,#FBBF24,#F59E0B)" : "linear-gradient(90deg,#0E7490,#14B8A6)", transition: "width .5s" }} />
+        </div>
+        <div style={{ fontSize: 10.5, marginTop: 4, color: profitGate ? "#BBF7D0" : "var(--muted)", fontWeight: 600 }}>
+          est. net KWD {monthNet.toFixed(0)} / {INCENT.profitGateKD} — every profitable order from every truck fills this bar
+        </div>
+      </div>
+
       <div className="card" style={{ padding: 16, marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
           <div style={{ fontSize: 17, fontWeight: 800 }}>🎯 {activeTruckKey} — {monthName}</div>
@@ -4436,9 +4481,22 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
           <div style={{ fontSize: 34, fontWeight: 800 }}>{me.orders}<span style={{ fontSize: 15, color: "var(--muted)", fontWeight: 600 }}> / {target} orders</span></div>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: pace >= target ? "var(--success)" : "#B45309" }}>pace: ~{pace} by month end</div>
         </div>
-        <div style={{ background: "var(--border)", borderRadius: 99, height: 14, marginTop: 8, overflow: "hidden" }}>
+        <div style={{ position: "relative", background: "var(--border)", borderRadius: 99, height: 14, marginTop: 8, overflow: "hidden" }}>
           <div style={{ width: `${pct}%`, height: "100%", borderRadius: 99, background: me.baseUnlocked ? "var(--success)" : "linear-gradient(90deg,#F59E0B,#FBBF24)", transition: "width .4s" }} />
+          {[25, 50, 75].map(t => (
+            <div key={t} style={{ position: "absolute", left: `${t}%`, top: 0, bottom: 0, width: 2, background: pct >= t ? "rgba(255,255,255,.55)" : "rgba(0,0,0,.12)" }} />
+          ))}
         </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, fontWeight: 700, marginTop: 3, color: "var(--muted)" }}>
+          {[25, 50, 75, 100].map(t => (
+            <span key={t} style={{ color: pct >= t ? "var(--success)" : "var(--muted)" }}>{pct >= t ? "✓" : ""} {t === 100 ? `${target} 🎯` : `${Math.round(target * t / 100)}`}</span>
+          ))}
+        </div>
+        {!me.targetHit && (
+          <div style={{ fontSize: 12, fontWeight: 800, marginTop: 6, color: "#B45309" }}>
+            🎯 {perDay} order{perDay === 1 ? "" : "s"}/day for the next {daysLeft} day{daysLeft === 1 ? "" : "s"} reaches the target
+          </div>
+        )}
         <div style={{ marginTop: 12, background: "#E8F4EC", border: "1.5px solid #BFDFC9", borderRadius: 12, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
           <div>
             <div style={{ fontSize: 11.5, fontWeight: 800, color: "#1D7A45" }}>⚡ UPSELLS — ALWAYS PAID, every month, no conditions</div>
@@ -4488,6 +4546,19 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
         ))}
         <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>Every order = 0.250 each once unlocked. Every upsell = 1.000 cash, guaranteed. One revisit voids that order — quality protects it all.</div>
       </div>
+      {celeb && (
+        <div onClick={() => setCeleb(null)} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(15,36,25,.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ position: "relative", background: "var(--card)", borderRadius: 18, padding: "28px 26px", maxWidth: 380, textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,.35)", animation: "bnchrPop .5s ease", overflow: "hidden" }}>
+            {["🎊", "✨", "🎉", "⭐", "🎊", "✨", "🎉", "⭐"].map((e2, i) => (
+              <span key={i} style={{ position: "absolute", top: 0, left: `${8 + i * 12}%`, fontSize: 16, animation: `bnchrFall ${1.6 + (i % 3) * .5}s ease-in ${i * .18}s infinite` }}>{e2}</span>
+            ))}
+            <div style={{ fontSize: 52, lineHeight: 1 }}>{celeb.icon}</div>
+            <div style={{ fontSize: 21, fontWeight: 800, margin: "10px 0 6px" }}>{celeb.title}</div>
+            <div style={{ fontSize: 13.5, color: "var(--muted)" }}>{celeb.msg}</div>
+            <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 12 }}>tap anywhere to continue</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
