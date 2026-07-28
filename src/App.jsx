@@ -3777,6 +3777,46 @@ const DRAFT_STATUS = { key: "draft", label: "Draft", color: "#94A3B8" };
 
 // ─── Job Detail (with order actions) ─────────────────────────────────────────
 // ─── Threads: revisits & upsells linked to an original order ──────────────────
+// ── celebration sound: synthesized fanfare (no files needed) ──
+// Browsers only allow audio after a user gesture, so we warm the AudioContext
+// on any tap; when the popup fires after navigation taps, sound is permitted.
+let __bnchrAC = null;
+const bnchrEnsureAudio = () => {
+  try {
+    if (!__bnchrAC) __bnchrAC = new (window.AudioContext || window.webkitAudioContext)();
+    if (__bnchrAC.state === "suspended") __bnchrAC.resume();
+    return __bnchrAC;
+  } catch (e) { return null; }
+};
+if (typeof document !== "undefined") {
+  document.addEventListener("pointerdown", () => bnchrEnsureAudio(), { passive: true });
+}
+const playCelebrationSound = () => {
+  const ac = bnchrEnsureAudio();
+  if (!ac || ac.state !== "running") return; // stay silent rather than error
+  const t0 = ac.currentTime + 0.03;
+  // ascending C-major fanfare
+  [[523.25, 0], [659.25, 0.12], [783.99, 0.24], [1046.5, 0.36]].forEach(([f, dt]) => {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = "triangle"; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t0 + dt);
+    g.gain.exponentialRampToValueAtTime(0.16, t0 + dt + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.5);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t0 + dt); o.stop(t0 + dt + 0.55);
+  });
+  // shimmering top chord
+  [1318.5, 1567.98, 2093].forEach(f => {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = "sine"; o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t0 + 0.48);
+    g.gain.exponentialRampToValueAtTime(0.07, t0 + 0.52);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.3);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t0 + 0.48); o.stop(t0 + 1.35);
+  });
+};
+
 // ── payment plans: Kuwait salary-day scheduling ──
 const SALARY_DAYS = [["10th", 10], ["20th", 20], ["25th", 25], ["End of month", "eom"]];
 const nextSalaryDate = (day) => {
@@ -4428,6 +4468,7 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
   }, [me.baseUnlocked, me.targetHit, profitGate, activeTruckKey]);
   useEffect(() => {
     if (!celeb) return;
+    playCelebrationSound();
     const t = setTimeout(() => setCeleb(null), 7000);
     return () => clearTimeout(t);
   }, [celeb]);
