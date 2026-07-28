@@ -4523,12 +4523,7 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses, compareVisible, onT
       </div>
 
       <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
-          <div style={{ fontSize: 17, fontWeight: 800 }}>🎯 {activeTruckKey} — {monthName}</div>
-          <div style={{ fontSize: 11.5, fontWeight: 800, color: profitGate ? "var(--success)" : "#B45309" }}>
-            {profitGate ? "🟢 company profit gate OPEN" : `🔴 profit gate: KWD ${Math.max(0, (INCENT.profitGateKD - monthNet)).toFixed(0)} to open`}
-          </div>
-        </div>
+        <div style={{ fontSize: 16, fontWeight: 800 }}>🎯 Month Target — {activeTruckKey} · {monthName}</div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 12 }}>
           <div style={{ fontSize: 34, fontWeight: 800 }}>{me.orders}<span style={{ fontSize: 15, color: "var(--muted)", fontWeight: 600 }}> / {target} orders</span></div>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: pace >= target ? "var(--success)" : "#B45309" }}>pace: ~{pace} by month end</div>
@@ -4549,11 +4544,15 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses, compareVisible, onT
             🎯 {perDay} order{perDay === 1 ? "" : "s"}/day for the next {daysLeft} day{daysLeft === 1 ? "" : "s"} reaches the target
           </div>
         )}
-        <div style={{ marginTop: 12, textAlign: "center", background: "linear-gradient(135deg,#F0FDF4,#DCFCE7)", border: "1.5px solid #86EFAC", borderRadius: 16, padding: "14px 10px" }}>
+        <div style={{ marginTop: 12, textAlign: "center", background: "linear-gradient(135deg,#F0FDF4,#DCFCE7)", border: "1.5px solid #86EFAC", borderRadius: 16, padding: "12px 10px" }}>
           <div style={{ fontSize: 11, fontWeight: 800, color: "#166534", letterSpacing: .4 }}>💰 YOUR MONTH SO FAR — PER TECHNICIAN</div>
-          <div style={{ fontSize: 44, fontWeight: 800, lineHeight: 1.15, color: "#15803D" }}>KWD {(me.payout || 0).toFixed(3)}</div>
+          <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.2, color: "#15803D" }}>KWD {(me.payout || 0).toFixed(3)}</div>
           <div style={{ fontSize: 10.5, color: "#166534", fontWeight: 600 }}>if the month ended today · breakdown below</div>
         </div>
+      </div>
+
+      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 2 }}>📋 Breakdown</div>
         <div style={{ marginTop: 12, background: "#E8F4EC", border: "1.5px solid #BFDFC9", borderRadius: 12, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
           <div>
             <div style={{ fontSize: 11.5, fontWeight: 800, color: "#1D7A45" }}>⚡ UPSELLS — ALWAYS PAID, every month, no conditions</div>
@@ -4574,9 +4573,7 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses, compareVisible, onT
             {me.baseN}× orders @ 0.250{me.voided ? ` · ${me.voided} voided by revisit` : ""}
           </div>
         </div>
-      </div>
-      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>🏆 KWD 5 bonuses — live standings</div>
+        <div style={{ fontSize: 14, fontWeight: 800, margin: "14px 0 2px" }}>🏆 KWD 5 bonuses — live standings</div>
         <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 6 }}>paid in profitable months · ties split · zero-revisit shared by all clean trucks</div>
         {bonuses.map(b2 => {
           const share = me.bonusShare ? me.bonusShare[b2.key] : null;
