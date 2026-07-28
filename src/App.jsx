@@ -4435,7 +4435,7 @@ function IncentiveReport({ jobs, enabled, onToggle, fixedExpenses, onSaveFixed }
 }
 
 // ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
-function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
+function TechTargetView({ jobs, truck, owner, fixedExpenses, compareVisible, onToggleCompare }) {
   const trucksAll = activeTrucks();
   const [viewTruck, setViewTruck] = useState(truck || trucksAll[0] || "");
   const now = new Date();
@@ -4474,13 +4474,24 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
   }, [celeb]);
   const gatePct = Math.max(0, Math.min(100, Math.round(((monthNet + 0) / INCENT.profitGateKD) * 100)));
   const remaining = Math.max(0, target - me.orders);
+  const totRev = rows.reduce((s2, r) => s2 + (r.revenue || 0), 0);
+  const totProf = rows.reduce((s2, r) => s2 + Math.max(0, r.profit || 0), 0);
+  const revShare = (r) => totRev > 0 ? Math.round(((r.revenue || 0) / totRev) * 100) : 0;
+  const profShare = (r) => totProf > 0 ? Math.round((Math.max(0, r.profit || 0) / totProf) * 100) : 0;
+  // live bonus leaders (shown even before the gate opens)
+  const leadersOf = (fn) => { const mx = Math.max(...rows.map(fn)); return mx > 0 ? rows.filter(r => fn(r) === mx).map(r => r.truck) : []; };
+  const liveLeaders = {
+    bOrders: leadersOf(r => r.orders), bReviews: leadersOf(r => r.avgReview || 0),
+    bRevenue: leadersOf(r => r.revenue), bProfit: leadersOf(r => r.profit),
+    bZero: rows.filter(r => r.orders > 0 && r.revisitsCaused === 0).map(r => r.truck),
+  };
   const daysLeft = Math.max(1, daysIn - day + 1);
   const perDay = Math.ceil(remaining / daysLeft);
   const bonuses = [
     { key: "bOrders", label: "🏆 Most orders", hint: `${me.orders} orders` },
     { key: "bReviews", label: "⭐ Best reviews", hint: me.avgReview ? `★ ${me.avgReview} (${me.nReviews})` : "no reviews yet" },
-    { key: "bRevenue", label: "💵 Highest revenue", hint: `KWD ${(me.revenue || 0).toFixed(0)}` },
-    { key: "bProfit", label: "💰 Highest profit", hint: `KWD ${(me.profit || 0).toFixed(0)}` },
+    { key: "bRevenue", label: "💵 Highest revenue", hint: `${revShare(me)}% of company revenue` },
+    { key: "bProfit", label: "💰 Highest profit", hint: `${profShare(me)}% of company profit` },
     { key: "bZero", label: "✨ Zero revisits", hint: me.revisitsCaused === 0 ? "clean so far" : `${me.revisitsCaused} caused` },
   ];
   return (
@@ -4500,14 +4511,14 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
           <div style={{ fontSize: 13, fontWeight: 800 }}>🌡 COMPANY PROFIT — the gate we open together</div>
           <div style={{ fontSize: 12.5, fontWeight: 800, color: profitGate ? "#BBF7D0" : "#B45309" }}>
-            {profitGate ? "🔓 OPEN — base pay is live" : `KWD ${Math.max(0, INCENT.profitGateKD - monthNet).toFixed(0)} to unlock everyone's base pay`}
+            {profitGate ? "🎉 Profit passed KWD 500 — congratulations!" : `KWD ${Math.max(0, INCENT.profitGateKD - monthNet).toFixed(0)} to unlock everyone's base pay`}
           </div>
         </div>
         <div style={{ position: "relative", background: profitGate ? "rgba(255,255,255,.25)" : "var(--border)", borderRadius: 99, height: 12, marginTop: 8, overflow: "hidden" }}>
           <div style={{ width: `${gatePct}%`, height: "100%", borderRadius: 99, background: profitGate ? "linear-gradient(90deg,#FBBF24,#F59E0B)" : "linear-gradient(90deg,#0E7490,#14B8A6)", transition: "width .5s" }} />
         </div>
         <div style={{ fontSize: 10.5, marginTop: 4, color: profitGate ? "#BBF7D0" : "var(--muted)", fontWeight: 600 }}>
-          est. net KWD {monthNet.toFixed(0)} / {INCENT.profitGateKD} — every profitable order from every truck fills this bar
+          {owner ? `est. net KWD ${monthNet.toFixed(0)} / ${INCENT.profitGateKD} · ` : ""}every profitable order from every truck fills this bar{profitGate ? " — base pay is live 🔓" : ""}
         </div>
       </div>
 
@@ -4538,6 +4549,11 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
             🎯 {perDay} order{perDay === 1 ? "" : "s"}/day for the next {daysLeft} day{daysLeft === 1 ? "" : "s"} reaches the target
           </div>
         )}
+        <div style={{ marginTop: 12, textAlign: "center", background: "linear-gradient(135deg,#F0FDF4,#DCFCE7)", border: "1.5px solid #86EFAC", borderRadius: 16, padding: "14px 10px" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "#166534", letterSpacing: .4 }}>💰 YOUR MONTH SO FAR — PER TECHNICIAN</div>
+          <div style={{ fontSize: 44, fontWeight: 800, lineHeight: 1.15, color: "#15803D" }}>KWD {(me.payout || 0).toFixed(3)}</div>
+          <div style={{ fontSize: 10.5, color: "#166534", fontWeight: 600 }}>if the month ended today · breakdown below</div>
+        </div>
         <div style={{ marginTop: 12, background: "#E8F4EC", border: "1.5px solid #BFDFC9", borderRadius: 12, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
           <div>
             <div style={{ fontSize: 11.5, fontWeight: 800, color: "#1D7A45" }}>⚡ UPSELLS — ALWAYS PAID, every month, no conditions</div>
@@ -4558,9 +4574,6 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
             {me.baseN}× orders @ 0.250{me.voided ? ` · ${me.voided} voided by revisit` : ""}
           </div>
         </div>
-        <div style={{ marginTop: 10, textAlign: "right", fontSize: 13, fontWeight: 800 }}>
-          If the month ended today: <span style={{ color: "var(--success)" }}>KWD {(me.payout || 0).toFixed(3)}</span> / person
-        </div>
       </div>
       <div className="card" style={{ padding: 16, marginBottom: 12 }}>
         <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>🏆 KWD 5 bonuses — live standings</div>
@@ -4577,16 +4590,46 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses }) {
           );
         })}
       </div>
-      <div className="card" style={{ padding: 16 }}>
-        <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Trucks this month</div>
-        {rows.map(r => (
-          <div key={r.truck} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 13, fontWeight: r.truck === activeTruckKey ? 800 : 500 }}>
-            <span>{r.truck === activeTruckKey ? "→ " : ""}{r.truck}</span>
-            <span>{r.orders} orders · {r.ups} upsells{r.avgReview ? ` · ★${r.avgReview}` : ""}</span>
+      {(owner || compareVisible) && (
+        <div className="card" style={{ padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            <div style={{ fontSize: 14, fontWeight: 800 }}>🏁 Truck race — all criteria</div>
+            {owner && onToggleCompare && (
+              <label style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", display: "flex", gap: 5, alignItems: "center", cursor: "pointer" }}>
+                <input type="checkbox" checked={!!compareVisible} onChange={e => onToggleCompare(e.target.checked)} />
+                visible to technicians
+              </label>
+            )}
           </div>
-        ))}
-        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>Every order = 0.250 each once unlocked. Every upsell = 1.000 cash, guaranteed. One revisit voids that order — quality protects it all.</div>
-      </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {rows.map(r => {
+              const crowns = [
+                liveLeaders.bOrders.includes(r.truck) ? "🏆" : null,
+                liveLeaders.bReviews.includes(r.truck) ? "⭐" : null,
+                liveLeaders.bRevenue.includes(r.truck) ? "💵" : null,
+                liveLeaders.bProfit.includes(r.truck) ? "💰" : null,
+                liveLeaders.bZero.includes(r.truck) ? "✨" : null,
+              ].filter(Boolean);
+              const meRow = r.truck === activeTruckKey;
+              return (
+                <div key={r.truck} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "8px 10px", background: meRow ? "var(--bg)" : "var(--card)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
+                    <span style={{ fontSize: 13.5, fontWeight: meRow ? 800 : 700 }}>{meRow ? "→ " : ""}{r.truck} {crowns.join(" ")}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: r.targetHit ? "var(--success)" : "#B45309" }}>{r.orders}/{target} orders{r.targetHit ? " ✓" : ""}</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 3 }}>
+                    ⚡ {r.ups} upsell{r.ups === 1 ? "" : "s"} · ⭐ {r.avgReview ? `${r.avgReview} (${r.nReviews})` : "—"} · {r.revisitsCaused === 0 ? "✨ 0 revisits" : `⚠ ${r.revisitsCaused} revisit${r.revisitsCaused > 1 ? "s" : ""}`} · 💵 {revShare(r)}% of revenue · 💰 {profShare(r)}% of profit
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
+            Crowns = current leader per KWD 5 bonus: 🏆 orders · ⭐ reviews · 💵 revenue · 💰 profit · ✨ zero revisits (ties split at month end).
+          </div>
+        </div>
+      )}
+      <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 10, textAlign: "center" }}>Every order = 0.250 each once unlocked. Every upsell = 1.000 cash, guaranteed. One revisit voids that order — quality protects it all.</div>
       {celeb && (
         <div onClick={() => setCeleb(null)} style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(15,36,25,.5)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div style={{ position: "relative", background: "var(--card)", borderRadius: 18, padding: "28px 26px", maxWidth: 380, textAlign: "center", boxShadow: "0 20px 60px rgba(0,0,0,.35)", animation: "bnchrPop .5s ease", overflow: "hidden" }}>
@@ -8736,7 +8779,9 @@ export default function App() {
             <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} onCreateUpsell={handleCreateUpsell} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "target" && (
-            <TechTargetView jobs={jobs} truck={sessionTruck} owner={isOwner} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
+            <TechTargetView jobs={jobs} truck={sessionTruck} owner={isOwner} fixedExpenses={Number(appSettings.fixed_expenses) || 12500}
+                compareVisible={appSettings.truck_compare_visible !== "off"}
+                onToggleCompare={(v) => { setAppSettings(p => ({ ...p, truck_compare_visible: v ? "on" : "off" })); saveAppSetting("truck_compare_visible", v ? "on" : "off"); }} />
           )}
           {tab === "myhistory" && !selectedJob && (
             <TechHistoryView jobs={jobs} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} />
