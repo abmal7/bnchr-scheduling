@@ -4518,7 +4518,7 @@ function TechTargetView({ jobs, truck, owner, fixedExpenses, compareVisible, onT
           <div style={{ width: `${gatePct}%`, height: "100%", borderRadius: 99, background: profitGate ? "linear-gradient(90deg,#FBBF24,#F59E0B)" : "linear-gradient(90deg,#0E7490,#14B8A6)", transition: "width .5s" }} />
         </div>
         <div style={{ fontSize: 10.5, marginTop: 4, color: profitGate ? "#BBF7D0" : "var(--muted)", fontWeight: 600 }}>
-          {owner ? `est. net KWD ${monthNet.toFixed(0)} / ${INCENT.profitGateKD} · ` : ""}every profitable order from every truck fills this bar{profitGate ? " — base pay is live 🔓" : ""}
+          every profitable order from every truck fills this bar{profitGate ? " — base pay is live 🔓" : ""}
         </div>
       </div>
 
