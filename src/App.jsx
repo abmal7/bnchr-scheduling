@@ -8457,7 +8457,7 @@ export default function App() {
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
     { key: "collections", label: "Collections",  icon: "💰", roles: ["sales"] },
-    { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales"] },
+    { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales", "purchaser"] },
     { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
     { key: "costs",      label: "Costs",           icon: "💰", roles: ["purchaser"] },
     { key: "settings",   label: "Settings",        icon: "⚙️", roles: ["sales", "purchaser"] },
