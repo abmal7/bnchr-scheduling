@@ -5195,8 +5195,8 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
   });
   // Active = the working queue: booked + started
   const isActive = (j) => j.status !== "cancelled" && j.status !== "incomplete" && !jobSuccessful(j);
-  const stageList = base.filter(j =>
-    stageF === "all" ? true : stageF === "successful" ? jobSuccessful(j) : isActive(j));
+  const stageList = base.filter(j => j.status !== "cancelled") // cancelled orders live in History (restorable from there)
+    .filter(j => stageF === "all" ? true : stageF === "successful" ? jobSuccessful(j) : isActive(j));
   const counts = {
     active: base.filter(isActive).length,
     successful: base.filter(jobSuccessful).length,
