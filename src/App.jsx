@@ -5231,7 +5231,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
   return (
     <>
       <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{base.length}</div><div className="stat-lbl">Jobs today</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{base.filter(j => j.status !== "cancelled").length}</div><div className="stat-lbl">Jobs today</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{done}</div><div className="stat-lbl">Completed</div></div>
         <div className="stat-card">
           <div className="stat-num" style={{ color: "var(--accent)" }}>KWD {salesKD.toFixed(3)}</div>
@@ -5239,7 +5239,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
           <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>on this day's schedule: KWD {totalKD.toFixed(3)}</div>
           <div style={{ fontSize: 10, color: "#059669", fontWeight: 600, marginTop: 1 }}>collected this day: KWD {collectedKD.toFixed(3)}</div>
         </div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{base.filter(j => j.payment_status === "paid").length}</div><div className="stat-lbl">Paid</div></div>
+        <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{base.filter(j => j.payment_status === "paid" && j.status !== "cancelled").length}</div><div className="stat-lbl">Paid</div></div>
       </div>
 
       <div className="page-header">
