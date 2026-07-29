@@ -3850,8 +3850,8 @@ const collectReminderTpls = (j, inst) => {
   const amt = (Number(inst.amount) || 0).toFixed(3);
   const svc = j.service_type || "your order";
   return {
-    en: `Hello ${name} 🌟 BNCHR+ here. A friendly reminder: as agreed, KWD ${amt} for ${svc} is due on ${inst.due}. You can pay by KNET link or cash — thank you! 🙏`,
-    ar: `مرحبا ${name} 🌟 معاك بنشر بلس. تذكير ودي: حسب الاتفاق، دفعة ${amt} د.ك لطلبك مستحقة بتاريخ ${inst.due}. تقدر تدفع عبر رابط كي-نت أو نقداً — شكراً لك 🙏`,
+    en: `Hello ${name} 👋\nWe hope you're doing well.\nJust a gentle reminder regarding the remaining balance on your order (KWD ${amt}, due ${inst.due}).\nAt your convenience, you can complete the payment through the link below:\n{payment link}\nIf you need any assistance, we're happy to help.`,
+    ar: `السلام عليكم ${name} 👋\nنأمل أن تكونوا بخير.\nمجرد تذكير لطيف بخصوص المبلغ المتبقي من طلبكم (${amt} د.ك، مستحق بتاريخ ${inst.due}).\nعند راحتكم، يمكنكم إتمام الدفع من خلال الرابط التالي:\n{رابط الدفع}\nإذا احتجتم أي مساعدة، يسعدنا خدمتكم.`,
   };
 };
 
@@ -3898,15 +3898,15 @@ const upsellTemplates = (l) => {
   const carAr = l.car_label || "سيارتك";
   const svc = l.service_type || "the service we flagged";
   return [
-    { key: "First touch",
-      en: `Hello ${name} 🌟 This is BNCHR+. During our recent visit to your ${car}, our technician noticed that ${svc} needs attention. We'd be happy to take care of it at your location — shall we send you a quote?`,
-      ar: `مرحبا ${name} 🌟 معاك بنشر بلس. أثناء زيارتنا الأخيرة لسيارتك ${carAr} لاحظ الفني أن ${svc} يحتاج اهتمام. يسعدنا نخدمك في موقعك — نرسل لك عرض السعر؟` },
-    { key: "Reminder",
-      en: `Hello ${name} 👋 BNCHR+ here — just following up on the ${svc} we flagged on your ${car}. We can book a time that suits you this week, home service as always 🚐`,
-      ar: `مرحبا ${name} 👋 بنشر بلس — نذكرك بخصوص ${svc} لسيارتك ${carAr}. نقدر نحدد موعد يناسبك هذا الأسبوع، والخدمة في موقعك 🚐` },
+    { key: "🔴 Needs prompt action",
+      en: `Hello ${name},\nDuring the complimentary inspection, our technician noticed that the ${svc} has reached a stage we advise not to postpone, as it directly affects driving safety.\nWe're sharing this note out of genuine care for you — not to add unnecessary services.\nIf you'd like, we can share the repair cost before you make any decision. We're at your service.`,
+      ar: `السلام عليكم ${name}\nأثناء الفحص المجاني، لاحظ الفني أن ${svc} وصلت إلى مرحلة ننصح بعدم تأجيلها، لأنها مرتبطة بسلامة القيادة.\nأرسلنا لك هذه الملاحظة حرصاً عليك، وليس لإضافة خدمات غير ضرورية.\nإذا رغبت، نشاركك تكلفة الإصلاح قبل اتخاذ أي قرار، احنا بخدمتك.` },
+    { key: "🟡 Plan ahead (~2 months)",
+      en: `Hello ${name},\nDuring the complimentary inspection, we noticed that the ${svc} will need attention soon.\nIt's not urgent at this stage, but we recommend addressing it within the next two months so it doesn't affect your car's performance.\nIf you'd like, we can send you the full details and cost with complete transparency — the decision is always yours.`,
+      ar: `السلام عليكم ${name}\nأثناء الفحص المجاني، لاحظ أن ${svc} تحتاج إلى اهتمام قريباً\nحالياً لا تعتبر حالة طارئة، لكن ننصح بمعالجتها خلال شهرين عشان ما تأثر على أداء السيارة.\nإذا حاب، نقدر نرسل لك التفاصيل والتكلفة بكل شفافية، والقرار يبقى لك.` },
     { key: "Better offer",
-      en: `Hello ${name}, good news from BNCHR+ 🎁 We have a better option for the ${svc} on your ${car}. Would you like the updated quote?`,
-      ar: `مرحبا ${name}، أخبار طيبة من بنشر بلس 🎁 عندنا خيار أفضل بخصوص ${svc} لسيارتك ${carAr}. تحب نرسل لك العرض المحدث؟` },
+      en: `Hello ${name}, BNCHR+ here. We reviewed the ${svc} for your ${car} and found an option with better value — sharing the updated quote so you can compare. Honest advice, no pressure — the decision is always yours 🤝`,
+      ar: `مرحبا ${name}، معاك بنجر بلاس. راجعنا موضوع ${svc} لسيارتك ${carAr} ولقينا خيار قيمته أفضل — نرسل لك العرض المحدث للمقارنة. نصيحة صادقة وبدون أي ضغط — القرار دايماً لك 🤝` },
   ];
 };
 
