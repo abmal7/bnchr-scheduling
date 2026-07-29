@@ -5200,7 +5200,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
   const counts = {
     active: base.filter(isActive).length,
     successful: base.filter(jobSuccessful).length,
-    all: base.length,
+    all: base.filter(j => j.status !== "cancelled").length,
     // payment counts within the chosen stage — Successful + Unpaid = collections list
     paid: stageList.filter(j => j.payment_status === "paid").length,
     unpaid: stageList.filter(j => j.payment_status !== "paid" && j.status !== "cancelled").length,
