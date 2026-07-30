@@ -4353,7 +4353,7 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
 }
 
 // ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
-function IncentiveReport({ jobs, enabled, onToggle, fixedExpenses, onSaveFixed }) {
+function IncentiveReport({ jobs, enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed }) {
   const [mo, setMo] = useState(0);
   const [truckFilter, setTruckFilter] = useState("all");
   const [feDraft, setFeDraft] = useState(String(fixedExpenses));
@@ -4374,7 +4374,15 @@ function IncentiveReport({ jobs, enabled, onToggle, fixedExpenses, onSaveFixed }
             <button className="btn btn-ghost btn-sm" disabled={mo >= 0} onClick={() => setMo(m => m + 1)}>›</button>
             <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: enabled ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
               <input type="checkbox" checked={enabled} onChange={e => onToggle(e.target.checked)} />
-              {enabled ? "LIVE — technicians see their dashboard" : "OFF — test mode (only you see this)"}
+              🚛 {enabled ? "LIVE" : "OFF"} — technicians
+            </label>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: salesOn ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
+              <input type="checkbox" checked={salesOn} onChange={e => onToggleSales(e.target.checked)} />
+              💎 {salesOn ? "LIVE" : "OFF"} — sales
+            </label>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: paOn ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
+              <input type="checkbox" checked={paOn} onChange={e => onTogglePa(e.target.checked)} />
+              🎯 {paOn ? "LIVE" : "OFF"} — purchasing
             </label>
           </div>
         </div>
@@ -8707,10 +8715,20 @@ export default function App() {
   };
 
   const [appSettings, setAppSettings] = useState({});
-  const incentiveOn = appSettings.incentive_enabled === true;
+  const incentiveOn = appSettings.incentive_enabled === true;               // technicians
+  const salesIncentOn = appSettings.sales_incentive_enabled === true;       // sales
+  const paIncentOn = appSettings.pa_incentive_enabled === true;             // purchasing & accounting
   const setIncentiveEnabled = async (on) => {
     setAppSettings(p => ({ ...p, incentive_enabled: on }));
     await saveAppSetting("incentive_enabled", on);
+  };
+  const setSalesIncentEnabled = async (on) => {
+    setAppSettings(p => ({ ...p, sales_incentive_enabled: on }));
+    await saveAppSetting("sales_incentive_enabled", on);
+  };
+  const setPaIncentEnabled = async (on) => {
+    setAppSettings(p => ({ ...p, pa_incentive_enabled: on }));
+    await saveAppSetting("pa_incentive_enabled", on);
   };
   const allTabs = [
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
@@ -8733,7 +8751,9 @@ export default function App() {
   // Master/owner access sees every page (incl. purchaser Costs, tech views, distributor)
   const tabs = allTabs
     .filter(t => isOwner || t.roles.includes(role))
-    .filter(t => !["target", "salesincent", "paincent"].includes(t.key) || incentiveOn || isOwner); // the LIVE switch gates every incentive dashboard
+    .filter(t => t.key !== "target" || incentiveOn || isOwner)
+    .filter(t => t.key !== "salesincent" || salesIncentOn || isOwner)
+    .filter(t => t.key !== "paincent" || paIncentOn || isOwner); // each incentive dashboard has its own LIVE switch
 
   if (!authed) {
     return (
@@ -8871,6 +8891,8 @@ export default function App() {
             <>
               <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
               <IncentiveReport jobs={jobs} enabled={incentiveOn} onToggle={setIncentiveEnabled}
+                salesOn={salesIncentOn} onToggleSales={setSalesIncentEnabled}
+                paOn={paIncentOn} onTogglePa={setPaIncentEnabled}
                 fixedExpenses={Number(appSettings.fixed_expenses) || 12500}
                 onSaveFixed={(n) => { setAppSettings(p => ({ ...p, fixed_expenses: n })); saveAppSetting("fixed_expenses", n); }} />
             </>
