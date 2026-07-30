@@ -4435,6 +4435,113 @@ function IncentiveReport({ jobs, enabled, onToggle, fixedExpenses, onSaveFixed }
 }
 
 // ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
+// ═══ 💎 Sales incentive (§4: net-profit tiers, per person) ═══════════════════
+const SALES_TIERS = [
+  { from: 4000, pct: 5 }, { from: 3000, pct: 4.5 }, { from: 2000, pct: 4 },
+  { from: 1000, pct: 3 }, { from: 500, pct: 2 }, { from: 0, pct: 0 },
+];
+const salesTierFor = (net) => SALES_TIERS.find(t => net >= t.from) || SALES_TIERS[SALES_TIERS.length - 1];
+function SalesIncentiveView({ jobs, fixedExpenses }) {
+  const now = new Date();
+  const { monthNet, profitGate } = computeIncentives(jobs, now, fixedExpenses);
+  const tier = salesTierFor(monthNet);
+  const perPerson = Math.max(0, Math.round(monthNet * tier.pct) / 100);
+  const ladder = [...SALES_TIERS].reverse().filter(t => t.from > 0);
+  const next = ladder.find(t => monthNet < t.from);
+  const monthName = now.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  return (
+    <div style={{ maxWidth: 560, margin: "0 auto" }}>
+      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 16, fontWeight: 800 }}>💎 Sales Incentive — {monthName}</div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>A direct share of net profit — each of you earns the rate independently.</div>
+        <div style={{ marginTop: 12, textAlign: "center", background: profitGate ? "linear-gradient(135deg,#F0FDF4,#DCFCE7)" : "#FFFBEB", border: `1.5px solid ${profitGate ? "#86EFAC" : "#FCD34D"}`, borderRadius: 16, padding: "13px 10px" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: profitGate ? "#166534" : "#92400E" }}>YOUR SHARE THIS MONTH — PER PERSON</div>
+          <div style={{ fontSize: 30, fontWeight: 800, color: profitGate ? "#15803D" : "#92400E" }}>KWD {perPerson.toFixed(3)}</div>
+          <div style={{ fontSize: 10.5, fontWeight: 600, color: profitGate ? "#166534" : "#92400E" }}>
+            {profitGate ? `${tier.pct}% of net profit · if the month ended today` : "activates when net profit crosses KWD 500"}
+          </div>
+        </div>
+        {next && (
+          <div style={{ marginTop: 10, background: "#EFF6FF", border: "1.5px solid #BFDBFE", borderRadius: 12, padding: "9px 13px", fontSize: 12.5, fontWeight: 800, color: "#1D4ED8" }}>
+            🚀 KWD {(next.from - monthNet).toFixed(0)} more net profit → {next.pct}% tier{next.pct === 3 ? " — the big jump: your rate rises 50%" : ""}
+          </div>
+        )}
+        <div style={{ marginTop: 12 }}>
+          {ladder.map(t => {
+            const on = tier.pct === t.pct && profitGate;
+            const passed = monthNet >= t.from;
+            return (
+              <div key={t.from} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 12.5, fontWeight: on ? 800 : 500, color: on ? "var(--success)" : passed ? "var(--text)" : "var(--muted)" }}>
+                <span>{passed ? "✓" : "○"} Net ≥ KWD {t.from.toLocaleString()}</span>
+                <span>{t.pct}% each{on ? " ← you are here" : ""}</span>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>Every profitable order, every collected payment, every cost saved moves this number. It's the company's result — and yours.</div>
+      </div>
+    </div>
+  );
+}
+
+// ═══ 🎯 Purchase Agent & Accountant incentive (§1: margin kicker + profit share) ═══
+function PAIncentiveView({ jobs, fixedExpenses }) {
+  const now = new Date();
+  const { monthNet, profitGate } = computeIncentives(jobs, now, fixedExpenses);
+  const y = now.getFullYear(), m = now.getMonth();
+  const inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
+  const done = jobs.filter(j => jobSuccessful(j) && inMonth(j.completed_at || j.scheduled_at || j.created_at));
+  let tRev = 0, tCost = 0;
+  done.forEach(j => (j.items || []).forEach(it => {
+    if (TIRE_SIZE_RX.test(String(it.name || ""))) {
+      TIRE_SIZE_RX.lastIndex = 0;
+      const qty = Number(it.qty) || 1;
+      tRev += (Number(it.price) || 0) * qty;
+      tCost += (Number(it.cost) || 0) * qty;
+    }
+    TIRE_SIZE_RX.lastIndex = 0;
+  }));
+  const marginPct = tRev > 0 ? ((tRev - tCost) / tRev) * 100 : null;
+  const pts = marginPct != null ? Math.max(0, marginPct - 20) : 0;
+  const kicker = profitGate ? Math.round(pts * 10 * 100) / 100 : 0;
+  const sharePct = monthNet >= 1000 ? 2 : monthNet >= 500 ? 1 : 0;
+  const share = Math.max(0, Math.round(monthNet * sharePct) / 100);
+  const total = profitGate ? Math.round((kicker + share) * 1000) / 1000 : 0;
+  const monthName = now.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  return (
+    <div style={{ maxWidth: 560, margin: "0 auto" }}>
+      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+        <div style={{ fontSize: 16, fontWeight: 800 }}>🎯 Purchasing & Accounting Incentive — {monthName}</div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>Rewards margin quality and supplier discipline — each person earns independently.</div>
+        <div style={{ marginTop: 12, textAlign: "center", background: profitGate ? "linear-gradient(135deg,#F0FDF4,#DCFCE7)" : "#FFFBEB", border: `1.5px solid ${profitGate ? "#86EFAC" : "#FCD34D"}`, borderRadius: 16, padding: "13px 10px" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: profitGate ? "#166534" : "#92400E" }}>YOUR MONTH SO FAR — PER PERSON</div>
+          <div style={{ fontSize: 30, fontWeight: 800, color: profitGate ? "#15803D" : "#92400E" }}>KWD {total.toFixed(3)}</div>
+          <div style={{ fontSize: 10.5, fontWeight: 600, color: profitGate ? "#166534" : "#92400E" }}>
+            {profitGate ? "if the month ended today · breakdown below" : "activates when net profit crosses KWD 500"}
+          </div>
+        </div>
+        <div style={{ marginTop: 10, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 13px" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 800 }}>📈 Tire Margin Kicker</div>
+          <div style={{ fontSize: 12, marginTop: 3 }}>
+            Blended tire margin: <strong>{marginPct != null ? marginPct.toFixed(1) + "%" : "no tire sales yet"}</strong>
+            {marginPct != null && <> · {pts > 0 ? `${pts.toFixed(1)} pts above 20% × KWD 10 = ` : "below the 20% floor — "}<strong style={{ color: pts > 0 ? "var(--success)" : "#B45309" }}>KWD {kicker.toFixed(2)}</strong></>}
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2 }}>KWD 10 per person per margin point above 20% · target level: 26%+</div>
+        </div>
+        <div style={{ marginTop: 8, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 13px" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 800 }}>💰 Profit Share</div>
+          <div style={{ fontSize: 12, marginTop: 3 }}>
+            {sharePct > 0
+              ? <>Net in the KWD {monthNet >= 1000 ? "1,000+" : "500–999"} band → <strong>{sharePct}%</strong> = <strong style={{ color: "var(--success)" }}>KWD {share.toFixed(2)}</strong> each</>
+              : "Starts at 1% when net reaches KWD 500 · 2% at KWD 1,000"}
+          </div>
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>Better buying prices and clean cost records move both numbers — your daily work, paid directly.</div>
+      </div>
+    </div>
+  );
+}
+
 function TechTargetView({ jobs, truck, owner, fixedExpenses, compareVisible, onToggleCompare }) {
   const trucksAll = activeTrucks();
   const [viewTruck, setViewTruck] = useState(truck || trucksAll[0] || "");
@@ -8609,6 +8716,8 @@ export default function App() {
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
     { key: "collections", label: "Collections",  icon: "💰", roles: ["sales"] },
+    { key: "salesincent", label: "Incentive",    icon: "💎", roles: ["sales"] },
+    { key: "paincent",    label: "Incentive",    icon: "🎯", roles: ["purchaser"] },
     { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales", "purchaser"] },
     { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
     { key: "costs",      label: "Costs",           icon: "💰", roles: ["purchaser"] },
@@ -8745,6 +8854,12 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "salesincent" && (
+            <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "paincent" && (
+            <PAIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "collections" && (
             <CollectionsView jobs={jobs} onSelectJob={setSelectedJob} onAction={handleJobAction} />
