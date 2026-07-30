@@ -8733,7 +8733,7 @@ export default function App() {
   // Master/owner access sees every page (incl. purchaser Costs, tech views, distributor)
   const tabs = allTabs
     .filter(t => isOwner || t.roles.includes(role))
-    .filter(t => t.key !== "target" || incentiveOn || isOwner); // master switch gates the technician dashboard
+    .filter(t => !["target", "salesincent", "paincent"].includes(t.key) || incentiveOn || isOwner); // the LIVE switch gates every incentive dashboard
 
   if (!authed) {
     return (
