@@ -7663,11 +7663,25 @@ function CostsView({ jobs, onUpdate }) {
   const [drafts, setDrafts] = useState({}); // {jobId: {itemId: cost}}
   const [supDrafts, setSupDrafts] = useState({}); // {jobId: {itemId: supplier}}
   const [poDrafts, setPoDrafts] = useState({});   // {jobId: {itemId: po}}
-  const [histOpen, setHistOpen] = useState(false);
+  const [view, setView] = useState("fill");       // fill | history
   const [hist, setHist] = useState([]);
+  const [histPeriod, setHistPeriod] = useState("today"); // today | week | month | range
+  const [hFrom, setHFrom] = useState("");
+  const [hTo, setHTo] = useState("");
+  const histRange = () => {
+    const today = new Date().toISOString().split("T")[0];
+    if (histPeriod === "today") return [today, today];
+    if (histPeriod === "week") { const d = new Date(); d.setDate(d.getDate() - 6); return [d.toISOString().split("T")[0], today]; }
+    if (histPeriod === "month") { const d = new Date(); return [`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`, today]; }
+    return hFrom && hTo && hFrom <= hTo ? [hFrom, hTo] : null;
+  };
   useEffect(() => {
-    sbAll("/order_cost_log?select=*&order=created_at.desc&limit=80").then(d => setHist(d || [])).catch(() => {});
-  }, []);
+    const r = histRange();
+    if (!r) return;
+    const toEx = new Date(r[1]); toEx.setDate(toEx.getDate() + 1);
+    sbAll(`/order_cost_log?select=*&order=created_at.desc&created_at=gte.${r[0]}&created_at=lt.${toEx.toISOString().split("T")[0]}`)
+      .then(d => setHist(d || [])).catch(() => {});
+  }, [histPeriod, hFrom, hTo, view]);
   const [showAll, setShowAll] = useState(false);
   const [q, setQ] = useState("");
 
@@ -7743,32 +7757,50 @@ function CostsView({ jobs, onUpdate }) {
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 14 }}>
-        <div className="card-body" style={{ padding: "10px 14px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setHistOpen(o => !o)}>
-            <span style={{ fontSize: 13, fontWeight: 800 }}>🕰 Cost history <span style={{ color: "var(--muted)", fontWeight: 600 }}>({hist.length} recent changes)</span></span>
-            <span style={{ fontSize: 12, color: "var(--muted)" }}>{histOpen ? "▲ hide" : "▼ show"}</span>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+        {[["fill", "📝 Costs to fill"], ["history", "🕰 History"]].map(([k, lb]) => (
+          <button key={k} className="btn btn-sm" onClick={() => setView(k)}
+            style={{ fontWeight: 700, background: view === k ? "var(--ink)" : "var(--card)", color: view === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
+        ))}
+      </div>
+
+      {view === "history" && (
+        <>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            {[["today", "Today"], ["week", "This week"], ["month", "This month"], ["range", "📅 Range"]].map(([k, lb]) => (
+              <button key={k} className="btn btn-sm" onClick={() => setHistPeriod(k)}
+                style={{ fontWeight: 700, background: histPeriod === k ? "var(--ink)" : "var(--card)", color: histPeriod === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
+            ))}
+            {histPeriod === "range" && (<>
+              <input type="date" className="filter-input" value={hFrom} onChange={e => setHFrom(e.target.value)} style={{ fontSize: 12 }} />
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>→</span>
+              <input type="date" className="filter-input" value={hTo} onChange={e => setHTo(e.target.value)} style={{ fontSize: 12 }} />
+            </>)}
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginLeft: "auto" }}>
+              {hist.length} change{hist.length === 1 ? "" : "s"} · {[...new Set(hist.map(h => h.job_id))].length} order{[...new Set(hist.map(h => h.job_id))].length === 1 ? "" : "s"}
+            </span>
           </div>
-          {histOpen && (
-            <div style={{ marginTop: 6 }}>
-              {hist.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>Changes will appear here with their previous values.</div>}
+          <div className="card">
+            <div className="card-body" style={{ padding: "8px 14px" }}>
+              {hist.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: 12, textAlign: "center" }}>No cost changes in this period.</div>}
               {hist.map(h => {
                 const bits = [];
                 if (Number(h.old_cost || 0) !== Number(h.new_cost || 0)) bits.push(`cost ${h.old_cost ?? "—"} → ${h.new_cost}`);
                 if ((h.old_supplier || "") !== (h.new_supplier || "")) bits.push(`supplier ${h.old_supplier || "—"} → ${h.new_supplier || "—"}`);
                 if ((h.old_po || "") !== (h.new_po || "")) bits.push(`PO ${h.old_po || "—"} → ${h.new_po || "—"}`);
                 return (
-                  <div key={h.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 11.5, padding: "5px 0", borderTop: "1px solid var(--border)" }}>
+                  <div key={h.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 12, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
                     <span><strong>{h.customer_name || "—"}</strong>{h.invoice_no ? ` · ${h.invoice_no}` : ""} · {h.item_name} — {bits.join(" · ") || "updated"}</span>
-                    <span style={{ color: "var(--muted)" }}>{String(h.created_at).slice(5, 16).replace("T", " ")}</span>
+                    <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>{String(h.created_at).slice(5, 16).replace("T", " ")}</span>
                   </div>
                 );
               })}
             </div>
-          )}
-        </div>
-      </div>
+          </div>
+        </>
+      )}
 
+      {view === "fill" && (<>
       <datalist id="cost-suppliers">
         {OTHER_SUPPLIERS.map(s => <option key={s} value={s} />)}
       </datalist>
@@ -7830,6 +7862,7 @@ function CostsView({ jobs, onUpdate }) {
           </div>
         );
       })}
+      </>)}
     </>
   );
 }
