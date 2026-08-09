@@ -4555,6 +4555,51 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
 }
 
 // ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
+// ═══ 🎛 Incentive Hub — the master's single page for every scheme ═════════════
+function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
+  enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa,
+  compareVisible, onToggleCompare }) {
+  const [view, setView] = useState("master");
+  const VIEWS = [["master", "🎛 Master"], ["tech", "🚛 Technicians"], ["sales", "💎 Sales"], ["pa", "🎯 Purchase"]];
+  const previewBar = (label, on, onFlip) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, background: "#EFF6FF", border: "1.5px solid #BFDBFE", borderRadius: 12, padding: "9px 14px", marginBottom: 12 }}>
+      <span style={{ fontSize: 12.5, fontWeight: 800, color: "#1D4ED8" }}>👁 Preview — exactly what the {label} team sees on their dashboard</span>
+      <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 800, cursor: "pointer", background: on ? "#E8F4EC" : "#fff", border: "1px solid var(--border)", borderRadius: 8, padding: "5px 10px" }}>
+        <input type="checkbox" checked={on} onChange={e => onFlip(e.target.checked)} />
+        {on ? "LIVE — they see it" : "OFF — hidden from them"}
+      </label>
+    </div>
+  );
+  return (
+    <>
+      <div className="page-title">Incentives</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0 14px" }}>
+        {VIEWS.map(([k, lb]) => (
+          <button key={k} className="btn btn-sm" onClick={() => setView(k)}
+            style={{ fontWeight: 700, background: view === k ? "var(--ink)" : "var(--card)", color: view === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
+        ))}
+      </div>
+      {view === "master" && (
+        <IncentiveReport jobs={jobs} employees={employees} fixedExpenses={fixedExpenses} onSaveFixed={onSaveFixed}
+          enabled={enabled} onToggle={onToggle} salesOn={salesOn} onToggleSales={onToggleSales} paOn={paOn} onTogglePa={onTogglePa} />
+      )}
+      {view === "tech" && (<>
+        {previewBar("technician", enabled, onToggle)}
+        <TechTargetView jobs={jobs} truck={null} owner={true} fixedExpenses={fixedExpenses}
+          compareVisible={compareVisible} onToggleCompare={onToggleCompare} />
+      </>)}
+      {view === "sales" && (<>
+        {previewBar("sales", salesOn, onToggleSales)}
+        <SalesIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} />
+      </>)}
+      {view === "pa" && (<>
+        {previewBar("purchasing & accounting", paOn, onTogglePa)}
+        <PAIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} />
+      </>)}
+    </>
+  );
+}
+
 // ═══ 👥 Employees — the team registry behind per-person incentives ═══════════
 const EMP_ROLES = [["technician", "🚛 Technician"], ["sales", "💎 Sales"], ["purchaser", "📋 Purchaser"], ["accountant", "🧾 Accountant"], ["other", "👤 Other"]];
 function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
@@ -9090,6 +9135,7 @@ export default function App() {
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
     { key: "collections", label: "Collections",  icon: "💰", roles: ["sales"] },
+    { key: "incenthub",   label: "Incentive",    icon: "🎛", roles: ["sales"] },
     { key: "employees",   label: "Employees",    icon: "👥", roles: ["sales"] },
     { key: "salesincent", label: "Incentive",    icon: "💎", roles: ["sales"] },
     { key: "paincent",    label: "Incentive",    icon: "🎯", roles: ["purchaser"] },
@@ -9110,8 +9156,9 @@ export default function App() {
     .filter(t => isOwner || t.roles.includes(role))
     .filter(t => t.key !== "target" || incentiveOn || isOwner)
     .filter(t => t.key !== "employees" || isOwner)
-    .filter(t => t.key !== "salesincent" || salesIncentOn || isOwner)
-    .filter(t => t.key !== "paincent" || paIncentOn || isOwner); // each incentive dashboard has its own LIVE switch
+    .filter(t => t.key !== "incenthub" || isOwner)
+    .filter(t => t.key !== "salesincent" || (salesIncentOn && !isOwner))
+    .filter(t => t.key !== "paincent" || (paIncentOn && !isOwner)); // teams get their tab when LIVE; the owner uses the 🎛 hub
 
   if (!authed) {
     return (
@@ -9233,6 +9280,16 @@ export default function App() {
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
           )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "incenthub" && isOwner && (
+            <IncentiveHub jobs={jobs} employees={employees}
+              fixedExpenses={Number(appSettings.fixed_expenses) || 12500}
+              onSaveFixed={(n) => { setAppSettings(p => ({ ...p, fixed_expenses: n })); saveAppSetting("fixed_expenses", n); }}
+              enabled={incentiveOn} onToggle={setIncentiveEnabled}
+              salesOn={salesIncentOn} onToggleSales={setSalesIncentEnabled}
+              paOn={paIncentOn} onTogglePa={setPaIncentEnabled}
+              compareVisible={appSettings.truck_compare_visible !== "off"}
+              onToggleCompare={(v) => { setAppSettings(p => ({ ...p, truck_compare_visible: v ? "on" : "off" })); saveAppSetting("truck_compare_visible", v ? "on" : "off"); }} />
+          )}
           {!loading && !selectedJob && !selectedCustomer && tab === "employees" && isOwner && (
             <EmployeesView employees={employees} onAdd={addEmployee} onUpdate={updateEmployee} onRemove={removeEmployee} />
           )}
@@ -9251,11 +9308,6 @@ export default function App() {
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
             <>
               <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
-              <IncentiveReport jobs={jobs} employees={employees} enabled={incentiveOn} onToggle={setIncentiveEnabled}
-                salesOn={salesIncentOn} onToggleSales={setSalesIncentEnabled}
-                paOn={paIncentOn} onTogglePa={setPaIncentEnabled}
-                fixedExpenses={Number(appSettings.fixed_expenses) || 12500}
-                onSaveFixed={(n) => { setAppSettings(p => ({ ...p, fixed_expenses: n })); saveAppSetting("fixed_expenses", n); }} />
             </>
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "costs" && (
