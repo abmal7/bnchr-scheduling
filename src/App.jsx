@@ -7809,8 +7809,16 @@ function CostsView({ jobs, onUpdate }) {
                 if (Number(h.old_cost || 0) !== Number(h.new_cost || 0)) bits.push(`cost ${h.old_cost ?? "—"} → ${h.new_cost}`);
                 if ((h.old_supplier || "") !== (h.new_supplier || "")) bits.push(`supplier ${h.old_supplier || "—"} → ${h.new_supplier || "—"}`);
                 if ((h.old_po || "") !== (h.new_po || "")) bits.push(`PO ${h.old_po || "—"} → ${h.new_po || "—"}`);
-                const job = h.item_id ? jobs.find(j => j.id === h.job_id) : null;
-                const it = job ? (job.items || []).find(x => x.id === h.item_id) : null;
+                const job = jobs.find(j => j.id === h.job_id);
+                let it = job && h.item_id ? (job.items || []).find(x => x.id === h.item_id) : null;
+                if (job && !it) {
+                  // pre-v2 log rows have no item link — match by display name, only when unambiguous
+                  const nameOf = (x) => x.kind === "tire"
+                    ? `${x.brand} ${x.pattern || ""}`.trim() + (x.size ? ` · ${x.size}` : "")
+                    : (x.name || x.service_type || "item");
+                  const matches = (job.items || []).filter(x => nameOf(x) === h.item_name);
+                  if (matches.length === 1) it = matches[0];
+                }
                 const editing = hEdit && hEdit.key === h.id;
                 return (
                   <div key={h.id} style={{ padding: "6px 0", borderTop: "1px solid var(--border)" }}>
