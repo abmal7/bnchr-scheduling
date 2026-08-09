@@ -4441,6 +4441,25 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
           </span>
         </div>
 
+        {(() => {
+          const totRev = allRows.reduce((s2, r) => s2 + (r.revenue || 0), 0);
+          const totCost = totRev - allRows.reduce((s2, r) => s2 + (r.profit || 0), 0);
+          const cell = (lb, v, color) => (
+            <div style={{ flex: "1 1 110px", minWidth: 110, textAlign: "center", padding: "7px 6px", borderRight: "1px solid var(--border)" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>{lb}</div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: color || "var(--text)" }}>{kd(v)}</div>
+            </div>
+          );
+          return (
+            <div style={{ display: "flex", flexWrap: "wrap", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden", marginBottom: 12, background: "var(--bg)" }}>
+              {cell("💵 Revenue", totRev)}
+              {cell("📦 Total cost", totCost, "#B45309")}
+              {cell("Gross profit", totRev - totCost, "#1D4ED8")}
+              {cell("Fixed applied", -fixedApplied, "var(--muted)")}
+              {cell("Net profit", monthNet, monthNet >= 0 ? "var(--success)" : "var(--danger)")}
+            </div>
+          );
+        })()}
         {/* grand total */}
         <div style={{ textAlign: "center", background: "linear-gradient(135deg,#0F2419,#1D4B33)", color: "#fff", borderRadius: 14, padding: "14px 10px", marginBottom: 12 }}>
           <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: .5, color: "#A7D8B9" }}>💰 TOTAL INCENTIVES — EVERYONE · {periodLabel.toUpperCase()}</div>
