@@ -9154,7 +9154,7 @@ export default function App() {
   // Master/owner access sees every page (incl. purchaser Costs, tech views, distributor)
   const tabs = allTabs
     .filter(t => isOwner || t.roles.includes(role))
-    .filter(t => t.key !== "target" || incentiveOn || isOwner)
+    .filter(t => t.key !== "target" || (incentiveOn && !isOwner)) // technicians when LIVE; the owner uses the 🎛 hub
     .filter(t => t.key !== "employees" || isOwner)
     .filter(t => t.key !== "incenthub" || isOwner)
     .filter(t => t.key !== "salesincent" || (salesIncentOn && !isOwner))
