@@ -7991,6 +7991,7 @@ function ReportsView({ jobs, quotes, customers, owner }) {
 
   // ── headline KPIs ──
   const totalSales = inRange.reduce((s, j) => s + (Number(j.total) || 0), 0);
+  const totalCosts = inRange.reduce((s, j) => s + (j.items || []).reduce((x, it) => x + (Number(it.cost) || 0) * (Number(it.qty) || 1), 0), 0);
   const orders = inRange.length;
   const ticket = orders ? totalSales / orders : 0;
 
@@ -8095,6 +8096,15 @@ function ReportsView({ jobs, quotes, customers, owner }) {
 
       <div className="stats-grid">
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>KWD {fmtKD(totalSales)}</div><div className="stat-lbl">Total sales</div></div>
+        {owner && (
+          <div className="stat-card">
+            <div className="stat-num" style={{ color: "#B45309" }}>KWD {fmtKD(totalCosts)}</div>
+            <div className="stat-lbl">Total costs</div>
+            <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2 }}>
+              gross profit KWD {fmtKD(totalSales - totalCosts)}{zeroCostItems > 0 ? ` · ⚠ ${zeroCostItems} item${zeroCostItems > 1 ? "s" : ""} missing cost` : ""}
+            </div>
+          </div>
+        )}
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--text)" }}>{orders}</div><div className="stat-lbl">Orders</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>KWD {fmtKD(ticket)}</div><div className="stat-lbl">Avg ticket</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{cConv.pct}%</div><div className="stat-lbl">Conversion — {cConv.won}/{cConv.customers} customers · per quote {qConv}% ({qSuccess}/{qInRange.length} sent)</div></div>
