@@ -1686,6 +1686,7 @@ const css = `
     --bg: #F0F2F5; --surface: #FFFFFF; --card: #FFFFFF; --border: #D8DCE6;
     --accent: #D4840A; --accent2: #C13A06; --text: #0F1117; --muted: #5A6278;
     --success: #15803D; --danger: #DC2626; --radius: 10px;
+    --ink: #0F1117; /* selected-chip background — dark, white text on top */
     --font-head: 'Space Grotesk', sans-serif; --font-body: 'Inter', sans-serif;
   }
   body { background: var(--bg); color: var(--text); font-family: var(--font-body); font-size: 14px; line-height: 1.5; min-height: 100vh; }
@@ -7668,6 +7669,26 @@ function CostsView({ jobs, onUpdate }) {
   const [histPeriod, setHistPeriod] = useState("today"); // today | week | month | range
   const [hFrom, setHFrom] = useState("");
   const [hTo, setHTo] = useState("");
+  const [hEdit, setHEdit] = useState(null); // { key, jobId, itemId, cost, supplier, po }
+  const saveHistEdit = async () => {
+    const job = jobs.find(j => j.id === hEdit.jobId);
+    if (!job) return;
+    const it = (job.items || []).find(x => x.id === hEdit.itemId);
+    if (!it) return;
+    const out = { ...it, cost: Number(hEdit.cost) || 0, supplier: hEdit.supplier, po: String(hEdit.po || "").trim() };
+    const items = (job.items || []).map(x => x.id === it.id ? out : x);
+    await onUpdate(job.id, { items });
+    const entry = {
+      job_id: job.id, item_id: it.id, invoice_no: job.invoice_no || null, customer_name: job.customer_name || null,
+      item_name: it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : (it.name || it.service_type || "item"),
+      old_cost: Number(it.cost) || null, new_cost: Number(out.cost) || null,
+      old_supplier: it.supplier || null, new_supplier: out.supplier || null,
+      old_po: it.po || null, new_po: out.po || null,
+    };
+    try { await sb("/order_cost_log", { method: "POST", prefer: "return=minimal", body: JSON.stringify([entry]) }); } catch (e) {}
+    setHist(prev => [{ ...entry, id: Math.random(), created_at: new Date().toISOString() }, ...prev]);
+    setHEdit(null);
+  };
   const histRange = () => {
     const today = new Date().toISOString().split("T")[0];
     if (histPeriod === "today") return [today, today];
@@ -7716,7 +7737,7 @@ function CostsView({ jobs, onUpdate }) {
       if (p !== undefined) out = { ...out, po: p.trim() };
       if (out !== it) {
         logRows.push({
-          job_id: job.id, invoice_no: job.invoice_no || null, customer_name: job.customer_name || null,
+          job_id: job.id, item_id: it.id, invoice_no: job.invoice_no || null, customer_name: job.customer_name || null,
           item_name: it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : (it.name || it.service_type || "item"),
           old_cost: Number(it.cost) || null, new_cost: Number(out.cost) || null,
           old_supplier: it.supplier || null, new_supplier: out.supplier || null,
@@ -7788,10 +7809,28 @@ function CostsView({ jobs, onUpdate }) {
                 if (Number(h.old_cost || 0) !== Number(h.new_cost || 0)) bits.push(`cost ${h.old_cost ?? "—"} → ${h.new_cost}`);
                 if ((h.old_supplier || "") !== (h.new_supplier || "")) bits.push(`supplier ${h.old_supplier || "—"} → ${h.new_supplier || "—"}`);
                 if ((h.old_po || "") !== (h.new_po || "")) bits.push(`PO ${h.old_po || "—"} → ${h.new_po || "—"}`);
+                const job = h.item_id ? jobs.find(j => j.id === h.job_id) : null;
+                const it = job ? (job.items || []).find(x => x.id === h.item_id) : null;
+                const editing = hEdit && hEdit.key === h.id;
                 return (
-                  <div key={h.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 12, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
-                    <span><strong>{h.customer_name || "—"}</strong>{h.invoice_no ? ` · ${h.invoice_no}` : ""} · {h.item_name} — {bits.join(" · ") || "updated"}</span>
-                    <span style={{ color: "var(--muted)", whiteSpace: "nowrap" }}>{String(h.created_at).slice(5, 16).replace("T", " ")}</span>
+                  <div key={h.id} style={{ padding: "6px 0", borderTop: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
+                      <span><strong>{h.customer_name || "—"}</strong>{h.invoice_no ? ` · ${h.invoice_no}` : ""} · {h.item_name} — {bits.join(" · ") || "updated"}</span>
+                      <span style={{ color: "var(--muted)", whiteSpace: "nowrap", display: "flex", gap: 6, alignItems: "center" }}>
+                        {String(h.created_at).slice(5, 16).replace("T", " ")}
+                        {it && !editing && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px", fontSize: 11 }} onClick={() => setHEdit({ key: h.id, jobId: job.id, itemId: it.id, cost: it.cost || "", supplier: it.supplier || "", po: it.po || "" })}>✎ edit</button>}
+                      </span>
+                    </div>
+                    {editing && (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6, background: "var(--bg)", border: "1px dashed var(--border)", borderRadius: 8, padding: "7px 9px" }}>
+                        <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--muted)" }}>CORRECT CURRENT VALUES:</span>
+                        <input className="filter-input" type="number" step="0.001" style={{ width: 86 }} placeholder="cost" value={hEdit.cost} onChange={e => setHEdit(p => ({ ...p, cost: e.target.value }))} />
+                        <input className="filter-input" style={{ width: 130 }} placeholder="supplier" list="cost-suppliers" value={hEdit.supplier} onChange={e => setHEdit(p => ({ ...p, supplier: e.target.value }))} />
+                        <input className="filter-input" style={{ width: 100 }} placeholder="PO ref" value={hEdit.po} onChange={e => setHEdit(p => ({ ...p, po: e.target.value }))} />
+                        <button className="btn btn-primary btn-sm" onClick={saveHistEdit}>Save</button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setHEdit(null)}>cancel</button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
