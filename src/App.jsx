@@ -848,9 +848,15 @@ const incentiveTarget = (nActive) => nActive >= 3 ? 100 : nActive === 2 ? 150 : 
 // Stream 2 (upsell): 1.000/upsell/person — ALWAYS paid, even loss months.
 // Revisit: the order that caused it is voided; the revisit visit earns 0.
 // Five KWD 5 bonuses in profitable months; ties SPLIT equally; zero-revisit splits among qualifiers.
-function computeIncentives(jobs, refDate, fixedExpenses = 12500) {
+function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null) {
   const y = refDate.getFullYear(), m = refDate.getMonth();
-  const inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
+  let inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
+  let fixedApplied = Number(fixedExpenses) || 0;
+  if (range && range.from && range.to) {
+    inMonth = (iso) => { if (!iso) return false; const d = String(iso).split("T")[0]; return d >= range.from && d <= range.to; };
+    const days = Math.max(1, Math.round((new Date(range.to) - new Date(range.from)) / 86400000) + 1);
+    fixedApplied = Math.round(((Number(fixedExpenses) || 0) * days / 30.44) * 100) / 100;
+  }
   const doneAt = (j) => j.completed_at || j.scheduled_at || j.created_at;
   const done = jobs.filter(j => jobSuccessful(j) && inMonth(doneAt(j)));
   const revisitedParents = new Set(jobs.filter(j => j.link_type === "revisit" && j.parent_job_id).map(j => j.parent_job_id));
@@ -880,7 +886,7 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500) {
     };
   });
   const monthGross = rows.reduce((sm, r) => sm + r.profit, 0);
-  const monthNet = Math.round((monthGross - (Number(fixedExpenses) || 0)) * 100) / 100;
+  const monthNet = Math.round((monthGross - fixedApplied) * 100) / 100;
   const profitGate = monthNet >= INCENT.profitGateKD;
   rows.forEach(r => { r.baseUnlocked = profitGate && r.targetHit; });
   const cats = [["bOrders", (r) => r.orders], ["bReviews", (r) => r.avgReview || 0], ["bRevenue", (r) => r.revenue], ["bProfit", (r) => r.profit]];
@@ -898,7 +904,7 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500) {
     rows.forEach(r => { r.bonusTotal = Math.round(Object.values(r.bonusShare).reduce((a2, b2) => a2 + b2, 0) * 1000) / 1000; });
   }
   rows.forEach(r => { r.payout = Math.round(((r.baseUnlocked ? r.basePot : 0) + r.upsellPay + r.bonusTotal) * 1000) / 1000; });
-  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate };
+  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied };
 }
 async function fetchTruckConfig() {
   try {
@@ -4353,51 +4359,138 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
 }
 
 // ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
-function IncentiveReport({ jobs, enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed }) {
+function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed }) {
   const [mo, setMo] = useState(0);
+  const [mode, setMode] = useState("month"); // month | range
+  const [rFrom, setRFrom] = useState("");
+  const [rTo, setRTo] = useState("");
   const [truckFilter, setTruckFilter] = useState("all");
   const [feDraft, setFeDraft] = useState(String(fixedExpenses));
   const ref = new Date();
   ref.setMonth(ref.getMonth() + mo);
-  const { target, rows: allRows, trucksActive, monthNet, profitGate } = computeIncentives(jobs, ref, fixedExpenses);
+  const range = mode === "range" && rFrom && rTo && rFrom <= rTo ? { from: rFrom, to: rTo } : null;
+  const { target, rows: allRows, trucksActive, monthNet, profitGate, fixedApplied } = computeIncentives(jobs, ref, fixedExpenses, range);
   const rows = truckFilter === "all" ? allRows : allRows.filter(r => r.truck === truckFilter);
-  const monthName = ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  const periodLabel = range ? `${range.from} → ${range.to}` : ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
   const badgeNames = { bOrders: "🏆 orders", bReviews: "⭐ reviews", bRevenue: "💵 revenue", bProfit: "💰 profit", bZero: "✨ zero-revisit" };
+
+  // per-person amounts
+  const act = employees.filter(e => e.active);
+  const techs = act.filter(e => e.role === "technician");
+  const salesE = act.filter(e => e.role === "sales");
+  const paE = act.filter(e => e.role === "purchaser" || e.role === "accountant");
+  const tierS = salesTierFor(monthNet);
+  const salesPer = profitGate ? Math.max(0, Math.round(monthNet * tierS.pct) / 100) : 0;
+  const pa = paIncentParts(jobs, ref, monthNet, profitGate, range);
+  const truckPay = {}; allRows.forEach(r => { truckPay[r.truck] = r.payout; });
+  const techTotal = techs.reduce((s2, e) => s2 + (truckPay[e.truck] || 0), 0);
+  const salesTotal = salesPer * salesE.length;
+  const paTotal = pa.total * paE.length;
+  const grand = Math.round((techTotal + salesTotal + paTotal) * 1000) / 1000;
+  const unassignedTrucks = allRows.filter(r => !techs.some(e => e.truck === r.truck)).map(r => r.truck);
+
   return (
     <div className="card" style={{ marginTop: 14 }}>
       <div className="card-body" style={{ padding: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontSize: 15, fontWeight: 800 }}>🎯 Technician Incentive — {monthName}</div>
+          <div style={{ fontSize: 15, fontWeight: 800 }}>🎯 Incentives — {periodLabel}</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setMo(m => m - 1)}>‹</button>
-            <button className="btn btn-ghost btn-sm" disabled={mo >= 0} onClick={() => setMo(m => m + 1)}>›</button>
             <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: enabled ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
               <input type="checkbox" checked={enabled} onChange={e => onToggle(e.target.checked)} />
-              🚛 {enabled ? "LIVE" : "OFF"} — technicians
+              🚛 {enabled ? "LIVE" : "OFF"}
             </label>
             <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: salesOn ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
               <input type="checkbox" checked={salesOn} onChange={e => onToggleSales(e.target.checked)} />
-              💎 {salesOn ? "LIVE" : "OFF"} — sales
+              💎 {salesOn ? "LIVE" : "OFF"}
             </label>
             <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: paOn ? "#E8F4EC" : "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 10px" }}>
               <input type="checkbox" checked={paOn} onChange={e => onTogglePa(e.target.checked)} />
-              🎯 {paOn ? "LIVE" : "OFF"} — purchasing
+              🎯 {paOn ? "LIVE" : "OFF"}
             </label>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", margin: "10px 0", background: profitGate ? "#E8F4EC" : "#FEF2F2", border: `1px solid ${profitGate ? "#BFDFC9" : "#FECACA"}`, borderRadius: 10, padding: "8px 12px" }}>
+
+        {/* period filter */}
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", margin: "10px 0" }}>
+          {[["month", "Monthly"], ["range", "📅 Date range"]].map(([k, lb]) => (
+            <button key={k} className="btn btn-sm" onClick={() => setMode(k)}
+              style={{ fontWeight: 700, background: mode === k ? "var(--ink)" : "var(--card)", color: mode === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
+          ))}
+          {mode === "month" && (<>
+            <button className="btn btn-ghost btn-sm" onClick={() => setMo(m => m - 1)}>‹</button>
+            <button className="btn btn-ghost btn-sm" disabled={mo >= 0} onClick={() => setMo(m => m + 1)}>›</button>
+            {mo !== 0 && <button className="btn btn-ghost btn-sm" onClick={() => setMo(0)}>this month</button>}
+          </>)}
+          {mode === "range" && (<>
+            <input type="date" className="filter-input" value={rFrom} onChange={e => setRFrom(e.target.value)} style={{ fontSize: 12 }} />
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>→</span>
+            <input type="date" className="filter-input" value={rTo} onChange={e => setRTo(e.target.value)} style={{ fontSize: 12 }} />
+            <span style={{ fontSize: 10.5, color: "var(--muted)" }}>fixed expenses prorated · monthly thresholds applied to range net</span>
+          </>)}
+        </div>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10, background: profitGate ? "#E8F4EC" : "#FEF2F2", border: `1px solid ${profitGate ? "#BFDFC9" : "#FECACA"}`, borderRadius: 10, padding: "8px 12px" }}>
           <span style={{ fontSize: 12.5, fontWeight: 800, color: profitGate ? "#1D7A45" : "#B91C1C" }}>
-            {profitGate ? "🟢 PROFIT GATE OPEN" : "🔴 PROFIT GATE CLOSED"} — est. net {kd(monthNet)} (needs ≥ {kd(INCENT.profitGateKD)})
+            {profitGate ? "🟢 PROFIT GATE OPEN" : "🔴 PROFIT GATE CLOSED"} — net {kd(monthNet)} (needs ≥ {kd(INCENT.profitGateKD)})
           </span>
           <span style={{ fontSize: 11.5, color: "var(--muted)", display: "flex", gap: 5, alignItems: "center" }}>
-            fixed expenses/month:
+            fixed/month:
             <input value={feDraft} onChange={e => setFeDraft(e.target.value)} onBlur={() => onSaveFixed(Number(feDraft) || 0)} className="filter-input" style={{ width: 84, padding: "3px 7px", fontSize: 11.5 }} />
-            KWD · gates base + bonuses; upsells always pay
+            {range ? `→ ${kd(fixedApplied)} applied to range` : "KWD"}
           </span>
         </div>
+
+        {/* grand total */}
+        <div style={{ textAlign: "center", background: "linear-gradient(135deg,#0F2419,#1D4B33)", color: "#fff", borderRadius: 14, padding: "14px 10px", marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: .5, color: "#A7D8B9" }}>💰 TOTAL INCENTIVES — EVERYONE · {periodLabel.toUpperCase()}</div>
+          <div style={{ fontSize: 34, fontWeight: 800 }}>KWD {grand.toFixed(3)}</div>
+          <div style={{ fontSize: 11, color: "#A7D8B9", fontWeight: 600 }}>
+            🚛 {kd(techTotal)} ({techs.length}) · 💎 {kd(salesTotal)} ({salesE.length}) · 🎯 {kd(paTotal)} ({paE.length})
+          </div>
+          {act.length === 0 && <div style={{ fontSize: 11, color: "#FCD34D", fontWeight: 700, marginTop: 4 }}>Define your team in 👥 Employees to see real per-person totals.</div>}
+          {unassignedTrucks.length > 0 && act.length > 0 && <div style={{ fontSize: 10.5, color: "#FCD34D", marginTop: 3 }}>⚠ No technicians assigned to: {unassignedTrucks.join(", ")} — their payout isn't counted.</div>}
+        </div>
+
+        {/* per-person breakdown */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, marginBottom: 12 }}>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>🚛 Technicians</div>
+            {allRows.map(r => {
+              const members = techs.filter(e => e.truck === r.truck);
+              return (
+                <div key={r.truck} style={{ borderTop: "1px solid var(--border)", padding: "5px 0" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700 }}>
+                    <span>{r.truck}</span><span>{kd(r.payout)} <span style={{ color: "var(--muted)", fontWeight: 500 }}>/each</span></span>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                    {r.baseUnlocked ? "base ✓" : "base 🔒"} · {r.ups} upsell{r.ups === 1 ? "" : "s"} · {Object.entries(r.bonusShare).map(([k2, v]) => `${badgeNames[k2]} ${v.toFixed(2)}`).join(" · ") || "no bonuses"}
+                  </div>
+                  {members.length > 0
+                    ? members.map(e2 => <div key={e2.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, paddingLeft: 8 }}><span>· {e2.name}</span><span style={{ fontWeight: 700 }}>{kd(r.payout)}</span></div>)
+                    : <div style={{ fontSize: 10.5, color: "#B45309", paddingLeft: 8 }}>no members assigned</div>}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>💎 Sales — {tierS.pct}% tier {profitGate ? "" : "(gate closed)"}</div>
+            {salesE.length === 0 && <div style={{ fontSize: 11, color: "var(--muted)" }}>No sales members defined.</div>}
+            {salesE.map(e2 => <div key={e2.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, borderTop: "1px solid var(--border)", padding: "4px 0" }}><span>· {e2.name}</span><span style={{ fontWeight: 700 }}>{kd(salesPer)}</span></div>)}
+            <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>{tierS.pct}% of net {kd(monthNet)} each</div>
+          </div>
+          <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>🎯 Purchasing & Accounting</div>
+            {paE.length === 0 && <div style={{ fontSize: 11, color: "var(--muted)" }}>No members defined.</div>}
+            {paE.map(e2 => <div key={e2.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, borderTop: "1px solid var(--border)", padding: "4px 0" }}><span>· {e2.name} <span style={{ color: "var(--muted)" }}>({e2.role})</span></span><span style={{ fontWeight: 700 }}>{kd(pa.total)}</span></div>)}
+            <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>
+              margin {pa.marginPct != null ? pa.marginPct.toFixed(1) + "%" : "—"} → kicker {kd(pa.kicker)} · share {pa.sharePct}% → {kd(pa.share)}
+            </div>
+          </div>
+        </div>
+
         <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
-          Target {target}/truck ({trucksActive} active) · base 0.250/order (needs gate + target; all orders from #1) · upsell 1.000 always · revisited orders void · 5× KWD 5 bonuses, ties split
+          Target {target}/truck ({trucksActive} active) · base 0.250/order gated · upsell 1.000 always · revisited orders void · 5× KWD 5 bonuses, ties split
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
           {["all", ...allRows.map(r => r.truck)].map(t => (
@@ -4421,7 +4514,6 @@ function IncentiveReport({ jobs, enabled, onToggle, salesOn, onToggleSales, paOn
                   <td style={{ textAlign: "center", fontWeight: 700, color: r.targetHit ? "var(--success)" : "#B45309" }}>{Math.round((r.orders / target) * 100)}%{r.targetHit ? " ✓" : ""}</td>
                   <td style={{ textAlign: "center", color: r.baseUnlocked ? "var(--success)" : "var(--muted)" }}>
                     {r.baseUnlocked ? `KWD ${r.basePot.toFixed(3)}` : `🔒 ${r.basePot.toFixed(3)}`}
-                    {!r.baseUnlocked && <div style={{ fontSize: 10 }}>{!profitGate ? "profit gate" : "below target"}</div>}
                   </td>
                   <td style={{ textAlign: "center", fontWeight: 700, color: "var(--success)" }}>{r.ups} · KWD {r.upsellPay.toFixed(3)}</td>
                   <td style={{ textAlign: "center", color: r.voided ? "var(--danger)" : "var(--muted)" }}>{r.voided}</td>
@@ -4429,20 +4521,71 @@ function IncentiveReport({ jobs, enabled, onToggle, salesOn, onToggleSales, paOn
                   <td style={{ textAlign: "center", color: r.revisitsCaused ? "var(--danger)" : "var(--success)" }}>{r.revisitsCaused}</td>
                   <td style={{ textAlign: "center" }}>{kd(r.revenue)}</td>
                   <td style={{ textAlign: "center" }}>{kd(r.profit)}</td>
-                  <td style={{ fontSize: 11 }}>{Object.entries(r.bonusShare).map(([k, v]) => `${badgeNames[k]} ${v.toFixed(2)}`).join(" · ") || "—"}</td>
+                  <td style={{ fontSize: 11 }}>{Object.entries(r.bonusShare).map(([k2, v]) => `${badgeNames[k2]} ${v.toFixed(2)}`).join(" · ") || "—"}</td>
                   <td style={{ textAlign: "right", fontWeight: 800 }}>{kd(r.payout)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Payout/person = unlocked base + upsells (always) + bonus shares. Winners provisional until month end; ties split.</div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>Switches control what each team sees on their own dashboards — you always see everything here.</div>
       </div>
     </div>
   );
 }
 
 // ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
+// ═══ 👥 Employees — the team registry behind per-person incentives ═══════════
+const EMP_ROLES = [["technician", "🚛 Technician"], ["sales", "💎 Sales"], ["purchaser", "📋 Purchaser"], ["accountant", "🧾 Accountant"], ["other", "👤 Other"]];
+function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
+  const [draft, setDraft] = useState({ name: "", role: "technician", truck: activeTrucks()[0] || "" });
+  const groups = EMP_ROLES.map(([k, lb]) => [k, lb, employees.filter(e => e.role === k)]);
+  return (
+    <div style={{ maxWidth: 640, margin: "0 auto" }}>
+      <div className="page-title">Employees</div>
+      <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>The team behind the numbers — incentive totals count each active person here.</div>
+      <div className="card" style={{ padding: 14, marginBottom: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>＋ Add team member</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input className="filter-input" placeholder="Name" value={draft.name} onChange={e => setDraft(p => ({ ...p, name: e.target.value }))} style={{ flex: "1 1 150px" }} />
+          <select className="filter-select" value={draft.role} onChange={e => setDraft(p => ({ ...p, role: e.target.value }))}>
+            {EMP_ROLES.map(([k, lb]) => <option key={k} value={k}>{lb}</option>)}
+          </select>
+          {draft.role === "technician" && (
+            <select className="filter-select" value={draft.truck} onChange={e => setDraft(p => ({ ...p, truck: e.target.value }))}>
+              {activeTrucks().map(t => <option key={t}>{t}</option>)}
+            </select>
+          )}
+          <button className="btn btn-primary btn-sm" disabled={!draft.name.trim()}
+            onClick={() => { onAdd({ name: draft.name.trim(), role: draft.role, truck: draft.role === "technician" ? draft.truck : null }); setDraft(p => ({ ...p, name: "" })); }}>Add</button>
+        </div>
+      </div>
+      {groups.map(([k, lb, list]) => (
+        <div key={k} className="card" style={{ padding: 14, marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>{lb} <span style={{ color: "var(--muted)", fontWeight: 600 }}>({list.filter(e => e.active).length} active)</span></div>
+          {list.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>No one yet.</div>}
+          {list.map(e => (
+            <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "7px 0", borderTop: "1px solid var(--border)", opacity: e.active ? 1 : 0.45 }}>
+              <input className="filter-input" defaultValue={e.name} key={e.id + e.name}
+                onBlur={ev => { const v = ev.target.value.trim(); if (v && v !== e.name) onUpdate(e, { name: v }); }} style={{ flex: "1 1 140px" }} />
+              {e.role === "technician" && (
+                <select className="filter-select" value={e.truck || ""} onChange={ev => onUpdate(e, { truck: ev.target.value })}>
+                  {activeTrucks().map(t => <option key={t}>{t}</option>)}
+                </select>
+              )}
+              <label style={{ fontSize: 11.5, fontWeight: 700, display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                <input type="checkbox" checked={!!e.active} onChange={ev => onUpdate(e, { active: ev.target.checked })} /> active
+              </label>
+              <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => { if (window.confirm(`Remove ${e.name}?`)) onRemove(e); }}>✕</button>
+            </div>
+          ))}
+        </div>
+      ))}
+      <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 20 }}>Inactive members keep their history but stop counting in incentive totals.</div>
+    </div>
+  );
+}
+
 // ═══ 💎 Sales incentive (§4: net-profit tiers, per person) ═══════════════════
 const SALES_TIERS = [
   { from: 4000, pct: 5 }, { from: 3000, pct: 4.5 }, { from: 2000, pct: 4 },
@@ -4493,6 +4636,29 @@ function SalesIncentiveView({ jobs, fixedExpenses }) {
 }
 
 // ═══ 🎯 Purchase Agent & Accountant incentive (§1: margin kicker + profit share) ═══
+function paIncentParts(jobs, refDate, monthNet, profitGate, range = null) {
+  const y = refDate.getFullYear(), m = refDate.getMonth();
+  let inP = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
+  if (range && range.from && range.to) inP = (iso) => { if (!iso) return false; const d = String(iso).split("T")[0]; return d >= range.from && d <= range.to; };
+  const done = jobs.filter(j => jobSuccessful(j) && inP(j.completed_at || j.scheduled_at || j.created_at));
+  let tRev = 0, tCost = 0;
+  done.forEach(j => (j.items || []).forEach(it => {
+    if (TIRE_SIZE_RX.test(String(it.name || ""))) {
+      TIRE_SIZE_RX.lastIndex = 0;
+      const qty = Number(it.qty) || 1;
+      tRev += (Number(it.price) || 0) * qty;
+      tCost += (Number(it.cost) || 0) * qty;
+    }
+    TIRE_SIZE_RX.lastIndex = 0;
+  }));
+  const marginPct = tRev > 0 ? ((tRev - tCost) / tRev) * 100 : null;
+  const pts = marginPct != null ? Math.max(0, marginPct - 20) : 0;
+  const kicker = profitGate ? Math.round(pts * 10 * 100) / 100 : 0;
+  const sharePct = monthNet >= 1000 ? 2 : monthNet >= 500 ? 1 : 0;
+  const share = profitGate ? Math.max(0, Math.round(monthNet * sharePct) / 100) : 0;
+  const total = profitGate ? Math.round((kicker + share) * 1000) / 1000 : 0;
+  return { marginPct, pts, kicker, sharePct, share, total };
+}
 function PAIncentiveView({ jobs, fixedExpenses }) {
   const now = new Date();
   const { monthNet, profitGate } = computeIncentives(jobs, now, fixedExpenses);
@@ -8715,6 +8881,25 @@ export default function App() {
   };
 
   const [appSettings, setAppSettings] = useState({});
+  const [employees, setEmployees] = useState([]);
+  const loadEmployees = async () => {
+    try { const d = await sbAll("/employees?select=*&order=created_at.asc"); setEmployees(d || []); } catch (e) {}
+  };
+  useEffect(() => { loadEmployees(); }, []);
+  const addEmployee = async (row) => {
+    try {
+      const d = await sb("/employees", { method: "POST", prefer: "return=representation", body: JSON.stringify(row) });
+      setEmployees(prev => [...prev, ...(Array.isArray(d) ? d : [d])]);
+    } catch (e) { showToast && showToast("⚠ Add failed — run migration_employees.sql?"); }
+  };
+  const updateEmployee = async (emp, patch) => {
+    setEmployees(prev => prev.map(x => x.id === emp.id ? { ...x, ...patch } : x));
+    try { await sb(`/employees?id=eq.${emp.id}`, { method: "PATCH", prefer: "return=minimal", body: JSON.stringify(patch) }); } catch (e) {}
+  };
+  const removeEmployee = async (emp) => {
+    setEmployees(prev => prev.filter(x => x.id !== emp.id));
+    try { await sb(`/employees?id=eq.${emp.id}`, { method: "DELETE" }); } catch (e) {}
+  };
   const incentiveOn = appSettings.incentive_enabled === true;               // technicians
   const salesIncentOn = appSettings.sales_incentive_enabled === true;       // sales
   const paIncentOn = appSettings.pa_incentive_enabled === true;             // purchasing & accounting
@@ -8734,6 +8919,7 @@ export default function App() {
     { key: "schedule",   label: "Schedule",        icon: "📅", roles: ["sales", "purchaser"] },
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
     { key: "collections", label: "Collections",  icon: "💰", roles: ["sales"] },
+    { key: "employees",   label: "Employees",    icon: "👥", roles: ["sales"] },
     { key: "salesincent", label: "Incentive",    icon: "💎", roles: ["sales"] },
     { key: "paincent",    label: "Incentive",    icon: "🎯", roles: ["purchaser"] },
     { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales", "purchaser"] },
@@ -8752,6 +8938,7 @@ export default function App() {
   const tabs = allTabs
     .filter(t => isOwner || t.roles.includes(role))
     .filter(t => t.key !== "target" || incentiveOn || isOwner)
+    .filter(t => t.key !== "employees" || isOwner)
     .filter(t => t.key !== "salesincent" || salesIncentOn || isOwner)
     .filter(t => t.key !== "paincent" || paIncentOn || isOwner); // each incentive dashboard has its own LIVE switch
 
@@ -8875,6 +9062,9 @@ export default function App() {
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
           )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "employees" && isOwner && (
+            <EmployeesView employees={employees} onAdd={addEmployee} onUpdate={updateEmployee} onRemove={removeEmployee} />
+          )}
           {!loading && !selectedJob && !selectedCustomer && tab === "salesincent" && (
             <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
           )}
@@ -8890,7 +9080,7 @@ export default function App() {
           {!loading && !selectedJob && !selectedCustomer && tab === "reports" && (
             <>
               <ReportsView jobs={jobs} quotes={quotes} customers={customers} owner={isOwner} />
-              <IncentiveReport jobs={jobs} enabled={incentiveOn} onToggle={setIncentiveEnabled}
+              <IncentiveReport jobs={jobs} employees={employees} enabled={incentiveOn} onToggle={setIncentiveEnabled}
                 salesOn={salesIncentOn} onToggleSales={setSalesIncentEnabled}
                 paOn={paIncentOn} onTogglePa={setPaIncentEnabled}
                 fixedExpenses={Number(appSettings.fixed_expenses) || 12500}
