@@ -5092,6 +5092,19 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
         </div>
       )}
 
+      {(() => {
+        const pos = [...new Set((j.items || []).map(it => String(it.po || "").trim()).filter(Boolean))];
+        if (!pos.length) return null;
+        const joined = pos.join(", ");
+        return (
+          <div className="card">
+            <div className="card-body" style={{ padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <span style={{ fontSize: 12.5 }}><strong>📄 P.O. ref{pos.length > 1 ? "s" : ""}:</strong> {joined} <span style={{ fontSize: 10.5, color: "var(--muted)" }}>→ Xero "PO Ref" field</span></span>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={async (e) => { const ok = await schedCopy(joined); e.target.textContent = ok ? "✓ copied" : "copy"; setTimeout(() => { try { e.target.textContent = "copy"; } catch (x) {} }, 1500); }}>copy</button>
+            </div>
+          </div>
+        );
+      })()}
       {/* 🗓 flexible payment plan — pay later / partial / in-house installments */}
       {!["technician", "distributor"].includes(role) && (() => {
         const plan = planOf(j);
@@ -5324,7 +5337,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {j.items.map(it => (
                   <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", fontSize: 13 }}>
-                    <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span><CollectedChip ok={itemOK(j, it.id)} /></span>
+                    <span>{it.kind === "tire" ? `${it.brand} ${it.pattern || ""} · ${itemSpec(it)}` : (it.name || it.service_type)} <span style={{ color: "var(--accent)", fontWeight: 700 }}>×{it.qty}</span>{it.po ? <span style={{ fontSize: 10.5, fontWeight: 700, color: "#1D4ED8", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 6, padding: "1px 6px", marginLeft: 6 }}>PO {it.po}</span> : null}<CollectedChip ok={itemOK(j, it.id)} /></span>
                     <span style={{ whiteSpace: "nowrap" }}><span style={{ color: "var(--muted)", fontWeight: 500 }}>@ {Number(it.unit_price || 0).toFixed(3)} · </span><span style={{ fontWeight: 700, color: "var(--accent)" }}>KWD {((Number(it.qty) || 0) * (Number(it.unit_price) || 0)).toFixed(3)}</span></span>
                   </div>
                 ))}
@@ -7649,6 +7662,12 @@ function CostsView({ jobs, onUpdate }) {
   const [savingId, setSavingId] = useState("");
   const [drafts, setDrafts] = useState({}); // {jobId: {itemId: cost}}
   const [supDrafts, setSupDrafts] = useState({}); // {jobId: {itemId: supplier}}
+  const [poDrafts, setPoDrafts] = useState({});   // {jobId: {itemId: po}}
+  const [histOpen, setHistOpen] = useState(false);
+  const [hist, setHist] = useState([]);
+  useEffect(() => {
+    sbAll("/order_cost_log?select=*&order=created_at.desc&limit=80").then(d => setHist(d || [])).catch(() => {});
+  }, []);
   const [showAll, setShowAll] = useState(false);
   const [q, setQ] = useState("");
 
@@ -7667,21 +7686,42 @@ function CostsView({ jobs, onUpdate }) {
   const setDraft = (jobId, itemId, val) => setDrafts(d => ({ ...d, [jobId]: { ...(d[jobId] || {}), [itemId]: val } }));
 
   const setSupDraft = (jobId, itemId, val) => setSupDrafts(d => ({ ...d, [jobId]: { ...(d[jobId] || {}), [itemId]: val } }));
+  const setPoDraft = (jobId, itemId, val) => setPoDrafts(d => ({ ...d, [jobId]: { ...(d[jobId] || {}), [itemId]: val } }));
   const saveJob = async (job) => {
     const d = drafts[job.id] || {};
     const sd = supDrafts[job.id] || {};
+    const pd = poDrafts[job.id] || {};
+    const logRows = [];
     const items = (job.items || []).map(it => {
       let out = it;
       const v = d[it.id];
       if (v !== undefined && v !== "") out = { ...out, cost: Number(v) || 0 };
       const s = sd[it.id];
       if (s !== undefined) out = { ...out, supplier: s };
+      const p = pd[it.id];
+      if (p !== undefined) out = { ...out, po: p.trim() };
+      if (out !== it) {
+        logRows.push({
+          job_id: job.id, invoice_no: job.invoice_no || null, customer_name: job.customer_name || null,
+          item_name: it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : (it.name || it.service_type || "item"),
+          old_cost: Number(it.cost) || null, new_cost: Number(out.cost) || null,
+          old_supplier: it.supplier || null, new_supplier: out.supplier || null,
+          old_po: it.po || null, new_po: out.po || null,
+        });
+      }
       return out;
     });
     setSavingId(job.id);
     await onUpdate(job.id, { items });
+    if (logRows.length) {
+      try {
+        await sb("/order_cost_log", { method: "POST", prefer: "return=minimal", body: JSON.stringify(logRows) });
+        setHist(prev => [...logRows.map(r => ({ ...r, id: Math.random(), created_at: new Date().toISOString() })), ...prev].slice(0, 80));
+      } catch (e) {}
+    }
     setDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
     setSupDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
+    setPoDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
     setSavingId("");
   };
 
@@ -7703,6 +7743,32 @@ function CostsView({ jobs, onUpdate }) {
         </div>
       </div>
 
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="card-body" style={{ padding: "10px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setHistOpen(o => !o)}>
+            <span style={{ fontSize: 13, fontWeight: 800 }}>🕰 Cost history <span style={{ color: "var(--muted)", fontWeight: 600 }}>({hist.length} recent changes)</span></span>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>{histOpen ? "▲ hide" : "▼ show"}</span>
+          </div>
+          {histOpen && (
+            <div style={{ marginTop: 6 }}>
+              {hist.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>Changes will appear here with their previous values.</div>}
+              {hist.map(h => {
+                const bits = [];
+                if (Number(h.old_cost || 0) !== Number(h.new_cost || 0)) bits.push(`cost ${h.old_cost ?? "—"} → ${h.new_cost}`);
+                if ((h.old_supplier || "") !== (h.new_supplier || "")) bits.push(`supplier ${h.old_supplier || "—"} → ${h.new_supplier || "—"}`);
+                if ((h.old_po || "") !== (h.new_po || "")) bits.push(`PO ${h.old_po || "—"} → ${h.new_po || "—"}`);
+                return (
+                  <div key={h.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 11.5, padding: "5px 0", borderTop: "1px solid var(--border)" }}>
+                    <span><strong>{h.customer_name || "—"}</strong>{h.invoice_no ? ` · ${h.invoice_no}` : ""} · {h.item_name} — {bits.join(" · ") || "updated"}</span>
+                    <span style={{ color: "var(--muted)" }}>{String(h.created_at).slice(5, 16).replace("T", " ")}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
       <datalist id="cost-suppliers">
         {OTHER_SUPPLIERS.map(s => <option key={s} value={s} />)}
       </datalist>
@@ -7713,7 +7779,8 @@ function CostsView({ jobs, onUpdate }) {
         const items = (job.items || []).filter(costable);
         const missing = items.filter(needsCost).length;
         const dirty = (drafts[job.id] && Object.values(drafts[job.id]).some(v => v !== "" && v !== undefined))
-          || (supDrafts[job.id] && Object.keys(supDrafts[job.id]).length > 0);
+          || (supDrafts[job.id] && Object.keys(supDrafts[job.id]).length > 0)
+          || (poDrafts[job.id] && Object.keys(poDrafts[job.id]).length > 0);
         return (
           <div key={job.id} className="card" style={{ marginBottom: 14, borderLeft: missing ? "3px solid #B45309" : "3px solid var(--success)" }}>
             <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -7723,7 +7790,7 @@ function CostsView({ jobs, onUpdate }) {
             </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><th style={th}>Item</th><th style={th}>Supplier</th><th style={th}>Qty</th><th style={th}>Price</th><th style={th}>Cost (each)</th></tr></thead>
+                <thead><tr><th style={th}>Item</th><th style={th}>Supplier</th><th style={th}>P.O.</th><th style={th}>Qty</th><th style={th}>Price</th><th style={th}>Cost (each)</th></tr></thead>
                 <tbody>
                   {items.map(it => {
                     const name = it.kind === "tire" ? `${it.brand} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : it.name;
@@ -7737,6 +7804,11 @@ function CostsView({ jobs, onUpdate }) {
                             value={(supDrafts[job.id] || {})[it.id] !== undefined ? (supDrafts[job.id])[it.id] : (it.supplier || "")}
                             onChange={e => setSupDraft(job.id, it.id, e.target.value)}
                             list="cost-suppliers" />
+                        </td>
+                        <td style={td}>
+                          <input className="filter-input" style={{ width: 100 }} placeholder="PO ref"
+                            value={(poDrafts[job.id] || {})[it.id] !== undefined ? (poDrafts[job.id])[it.id] : (it.po || "")}
+                            onChange={e => setPoDraft(job.id, it.id, e.target.value)} />
                         </td>
                         <td style={td}>{it.qty}</td>
                         <td style={{ ...td, color: "var(--muted)" }}>{Number(it.unit_price) ? `${Number(it.unit_price).toFixed(3)}` : "—"}</td>
