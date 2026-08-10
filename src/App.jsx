@@ -4601,14 +4601,54 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
 }
 
 // ═══ 👥 Employees — the team registry behind per-person incentives ═══════════
+// Kuwait Civil ID: 12 digits — [century 2=19xx/3=20xx][YYMMDD][serial][check]
+const cidToDob = (cid) => {
+  const d = String(cid || "").replace(/\D/g, "");
+  if (d.length !== 12) return { dob: null, err: d.length ? "needs 12 digits" : null };
+  const cent = d[0] === "2" ? 1900 : d[0] === "3" ? 2000 : null;
+  if (cent == null) return { dob: null, err: "must start with 2 or 3" };
+  const y = cent + Number(d.slice(1, 3)), mo = Number(d.slice(3, 5)), da = Number(d.slice(5, 7));
+  const dt = new Date(y, mo - 1, da);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== da) return { dob: null, err: "invalid birth date inside ID" };
+  // checksum (weights 2,1,6,3,7,9,10,5,8,4,3) — warn only, never block
+  const w = [2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 3];
+  const sum = w.reduce((s2, wi, i) => s2 + wi * Number(d[i]), 0);
+  const chk = 11 - (sum % 11);
+  const warn = chk !== Number(d[11]) ? "checksum doesn't match — double-check the number" : null;
+  return { dob: `${y}-${String(mo).padStart(2, "0")}-${String(da).padStart(2, "0")}`, err: null, warn };
+};
+const daysToBirthday = (dob) => {
+  if (!dob) return null;
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const [, m, d] = String(dob).split("-").map(Number);
+  let b = new Date(now.getFullYear(), m - 1, d);
+  if (b < now) b = new Date(now.getFullYear() + 1, m - 1, d);
+  return Math.round((b - now) / 86400000);
+};
+const birthdayMsg = (name) => ({
+  en: `Happy Birthday ${name}! 🎂 Wishing you a fantastic year ahead — from all of us at BNCHR+ 🎉`,
+  ar: `كل عام وأنت بخير يا ${name} 🎂 عساك من عوّاده وسنة مليانة نجاح — من كل فريق بنجر بلاس 🎉`,
+});
+// per supplier size guide (S–XXXL; pants carry the numeric waist label)
+const TSHIRT_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL"];
+const PANTS_SIZES = ["S (32)", "M (34)", "L (36)", "XL (38)", "XXL (40)", "XXXL (42)"];
 const EMP_ROLES = [["technician", "🚛 Technician"], ["sales", "💎 Sales"], ["purchaser", "📋 Purchaser"], ["accountant", "🧾 Accountant"], ["other", "👤 Other"]];
 function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
-  const [draft, setDraft] = useState({ name: "", role: "technician", truck: activeTrucks()[0] || "" });
+  const [draft, setDraft] = useState({ name: "", role: "technician", truck: activeTrucks()[0] || "", civil_id: "", pants_size: "", tshirt_size: "" });
+  const draftCid = cidToDob(draft.civil_id);
   const groups = EMP_ROLES.map(([k, lb]) => [k, lb, employees.filter(e => e.role === k)]);
   return (
     <div style={{ maxWidth: 640, margin: "0 auto" }}>
       <div className="page-title">Employees</div>
       <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>The team behind the numbers — incentive totals count each active person here.</div>
+      {(() => {
+        const upcoming = employees.filter(e => e.active && e.dob).map(e => ({ e, d: daysToBirthday(e.dob) })).filter(x => x.d <= 30).sort((a, b) => a.d - b.d);
+        return upcoming.length ? (
+          <div style={{ background: "#FFF7EC", border: "1.5px solid #FDDCAB", borderRadius: 12, padding: "9px 14px", marginBottom: 12, fontSize: 12.5, fontWeight: 700 }}>
+            🎂 Upcoming birthdays: {upcoming.map(x => `${x.e.name.split(" ")[0]} ${x.d === 0 ? "— TODAY 🎉" : `(${x.d}d)`}`).join(" · ")}
+          </div>
+        ) : null;
+      })()}
       <div className="card" style={{ padding: 14, marginBottom: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>＋ Add team member</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -4621,9 +4661,22 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
               {activeTrucks().map(t => <option key={t}>{t}</option>)}
             </select>
           )}
-          <button className="btn btn-primary btn-sm" disabled={!draft.name.trim()}
-            onClick={() => { onAdd({ name: draft.name.trim(), role: draft.role, truck: draft.role === "technician" ? draft.truck : null }); setDraft(p => ({ ...p, name: "" })); }}>Add</button>
+          <input className="filter-input" placeholder="Civil ID (12 digits)" maxLength={12} inputMode="numeric" value={draft.civil_id}
+            onChange={e => setDraft(p => ({ ...p, civil_id: e.target.value.replace(/\D/g, "") }))} style={{ width: 150 }} />
+          <select className="filter-select" value={draft.tshirt_size} onChange={e => setDraft(p => ({ ...p, tshirt_size: e.target.value }))}>
+            <option value="">T-shirt…</option>{TSHIRT_SIZES.map(x => <option key={x}>{x}</option>)}
+          </select>
+          <select className="filter-select" value={draft.pants_size} onChange={e => setDraft(p => ({ ...p, pants_size: e.target.value }))}>
+            <option value="">Pants…</option>{PANTS_SIZES.map(x => <option key={x}>{x}</option>)}
+          </select>
+          <button className="btn btn-primary btn-sm" disabled={!draft.name.trim() || (draft.civil_id && !draftCid.dob)}
+            onClick={() => { onAdd({ name: draft.name.trim(), role: draft.role, truck: draft.role === "technician" ? draft.truck : null, civil_id: draft.civil_id || null, dob: draftCid.dob, pants_size: draft.pants_size || null, tshirt_size: draft.tshirt_size || null }); setDraft(p => ({ ...p, name: "", civil_id: "", pants_size: "", tshirt_size: "" })); }}>Add</button>
         </div>
+        {draft.civil_id && (
+          <div style={{ fontSize: 11.5, marginTop: 5, fontWeight: 700, color: draftCid.dob ? (draftCid.warn ? "#B45309" : "var(--success)") : "#DC2626" }}>
+            {draftCid.dob ? `🎂 born ${draftCid.dob}${draftCid.warn ? ` · ⚠ ${draftCid.warn}` : ""}` : `⚠ ${draftCid.err || "incomplete"}`}
+          </div>
+        )}
       </div>
       {groups.map(([k, lb, list]) => (
         <div key={k} className="card" style={{ padding: 14, marginBottom: 10 }}>
@@ -4638,6 +4691,30 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
                   {activeTrucks().map(t => <option key={t}>{t}</option>)}
                 </select>
               )}
+              <input className="filter-input" placeholder="Civil ID" maxLength={12} inputMode="numeric" defaultValue={e.civil_id || ""} key={e.id + "cid" + (e.civil_id || "")}
+                onBlur={ev => {
+                  const v = ev.target.value.replace(/\D/g, "");
+                  if (v === (e.civil_id || "")) return;
+                  const r = cidToDob(v);
+                  if (v && !r.dob) { ev.target.style.borderColor = "#DC2626"; return; }
+                  ev.target.style.borderColor = "";
+                  onUpdate(e, { civil_id: v || null, dob: r.dob });
+                }} style={{ width: 128, fontSize: 11.5 }} />
+              <select className="filter-select" value={e.tshirt_size || ""} onChange={ev => onUpdate(e, { tshirt_size: ev.target.value || null })} style={{ fontSize: 11.5 }}>
+                <option value="">👕</option>{TSHIRT_SIZES.map(x => <option key={x}>{x}</option>)}
+              </select>
+              <select className="filter-select" value={e.pants_size || ""} onChange={ev => onUpdate(e, { pants_size: ev.target.value || null })} style={{ fontSize: 11.5 }}>
+                <option value="">👖</option>{PANTS_SIZES.map(x => <option key={x}>{x}</option>)}
+              </select>
+              {e.dob && (() => {
+                const dtb = daysToBirthday(e.dob);
+                return (
+                  <span style={{ fontSize: 11, fontWeight: 700, color: dtb === 0 ? "#DC2626" : dtb <= 14 ? "#B45309" : "var(--muted)", display: "flex", gap: 4, alignItems: "center" }}>
+                    🎂 {String(e.dob).slice(5)}{dtb === 0 ? " · TODAY!" : dtb <= 14 ? ` · in ${dtb}d` : ""}
+                    {dtb === 0 && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px", fontSize: 10.5 }} onClick={async (ev) => { const ok = await schedCopy(birthdayMsg(String(e.name).split(" ")[0]).ar + "\n\n" + birthdayMsg(String(e.name).split(" ")[0]).en); ev.target.textContent = ok ? "✓" : "📱"; }}>📱 greet</button>}
+                  </span>
+                );
+              })()}
               <label style={{ fontSize: 11.5, fontWeight: 700, display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
                 <input type="checkbox" checked={!!e.active} onChange={ev => onUpdate(e, { active: ev.target.checked })} /> active
               </label>
