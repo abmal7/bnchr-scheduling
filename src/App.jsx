@@ -4629,9 +4629,23 @@ const birthdayMsg = (name) => ({
   en: `Happy Birthday ${name}! 🎂 Wishing you a fantastic year ahead — from all of us at BNCHR+ 🎉`,
   ar: `كل عام وأنت بخير يا ${name} 🎂 عساك من عوّاده وسنة مليانة نجاح — من كل فريق بنجر بلاس 🎉`,
 });
-// per supplier size guide (S–XXXL; pants carry the numeric waist label)
-const TSHIRT_SIZES = ["S", "M", "L", "XL", "XXL", "XXXL"];
-const PANTS_SIZES = ["S (32)", "M (34)", "L (36)", "XL (38)", "XXL (40)", "XXXL (42)"];
+// per supplier size guide — [stored value, label with body measurements in cm]
+const TSHIRT_SIZES = [
+  ["S", "S — bust 92–96 · waist 78–82 · height 170–175"],
+  ["M", "M — bust 96–100 · waist 82–86 · height 175–180"],
+  ["L", "L — bust 100–105 · waist 86–91 · height 180–185"],
+  ["XL", "XL — bust 105–110 · waist 91–96 · height 185–190"],
+  ["XXL", "XXL — bust 110–115 · waist 96–102 · height 185–190"],
+  ["XXXL", "XXXL — bust 116–123 · waist 103–109 · height 190–195"],
+];
+const PANTS_SIZES = [
+  ["S (32)", "S (32) — waist 78–82 · hips 94–98 · height 170–175"],
+  ["M (34)", "M (34) — waist 82–86 · hips 98–102 · height 175–180"],
+  ["L (36)", "L (36) — waist 86–91 · hips 102–107 · height 180–185"],
+  ["XL (38)", "XL (38) — waist 91–96 · hips 107–112 · height 185–190"],
+  ["XXL (40)", "XXL (40) — waist 96–102 · hips 112–118 · height 185–190"],
+  ["XXXL (42)", "XXXL (42) — waist 103–109 · hips 119–125 · height 190–195"],
+];
 const EMP_ROLES = [["technician", "🚛 Technician"], ["sales", "💎 Sales"], ["purchaser", "📋 Purchaser"], ["accountant", "🧾 Accountant"], ["other", "👤 Other"]];
 function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
   const [draft, setDraft] = useState({ name: "", role: "technician", truck: activeTrucks()[0] || "", civil_id: "", pants_size: "", tshirt_size: "" });
@@ -4664,10 +4678,10 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
           <input className="filter-input" placeholder="Civil ID (12 digits)" maxLength={12} inputMode="numeric" value={draft.civil_id}
             onChange={e => setDraft(p => ({ ...p, civil_id: e.target.value.replace(/\D/g, "") }))} style={{ width: 150 }} />
           <select className="filter-select" value={draft.tshirt_size} onChange={e => setDraft(p => ({ ...p, tshirt_size: e.target.value }))}>
-            <option value="">T-shirt…</option>{TSHIRT_SIZES.map(x => <option key={x}>{x}</option>)}
+            <option value="">T-shirt…</option>{TSHIRT_SIZES.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}
           </select>
           <select className="filter-select" value={draft.pants_size} onChange={e => setDraft(p => ({ ...p, pants_size: e.target.value }))}>
-            <option value="">Pants…</option>{PANTS_SIZES.map(x => <option key={x}>{x}</option>)}
+            <option value="">Pants…</option>{PANTS_SIZES.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}
           </select>
           <button className="btn btn-primary btn-sm" disabled={!draft.name.trim() || (draft.civil_id && !draftCid.dob)}
             onClick={() => { onAdd({ name: draft.name.trim(), role: draft.role, truck: draft.role === "technician" ? draft.truck : null, civil_id: draft.civil_id || null, dob: draftCid.dob, pants_size: draft.pants_size || null, tshirt_size: draft.tshirt_size || null }); setDraft(p => ({ ...p, name: "", civil_id: "", pants_size: "", tshirt_size: "" })); }}>Add</button>
@@ -4701,10 +4715,10 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
                   onUpdate(e, { civil_id: v || null, dob: r.dob });
                 }} style={{ width: 128, fontSize: 11.5 }} />
               <select className="filter-select" value={e.tshirt_size || ""} onChange={ev => onUpdate(e, { tshirt_size: ev.target.value || null })} style={{ fontSize: 11.5 }}>
-                <option value="">👕</option>{TSHIRT_SIZES.map(x => <option key={x}>{x}</option>)}
+                <option value="">👕</option>{TSHIRT_SIZES.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}
               </select>
               <select className="filter-select" value={e.pants_size || ""} onChange={ev => onUpdate(e, { pants_size: ev.target.value || null })} style={{ fontSize: 11.5 }}>
-                <option value="">👖</option>{PANTS_SIZES.map(x => <option key={x}>{x}</option>)}
+                <option value="">👖</option>{PANTS_SIZES.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}
               </select>
               {e.dob && (() => {
                 const dtb = daysToBirthday(e.dob);
