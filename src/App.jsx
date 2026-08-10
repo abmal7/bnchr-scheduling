@@ -4629,27 +4629,32 @@ const birthdayMsg = (name) => ({
   en: `Happy Birthday ${name}! 🎂 Wishing you a fantastic year ahead — from all of us at BNCHR+ 🎉`,
   ar: `كل عام وأنت بخير يا ${name} 🎂 عساك من عوّاده وسنة مليانة نجاح — من كل فريق بنجر بلاس 🎉`,
 });
-// per supplier size guide — [stored value, label with body measurements in cm]
-const TSHIRT_SIZES = [
-  ["S", "S — bust 92–96 · waist 78–82 · height 170–175"],
-  ["M", "M — bust 96–100 · waist 82–86 · height 175–180"],
-  ["L", "L — bust 100–105 · waist 86–91 · height 180–185"],
-  ["XL", "XL — bust 105–110 · waist 91–96 · height 185–190"],
-  ["XXL", "XXL — bust 110–115 · waist 96–102 · height 185–190"],
-  ["XXXL", "XXXL — bust 116–123 · waist 103–109 · height 190–195"],
-];
-const PANTS_SIZES = [
-  ["S (32)", "S (32) — waist 78–82 · hips 94–98 · height 170–175"],
-  ["M (34)", "M (34) — waist 82–86 · hips 98–102 · height 175–180"],
-  ["L (36)", "L (36) — waist 86–91 · hips 102–107 · height 180–185"],
-  ["XL (38)", "XL (38) — waist 91–96 · hips 107–112 · height 185–190"],
-  ["XXL (40)", "XXL (40) — waist 96–102 · hips 112–118 · height 185–190"],
-  ["XXXL (42)", "XXXL (42) — waist 103–109 · hips 119–125 · height 190–195"],
-];
+// per supplier size guide — one source: measurements drive both selects and the 📏 guide
+const SIZE_GUIDE = {
+  tshirt: [
+    { s: "S", bust: "92–96", waist: "78–82", h: "170–175" },
+    { s: "M", bust: "96–100", waist: "82–86", h: "175–180" },
+    { s: "L", bust: "100–105", waist: "86–91", h: "180–185" },
+    { s: "XL", bust: "105–110", waist: "91–96", h: "185–190" },
+    { s: "XXL", bust: "110–115", waist: "96–102", h: "185–190" },
+    { s: "XXXL", bust: "116–123", waist: "103–109", h: "190–195" },
+  ],
+  pants: [
+    { s: "S", kw: "32", waist: "78–82", hips: "94–98", h: "170–175" },
+    { s: "M", kw: "34", waist: "82–86", hips: "98–102", h: "175–180" },
+    { s: "L", kw: "36", waist: "86–91", hips: "102–107", h: "180–185" },
+    { s: "XL", kw: "38", waist: "91–96", hips: "107–112", h: "185–190" },
+    { s: "XXL", kw: "40", waist: "96–102", hips: "112–118", h: "185–190" },
+    { s: "XXXL", kw: "42", waist: "103–109", hips: "119–125", h: "190–195" },
+  ],
+};
+const TSHIRT_SIZES = SIZE_GUIDE.tshirt.map(g => [g.s, `${g.s} — bust ${g.bust} · waist ${g.waist} · height ${g.h}`]);
+const PANTS_SIZES = SIZE_GUIDE.pants.map(g => [`${g.s} (${g.kw})`, `${g.s} (${g.kw}) — waist ${g.waist} · hips ${g.hips} · height ${g.h}`]);
 const EMP_ROLES = [["technician", "🚛 Technician"], ["sales", "💎 Sales"], ["purchaser", "📋 Purchaser"], ["accountant", "🧾 Accountant"], ["other", "👤 Other"]];
 function EmployeesView({ employees, onAdd, onUpdate, onRemove, restricted = false }) {
   const [draft, setDraft] = useState({ name: "", role: "technician", truck: activeTrucks()[0] || "", civil_id: "", pants_size: "", tshirt_size: "" });
   const [editId, setEditId] = useState(null);
+  const [guideOpen, setGuideOpen] = useState(false);
   const draftCid = cidToDob(draft.civil_id);
   const groups = EMP_ROLES.map(([k, lb]) => [k, lb, employees.filter(e => e.role === k)]);
   return (
@@ -4675,8 +4680,38 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove, restricted = fals
         const td2 = { fontSize: 13, fontWeight: 700, padding: "6px 10px", textAlign: "center", borderTop: "1px solid var(--border)" };
         return (
           <div className="card" style={{ padding: 14, marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>🧥 Uniform order — active team totals</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 2 }}>
+              <span style={{ fontSize: 13, fontWeight: 800 }}>🧥 Uniform order — active team totals</span>
+              <button className="btn btn-ghost btn-sm" style={{ fontSize: 11.5 }} onClick={() => setGuideOpen(o => !o)}>{guideOpen ? "▲ hide size guide" : "📏 size guide"}</button>
+            </div>
             <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 6 }}>Ready quantities per size — order straight from this table.</div>
+            {guideOpen && (() => {
+              const gth = { fontSize: 10, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase", padding: "5px 10px", textAlign: "center", background: "var(--bg)" };
+              const gtd = { fontSize: 12, fontWeight: 600, padding: "5px 10px", textAlign: "center", borderTop: "1px solid var(--border)" };
+              const gsz = { ...gtd, fontWeight: 800, textAlign: "left", color: "var(--accent)" };
+              return (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, margin: "4px 0 12px" }}>
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 800, padding: "7px 12px", background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>👕 T-shirts <span style={{ color: "var(--muted)", fontWeight: 600 }}>· body measurements, cm</span></div>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead><tr><th style={{ ...gth, textAlign: "left" }}>Size</th><th style={gth}>Bust</th><th style={gth}>Waist</th><th style={gth}>Height</th></tr></thead>
+                      <tbody>{SIZE_GUIDE.tshirt.map(g => (
+                        <tr key={g.s}><td style={gsz}>{g.s}</td><td style={gtd}>{g.bust}</td><td style={gtd}>{g.waist}</td><td style={gtd}>{g.h}</td></tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 800, padding: "7px 12px", background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>👖 Pants <span style={{ color: "var(--muted)", fontWeight: 600 }}>· body measurements, cm</span></div>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead><tr><th style={{ ...gth, textAlign: "left" }}>Size</th><th style={gth}>KW</th><th style={gth}>Waist</th><th style={gth}>Hips</th><th style={gth}>Height</th></tr></thead>
+                      <tbody>{SIZE_GUIDE.pants.map(g => (
+                        <tr key={g.s}><td style={gsz}>{g.s}</td><td style={gtd}>{g.kw}</td><td style={gtd}>{g.waist}</td><td style={gtd}>{g.hips}</td><td style={gtd}>{g.h}</td></tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
             <div style={{ overflowX: "auto" }}>
               <table style={{ borderCollapse: "collapse", minWidth: 380 }}>
                 <thead><tr><th style={{ ...th2, textAlign: "left" }}>Size</th>{rows.map(v => <th key={v} style={th2}>{v}</th>)}<th style={{ ...th2, color: "#B45309" }}>not set</th><th style={th2}>total</th></tr></thead>
