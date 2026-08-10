@@ -4647,8 +4647,9 @@ const PANTS_SIZES = [
   ["XXXL (42)", "XXXL (42) — waist 103–109 · hips 119–125 · height 190–195"],
 ];
 const EMP_ROLES = [["technician", "🚛 Technician"], ["sales", "💎 Sales"], ["purchaser", "📋 Purchaser"], ["accountant", "🧾 Accountant"], ["other", "👤 Other"]];
-function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
+function EmployeesView({ employees, onAdd, onUpdate, onRemove, restricted = false }) {
   const [draft, setDraft] = useState({ name: "", role: "technician", truck: activeTrucks()[0] || "", civil_id: "", pants_size: "", tshirt_size: "" });
+  const [editId, setEditId] = useState(null);
   const draftCid = cidToDob(draft.civil_id);
   const groups = EMP_ROLES.map(([k, lb]) => [k, lb, employees.filter(e => e.role === k)]);
   return (
@@ -4663,7 +4664,32 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
           </div>
         ) : null;
       })()}
-      <div className="card" style={{ padding: 14, marginBottom: 14 }}>
+      {(() => {
+        const act = employees.filter(e => e.active);
+        const rows = TSHIRT_SIZES.map(([v]) => v);
+        const tCount = (v) => act.filter(e => e.tshirt_size === v).length;
+        const pCount = (v) => act.filter(e => String(e.pants_size || "").startsWith(v + " ")).length;
+        const tMiss = act.filter(e => !e.tshirt_size).length;
+        const pMiss = act.filter(e => !e.pants_size).length;
+        const th2 = { fontSize: 10.5, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase", padding: "6px 10px", textAlign: "center" };
+        const td2 = { fontSize: 13, fontWeight: 700, padding: "6px 10px", textAlign: "center", borderTop: "1px solid var(--border)" };
+        return (
+          <div className="card" style={{ padding: 14, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>🧥 Uniform order — active team totals</div>
+            <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 6 }}>Ready quantities per size — order straight from this table.</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "collapse", minWidth: 380 }}>
+                <thead><tr><th style={{ ...th2, textAlign: "left" }}>Size</th>{rows.map(v => <th key={v} style={th2}>{v}</th>)}<th style={{ ...th2, color: "#B45309" }}>not set</th><th style={th2}>total</th></tr></thead>
+                <tbody>
+                  <tr><td style={{ ...td2, textAlign: "left" }}>👕 T-shirts</td>{rows.map(v => <td key={v} style={{ ...td2, color: tCount(v) ? "var(--text)" : "var(--border)" }}>{tCount(v) || "·"}</td>)}<td style={{ ...td2, color: tMiss ? "#B45309" : "var(--border)" }}>{tMiss || "·"}</td><td style={td2}>{act.length - tMiss}</td></tr>
+                  <tr><td style={{ ...td2, textAlign: "left" }}>👖 Pants</td>{rows.map(v => <td key={v} style={{ ...td2, color: pCount(v) ? "var(--text)" : "var(--border)" }}>{pCount(v) || "·"}</td>)}<td style={{ ...td2, color: pMiss ? "#B45309" : "var(--border)" }}>{pMiss || "·"}</td><td style={td2}>{act.length - pMiss}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })()}
+      {!restricted && <div className="card" style={{ padding: 14, marginBottom: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>＋ Add team member</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <input className="filter-input" placeholder="Name" value={draft.name} onChange={e => setDraft(p => ({ ...p, name: e.target.value }))} style={{ flex: "1 1 150px" }} />
@@ -4691,50 +4717,63 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove }) {
             {draftCid.dob ? `🎂 born ${draftCid.dob}${draftCid.warn ? ` · ⚠ ${draftCid.warn}` : ""}` : `⚠ ${draftCid.err || "incomplete"}`}
           </div>
         )}
-      </div>
+      </div>}
       {groups.map(([k, lb, list]) => (
         <div key={k} className="card" style={{ padding: 14, marginBottom: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>{lb} <span style={{ color: "var(--muted)", fontWeight: 600 }}>({list.filter(e => e.active).length} active)</span></div>
           {list.length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>No one yet.</div>}
-          {list.map(e => (
-            <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "7px 0", borderTop: "1px solid var(--border)", opacity: e.active ? 1 : 0.45 }}>
-              <input className="filter-input" defaultValue={e.name} key={e.id + e.name}
-                onBlur={ev => { const v = ev.target.value.trim(); if (v && v !== e.name) onUpdate(e, { name: v }); }} style={{ flex: "1 1 140px" }} />
-              {e.role === "technician" && (
-                <select className="filter-select" value={e.truck || ""} onChange={ev => onUpdate(e, { truck: ev.target.value })}>
-                  {activeTrucks().map(t => <option key={t}>{t}</option>)}
-                </select>
-              )}
-              <input className="filter-input" placeholder="Civil ID" maxLength={12} inputMode="numeric" defaultValue={e.civil_id || ""} key={e.id + "cid" + (e.civil_id || "")}
-                onBlur={ev => {
-                  const v = ev.target.value.replace(/\D/g, "");
-                  if (v === (e.civil_id || "")) return;
-                  const r = cidToDob(v);
-                  if (v && !r.dob) { ev.target.style.borderColor = "#DC2626"; return; }
-                  ev.target.style.borderColor = "";
-                  onUpdate(e, { civil_id: v || null, dob: r.dob });
-                }} style={{ width: 128, fontSize: 11.5 }} />
-              <select className="filter-select" value={e.tshirt_size || ""} onChange={ev => onUpdate(e, { tshirt_size: ev.target.value || null })} style={{ fontSize: 11.5 }}>
-                <option value="">👕</option>{TSHIRT_SIZES.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}
-              </select>
-              <select className="filter-select" value={e.pants_size || ""} onChange={ev => onUpdate(e, { pants_size: ev.target.value || null })} style={{ fontSize: 11.5 }}>
-                <option value="">👖</option>{PANTS_SIZES.map(([v, lb]) => <option key={v} value={v}>{lb}</option>)}
-              </select>
-              {e.dob && (() => {
-                const dtb = daysToBirthday(e.dob);
-                return (
-                  <span style={{ fontSize: 11, fontWeight: 700, color: dtb === 0 ? "#DC2626" : dtb <= 14 ? "#B45309" : "var(--muted)", display: "flex", gap: 4, alignItems: "center" }}>
-                    🎂 {String(e.dob).slice(5)}{dtb === 0 ? " · TODAY!" : dtb <= 14 ? ` · in ${dtb}d` : ""}
-                    {dtb === 0 && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px", fontSize: 10.5 }} onClick={async (ev) => { const ok = await schedCopy(birthdayMsg(String(e.name).split(" ")[0]).ar + "\n\n" + birthdayMsg(String(e.name).split(" ")[0]).en); ev.target.textContent = ok ? "✓" : "📱"; }}>📱 greet</button>}
-                  </span>
-                );
-              })()}
-              <label style={{ fontSize: 11.5, fontWeight: 700, display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
-                <input type="checkbox" checked={!!e.active} onChange={ev => onUpdate(e, { active: ev.target.checked })} /> active
-              </label>
-              <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => { if (window.confirm(`Remove ${e.name}?`)) onRemove(e); }}>✕</button>
-            </div>
-          ))}
+          {list.map(e => {
+            const open = editId === e.id;
+            const dtb = e.dob ? daysToBirthday(e.dob) : null;
+            const chip = (txt) => <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--muted)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 6, padding: "2px 7px" }}>{txt}</span>;
+            return (
+              <div key={e.id} style={{ borderTop: "1px solid var(--border)", padding: "8px 0", opacity: e.active ? 1 : 0.45 }}>
+                <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, flex: "1 1 130px" }}>{e.name}</span>
+                  {e.role === "technician" && e.truck && chip(e.truck)}
+                  {e.tshirt_size && chip(`👕 ${e.tshirt_size}`)}
+                  {e.pants_size && chip(`👖 ${e.pants_size}`)}
+                  {e.dob && (
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: dtb === 0 ? "#DC2626" : dtb <= 14 ? "#B45309" : "var(--muted)" }}>
+                      🎂 {String(e.dob).slice(5)}{dtb === 0 ? " TODAY!" : dtb <= 14 ? ` · ${dtb}d` : ""}
+                    </span>
+                  )}
+                  {dtb === 0 && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px", fontSize: 10.5 }} onClick={async (ev) => { const ok = await schedCopy(birthdayMsg(String(e.name).split(" ")[0]).ar + "\n\n" + birthdayMsg(String(e.name).split(" ")[0]).en); ev.target.textContent = ok ? "✓" : "📱"; }}>📱 greet</button>}
+                  <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto", padding: "2px 9px", fontSize: 11.5 }} onClick={() => setEditId(open ? null : e.id)}>{open ? "▲ close" : "✎ edit"}</button>
+                </div>
+                {open && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8, background: "var(--bg)", border: "1px dashed var(--border)", borderRadius: 10, padding: "9px 11px" }}>
+                    {!restricted && <input className="filter-input" defaultValue={e.name} key={e.id + e.name}
+                      onBlur={ev => { const v = ev.target.value.trim(); if (v && v !== e.name) onUpdate(e, { name: v }); }} style={{ flex: "1 1 130px" }} />}
+                    {e.role === "technician" && (
+                      <select className="filter-select" value={e.truck || ""} onChange={ev => onUpdate(e, { truck: ev.target.value })}>
+                        {activeTrucks().map(t => <option key={t}>{t}</option>)}
+                      </select>
+                    )}
+                    {!restricted && <input className="filter-input" placeholder="Civil ID" maxLength={12} inputMode="numeric" defaultValue={e.civil_id || ""} key={e.id + "cid" + (e.civil_id || "")}
+                      onBlur={ev => {
+                        const v = ev.target.value.replace(/\D/g, "");
+                        if (v === (e.civil_id || "")) return;
+                        const r = cidToDob(v);
+                        if (v && !r.dob) { ev.target.style.borderColor = "#DC2626"; return; }
+                        ev.target.style.borderColor = "";
+                        onUpdate(e, { civil_id: v || null, dob: r.dob });
+                      }} style={{ width: 130, fontSize: 11.5 }} />}
+                    <select className="filter-select" value={e.tshirt_size || ""} onChange={ev => onUpdate(e, { tshirt_size: ev.target.value || null })} style={{ fontSize: 11.5, maxWidth: 150 }}>
+                      <option value="">👕 T-shirt…</option>{TSHIRT_SIZES.map(([v, lb2]) => <option key={v} value={v}>{lb2}</option>)}
+                    </select>
+                    <select className="filter-select" value={e.pants_size || ""} onChange={ev => onUpdate(e, { pants_size: ev.target.value || null })} style={{ fontSize: 11.5, maxWidth: 150 }}>
+                      <option value="">👖 Pants…</option>{PANTS_SIZES.map(([v, lb2]) => <option key={v} value={v}>{lb2}</option>)}
+                    </select>
+                    {!restricted && <label style={{ fontSize: 11.5, fontWeight: 700, display: "flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!e.active} onChange={ev => onUpdate(e, { active: ev.target.checked })} /> active
+                    </label>}
+                    {!restricted && <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)" }} onClick={() => { if (window.confirm(`Remove ${e.name}?`)) onRemove(e); }}>✕ remove</button>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       ))}
       <div style={{ fontSize: 10.5, color: "var(--muted)", marginBottom: 20 }}>Inactive members keep their history but stop counting in incentive totals.</div>
@@ -9237,7 +9276,7 @@ export default function App() {
     { key: "quotes",     label: "Quotes",          icon: "📋", roles: ["sales"] },
     { key: "collections", label: "Collections",  icon: "💰", roles: ["sales"] },
     { key: "incenthub",   label: "Incentive",    icon: "🎛", roles: ["sales"] },
-    { key: "employees",   label: "Employees",    icon: "👥", roles: ["sales"] },
+    { key: "employees",   label: "Employees",    icon: "👥", roles: ["sales", "purchaser"] },
     { key: "salesincent", label: "Incentive",    icon: "💎", roles: ["sales"] },
     { key: "paincent",    label: "Incentive",    icon: "🎯", roles: ["purchaser"] },
     { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales", "purchaser"] },
@@ -9256,7 +9295,7 @@ export default function App() {
   const tabs = allTabs
     .filter(t => isOwner || t.roles.includes(role))
     .filter(t => t.key !== "target" || (incentiveOn && !isOwner)) // technicians when LIVE; the owner uses the 🎛 hub
-    .filter(t => t.key !== "employees" || isOwner)
+    .filter(t => t.key !== "employees" || isOwner || role === "purchaser")
     .filter(t => t.key !== "incenthub" || isOwner)
     .filter(t => t.key !== "salesincent" || (salesIncentOn && !isOwner))
     .filter(t => t.key !== "paincent" || (paIncentOn && !isOwner)); // teams get their tab when LIVE; the owner uses the 🎛 hub
@@ -9391,8 +9430,8 @@ export default function App() {
               compareVisible={appSettings.truck_compare_visible !== "off"}
               onToggleCompare={(v) => { setAppSettings(p => ({ ...p, truck_compare_visible: v ? "on" : "off" })); saveAppSetting("truck_compare_visible", v ? "on" : "off"); }} />
           )}
-          {!loading && !selectedJob && !selectedCustomer && tab === "employees" && isOwner && (
-            <EmployeesView employees={employees} onAdd={addEmployee} onUpdate={updateEmployee} onRemove={removeEmployee} />
+          {!loading && !selectedJob && !selectedCustomer && tab === "employees" && (isOwner || role === "purchaser") && (
+            <EmployeesView employees={employees} onAdd={addEmployee} onUpdate={updateEmployee} onRemove={removeEmployee} restricted={!isOwner} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "salesincent" && (
             <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
@@ -9415,7 +9454,34 @@ export default function App() {
             <CostsView jobs={jobs} onUpdate={async (id, patch) => { const job = jobs.find(j => j.id === id); if (job) handleJobUpdate({ ...job, ...patch }); await updateJob(id, patch); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "settings" && (
+            <>
             <TruckSettingsView owner={isOwner} rows={truckCfg} onReload={async () => { const tc = await fetchTruckConfig(); setTruckCfg(tc); setCfgTick(x => x + 1); }} />
+            {(isOwner || role === "purchaser") && (
+              <div className="card" style={{ marginTop: 14 }}>
+                <div className="card-body" style={{ padding: 16 }}>
+                  <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 2 }}>🚛 Truck teams</div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>Same registry as the 👥 Employees page — a change here is a change there.</div>
+                  {activeTrucks().map(t => (
+                    <div key={t} style={{ borderTop: "1px solid var(--border)", padding: "7px 0" }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 800 }}>{t}
+                        <span style={{ fontWeight: 600, color: "var(--muted)" }}> — {employees.filter(e => e.active && e.role === "technician" && e.truck === t).map(e => e.name.split(" ")[0]).join(", ") || "no one assigned"}</span>
+                      </div>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 12, fontWeight: 800, margin: "10px 0 4px" }}>Reassign technicians:</div>
+                  {employees.filter(e => e.role === "technician").map(e => (
+                    <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0", opacity: e.active ? 1 : 0.45 }}>
+                      <span style={{ fontSize: 12.5, flex: "0 1 160px" }}>{e.name}</span>
+                      <select className="filter-select" value={e.truck || ""} onChange={ev => updateEmployee(e, { truck: ev.target.value })} style={{ fontSize: 12 }}>
+                        {activeTrucks().map(t => <option key={t}>{t}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                  {employees.filter(e => e.role === "technician").length === 0 && <div style={{ fontSize: 12, color: "var(--muted)" }}>Add technicians in 👥 Employees first.</div>}
+                </div>
+              </div>
+            )}
+            </>
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "history" && (
             <HistoryView jobs={jobs} onSelectJob={setSelectedJob} onEdit={role === "sales" ? setEditingJob : undefined} onReorder={role === "sales" ? reorderJob : undefined} />
