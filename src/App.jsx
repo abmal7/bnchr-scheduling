@@ -4623,124 +4623,155 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
   const todayContribution = today.reduce((x, j) => x + stContribution(j), 0);
   const avgTicket = hist.reduce((x, j) => x + (Number(j.total) || 0), 0) / totalN;
   rows.forEach(g => { g.perDay = Math.max(0, g.unitsTarget - g.mtdUnits) / remainingDays; });
+  const dailyQuota = required / daysInMonth;
+  const byDay = {};
+  mtd.forEach(j => { const d = Number(String(j.completed_at || j.scheduled_at || "").split("T")[0].split("-")[2]); if (d) byDay[d] = (byDay[d] || 0) + stContribution(j); });
+  const dayLog = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    dayLog.push({ d, c: byDay[d] || 0, state: d > dayOfMonth ? "future" : (byDay[d] || 0) >= dailyQuota ? "won" : (byDay[d] || 0) >= dailyQuota * 0.5 ? "half" : "low" });
+  }
+  const daysWon = dayLog.filter(x => x.state === "won").length;
   return { rows, required, mtdContribution, remaining, ordersCurrent, ordersSmart, blendedAvg, smartBlended,
     mtdOrders: mtd.length, paceNeeded: required / daysInMonth * dayOfMonth,
-    remainingDays, dailyNeed, todayContribution, todayOrders: today.length, avgTicket };
+    remainingDays, dailyNeed, todayContribution, todayOrders: today.length, avgTicket,
+    dailyQuota, dayLog, daysWon, dayOfMonth, daysInMonth };
 }
 
 // ═══ 🎯 Service Targets view — the profitable-month map ═════════════════════
 function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, canEdit }) {
-  const [showPower, setShowPower] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
   const [tDraft, setTDraft] = useState(String(profitTarget));
   const st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget);
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(0)}`;
-  const pct = Math.min(100, Math.round((st.mtdContribution / st.required) * 100));
-  const onPace = st.mtdContribution >= st.paceNeeded;
+  const EMOJI = { "Tire Change & Balancing": "🛞", "Battery": "🔋", "Oil & Filter": "🛢", "Tire Patch": "🩹", "Brake Pads": "🛑", "Major Service": "🔧", "Other": "📦" };
+  const SHORT = { "Tire Change & Balancing": "Tires", "Battery": "Battery", "Oil & Filter": "Oil", "Tire Patch": "Patch", "Brake Pads": "Brakes", "Major Service": "Major", "Other": "Other" };
+  const leftToday = Math.max(0, st.dailyNeed - st.todayContribution);
+  const dayPct = st.dailyNeed > 0 ? Math.min(100, Math.round((st.todayContribution / st.dailyNeed) * 100)) : 100;
+  const dayWon = leftToday === 0 && st.remaining > 0;
+  const monthWon = st.remaining === 0;
+  const mood = monthWon ? "🏆" : dayWon ? "🎉" : dayPct >= 75 ? "🔥" : dayPct >= 50 ? "💪" : dayPct >= 25 ? "🙂" : "☕";
+  const monthPct = Math.min(100, Math.round((st.mtdContribution / st.required) * 100));
+
   return (
-    <div className="card" style={{ marginTop: 12 }}>
-      <div className="card-body" style={{ padding: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontSize: 15, fontWeight: 800 }}>🎯 Service Targets — the road to a profitable month</div>
-          {canEdit && (
-            <span style={{ fontSize: 11.5, color: "var(--muted)", display: "flex", gap: 5, alignItems: "center", fontWeight: 700 }}>
-              profit target:
-              <input value={tDraft} onChange={e => setTDraft(e.target.value)} onBlur={() => onSaveTarget(Number(tDraft) || 0)}
-                className="filter-input" style={{ width: 74, padding: "3px 7px", fontSize: 11.5 }} /> KWD
-            </span>
-          )}
+    <div style={{ maxWidth: 680, margin: "0 auto" }}>
+      {/* ── HERO: today's mission ── */}
+      <div style={{ background: monthWon ? "linear-gradient(135deg,#14532D,#16A34A)" : dayWon ? "linear-gradient(135deg,#0F2419,#1D7A45)" : "linear-gradient(135deg,#0F2419,#1D4B33)", color: "#fff", borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: "#A7D8B9" }}>
+          {monthWon ? "PROFITABLE MONTH — DONE" : "🎯 TODAY'S MISSION"}
         </div>
-        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
-          Fixed {kd(fixedMonthly)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> contribution needed this month · avg ticket {kd(st.avgTicket)} · fees for Tabby/Taly orders already deducted
+        <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.15 }}>
+          {monthWon ? "🏆 🎉" : dayWon ? "DAY WON 🎉" : kd(leftToday)}
         </div>
-
-        {/* progress */}
-        <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 800, marginBottom: 5 }}>
-            <span>{kd(st.mtdContribution)} earned · {st.mtdOrders} orders</span>
-            <span style={{ color: st.remaining === 0 ? "var(--success)" : "var(--text)" }}>{st.remaining === 0 ? "🎉 PROFITABLE MONTH REACHED" : `${kd(st.remaining)} to go`}</span>
-          </div>
-          <div style={{ height: 10, background: "var(--border)", borderRadius: 6, overflow: "hidden" }}>
-            <div style={{ width: pct + "%", height: "100%", background: st.remaining === 0 ? "var(--success)" : onPace ? "#1D4ED8" : "#B45309", transition: "width .4s" }} />
-          </div>
-          <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>
-            {pct}% of the month's requirement · {onPace ? "🟢 ahead of pace" : "🟠 behind pace"} (pace line: {kd(st.paceNeeded)})
-          </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "#D4EDDA" }}>
+          {monthWon ? `The month's ${kd(st.required)} is fully covered — everything now is pure extra.`
+            : dayWon ? `Today's ${kd(st.dailyNeed)} is in the bag — anything more shrinks tomorrow's number.`
+            : `to win today ${mood} · earned ${kd(st.todayContribution)} of ${kd(st.dailyNeed)}`}
         </div>
-
-        {/* today */}
-        {st.remaining > 0 && (
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: st.todayContribution >= st.dailyNeed ? "#E8F4EC" : "#FFF7EC", border: `1.5px solid ${st.todayContribution >= st.dailyNeed ? "#BFDFC9" : "#FDDCAB"}`, borderRadius: 12, padding: "9px 14px", marginBottom: 12 }}>
-            <span style={{ fontSize: 12.5, fontWeight: 800 }}>📅 Today's target: {kd(st.dailyNeed)}</span>
-            <span style={{ fontSize: 12, fontWeight: 700 }}>earned {kd(st.todayContribution)} · {st.todayOrders} orders</span>
-            <span style={{ fontSize: 12, fontWeight: 800, color: st.todayContribution >= st.dailyNeed ? "var(--success)" : "#B45309" }}>
-              {st.todayContribution >= st.dailyNeed ? "✓ day covered" : `${kd(st.dailyNeed - st.todayContribution)} left today ≈ ${Math.ceil(Math.max(0, st.dailyNeed - st.todayContribution) / (st.rows[0] ? st.rows[0].avg : 50))} tire changes`}
-            </span>
-            <span style={{ fontSize: 10.5, color: "var(--muted)", marginLeft: "auto" }}>{st.remainingDays} days left · daily bar self-adjusts to what remains</span>
+        {!monthWon && (
+          <div style={{ height: 12, background: "rgba(255,255,255,.18)", borderRadius: 7, overflow: "hidden", margin: "10px auto 0", maxWidth: 420 }}>
+            <div style={{ width: dayPct + "%", height: "100%", background: dayWon ? "#4ADE80" : "#FBBF24", transition: "width .5s" }} />
           </div>
         )}
-        {/* live path */}
-        {st.remaining > 0 && (
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5 }}>⚡ The remaining {kd(st.remaining)} — any of these roads (or any mix):</div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {st.rows.filter(g => g.remainAlone && g.name !== "Other").map(g => (
-                <span key={g.name} style={{ fontSize: 11.5, fontWeight: 700, background: "#EFF6FF", border: "1px solid #BFDBFE", color: "#1D4ED8", borderRadius: 8, padding: "4px 9px" }}>
-                  {g.remainAlone} × {g.name}
+      </div>
+
+      {/* ── the roads: what to sell ── */}
+      {!monthWon && !dayWon && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, textAlign: "center" }}>Pick your road — any one of these closes today:</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 8 }}>
+            {st.rows.filter(g => g.name !== "Other" && g.avg > 0.5).slice(0, 6).map(g => {
+              const n = Math.ceil(leftToday / g.avg);
+              return (
+                <div key={g.name} style={{ background: "var(--card)", border: "1.5px solid var(--border)", borderRadius: 14, padding: "10px 6px", textAlign: "center" }}>
+                  <div style={{ fontSize: 26 }}>{EMOJI[g.name]}</div>
+                  <div style={{ fontSize: 19, fontWeight: 800 }}>{n}</div>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--muted)" }}>{SHORT[g.name]}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── month journey ── */}
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="card-body" style={{ padding: "12px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 800, marginBottom: 5 }}>
+            <span>🏔 The profitable month</span>
+            <span>{kd(st.mtdContribution)} / {kd(st.required)}</span>
+          </div>
+          <div style={{ position: "relative", height: 14, background: "var(--border)", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ width: monthPct + "%", height: "100%", background: monthWon ? "var(--success)" : "linear-gradient(90deg,#1D4B33,#16A34A)", transition: "width .5s" }} />
+            {[25, 50, 75].map(m => <div key={m} style={{ position: "absolute", left: m + "%", top: 0, bottom: 0, width: 2, background: "rgba(255,255,255,.6)" }} />)}
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--muted)", fontWeight: 700, marginTop: 3 }}>
+            <span>{monthPct}% climbed</span>
+            <span>{monthWon ? "SUMMIT 🚩" : `${kd(st.remaining)} to the summit · ${st.remainingDays} days`}</span>
+          </div>
+          {/* day dots */}
+          <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 9 }}>
+            {st.dayLog.map(x => (
+              <span key={x.d} title={`day ${x.d}: KWD ${x.c.toFixed(0)}`} style={{ width: 14, height: 14, borderRadius: "50%", fontSize: 8, display: "inline-flex", alignItems: "center", justifyContent: "center",
+                background: x.state === "won" ? "#16A34A" : x.state === "half" ? "#FBBF24" : x.state === "low" ? "#FCA5A5" : "var(--border)",
+                border: x.d === st.dayOfMonth ? "2px solid var(--ink)" : "none" }} />
+            ))}
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 800, marginTop: 5 }}>
+            ✅ {st.daysWon} day{st.daysWon === 1 ? "" : "s"} won this month
+            <span style={{ color: "var(--muted)", fontWeight: 600 }}> · 🟢 won (≥{kd(st.dailyQuota)}) · 🟡 halfway · 🔴 quiet · today outlined</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── details for the numbers people ── */}
+      <button className="btn btn-ghost btn-sm" style={{ fontSize: 11.5, marginTop: 8 }} onClick={() => setShowDetail(o => !o)}>{showDetail ? "▲ hide the numbers" : "📊 the numbers behind it"}</button>
+      {showDetail && (
+        <div className="card" style={{ marginTop: 6 }}>
+          <div className="card-body" style={{ padding: "12px 16px" }}>
+            <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
+              Fixed {kd(fixedMonthly)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> · avg ticket {kd(st.avgTicket)} · Tabby/Taly fees deducted per order
+              {canEdit && (
+                <span style={{ display: "inline-flex", gap: 5, alignItems: "center", fontWeight: 700, marginLeft: 8 }}>
+                  · target:
+                  <input value={tDraft} onChange={e => setTDraft(e.target.value)} onBlur={() => onSaveTarget(Number(tDraft) || 0)}
+                    className="filter-input" style={{ width: 70, padding: "2px 6px", fontSize: 11.5 }} /> KWD
+                </span>
+              )}
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table className="rep-table" style={{ width: "100%", fontSize: 12 }}>
+                <thead><tr>
+                  <th style={{ textAlign: "left" }}>Service</th><th>Avg ticket</th><th>Contribution</th><th>Mix</th><th>Month target</th><th>Sold</th><th>Left</th><th>/ day</th>
+                </tr></thead>
+                <tbody>
+                  {st.rows.map(g => (
+                    <tr key={g.name}>
+                      <td style={{ fontWeight: 800 }}>{EMOJI[g.name]} {SHORT[g.name]}</td>
+                      <td style={{ textAlign: "center", color: "var(--muted)" }}>{g.avgTicket.toFixed(0)}</td>
+                      <td style={{ textAlign: "center" }}>{g.avg.toFixed(1)}</td>
+                      <td style={{ textAlign: "center", color: "var(--muted)" }}>{Math.round(g.smartShare * 100)}%</td>
+                      <td style={{ textAlign: "center", fontWeight: 800 }}>{g.unitsTarget}</td>
+                      <td style={{ textAlign: "center" }}>{g.mtdUnits}</td>
+                      <td style={{ textAlign: "center", fontWeight: 700, color: g.mtdUnits >= g.unitsTarget ? "var(--success)" : "var(--text)" }}>{Math.max(0, g.unitsTarget - g.mtdUnits) || "✓"}</td>
+                      <td style={{ textAlign: "center", fontWeight: 800, color: "#1D4ED8" }}>{g.perDay > 0 ? (g.perDay < 0.95 ? g.perDay.toFixed(1) : Math.ceil(g.perDay)) : "✓"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0" }}>
+              {st.ordersSmart} orders at the smart mix (vs {st.ordersCurrent} plain) · mix refreshes from trailing 90 days · daily bar = remaining ÷ days left, so it self-adjusts
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+              {st.rows.filter(g => g.aloneUnits && g.name !== "Other").map(g => (
+                <span key={g.name} style={{ fontSize: 11, fontWeight: 700, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "3px 8px" }}>
+                  {EMOJI[g.name]} alone: <strong>{g.aloneUnits}</strong>/month
                 </span>
               ))}
             </div>
           </div>
-        )}
-
-        {/* mix table */}
-        <div style={{ overflowX: "auto" }}>
-          <table className="rep-table" style={{ width: "100%", fontSize: 12.5 }}>
-            <thead><tr>
-              <th style={{ textAlign: "left" }}>Service</th><th>Avg ticket</th><th>Avg contribution</th><th>Mix</th><th>Target units</th><th>Sold</th><th>Remaining</th><th>/ day</th><th style={{ width: "18%" }}>Progress</th>
-            </tr></thead>
-            <tbody>
-              {st.rows.map(g => {
-                const gp = g.unitsTarget ? Math.min(100, Math.round((g.mtdUnits / g.unitsTarget) * 100)) : 0;
-                return (
-                  <tr key={g.name}>
-                    <td style={{ fontWeight: 800 }}>{g.name}</td>
-                    <td style={{ textAlign: "center", color: "var(--muted)" }}>{g.avgTicket.toFixed(0)}</td>
-                    <td style={{ textAlign: "center" }}>{g.avg.toFixed(1)}</td>
-                    <td style={{ textAlign: "center", color: "var(--muted)" }}>{Math.round(g.smartShare * 100)}%</td>
-                    <td style={{ textAlign: "center", fontWeight: 800 }}>{g.unitsTarget}</td>
-                    <td style={{ textAlign: "center" }}>{g.mtdUnits}</td>
-                    <td style={{ textAlign: "center", fontWeight: 700, color: g.mtdUnits >= g.unitsTarget ? "var(--success)" : "var(--text)" }}>
-                      {Math.max(0, g.unitsTarget - g.mtdUnits) || "✓"}
-                    </td>
-                    <td style={{ textAlign: "center", fontWeight: 800, color: "#1D4ED8" }}>{g.perDay > 0 ? (g.perDay < 0.95 ? g.perDay.toFixed(1) : Math.ceil(g.perDay)) : "✓"}</td>
-                    <td><div style={{ height: 8, background: "var(--border)", borderRadius: 5, overflow: "hidden" }}>
-                      <div style={{ width: gp + "%", height: "100%", background: gp >= 100 ? "var(--success)" : "var(--accent)" }} />
-                    </div></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
         </div>
-        <div style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0" }}>
-          Total: <strong>{st.ordersSmart} orders</strong> at the smart mix (vs {st.ordersCurrent} at the plain 90-day mix) — the mix leans {Math.abs(st.ordersCurrent - st.ordersSmart)} orders lighter by favoring higher-contribution services.
-        </div>
-
-        {/* power table */}
-        <button className="btn btn-ghost btn-sm" style={{ fontSize: 11.5 }} onClick={() => setShowPower(o => !o)}>{showPower ? "▲ hide" : "💪 if one service carried the whole month…"}</button>
-        {showPower && (
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-            {st.rows.filter(g => g.aloneUnits && g.name !== "Other").map(g => (
-              <span key={g.name} style={{ fontSize: 11.5, fontWeight: 700, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "4px 9px" }}>
-                {g.name}: <strong>{g.aloneUnits}</strong> alone
-              </span>
-            ))}
-          </div>
-        )}
-        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
-          Mix auto-refreshes from the trailing 90 days · smart mix shifts 15% of order share toward services earning above the blended average · combos count under their first-listed service
-        </div>
-      </div>
+      )}
     </div>
   );
 }
