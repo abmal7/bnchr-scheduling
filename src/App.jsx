@@ -4657,7 +4657,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
       {/* ── HERO: today's mission ── */}
       <div style={{ background: monthWon ? "linear-gradient(135deg,#14532D,#16A34A)" : dayWon ? "linear-gradient(135deg,#0F2419,#1D7A45)" : "linear-gradient(135deg,#0F2419,#1D4B33)", color: "#fff", borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: "#A7D8B9" }}>
-          {monthWon ? "PROFITABLE MONTH — DONE" : "🎯 TODAY'S MISSION"}
+          {monthWon ? "PROFITABLE MONTH — DONE" : "🎯 TODAY'S MISSION — PROFIT TO MAKE"}
         </div>
         <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.15 }}>
           {monthWon ? "🏆 🎉" : dayWon ? "DAY WON 🎉" : kd(leftToday)}
@@ -4665,7 +4665,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
         <div style={{ fontSize: 13, fontWeight: 700, color: "#D4EDDA" }}>
           {monthWon ? `The month's ${kd(st.required)} is fully covered — everything now is pure extra.`
             : dayWon ? `Today's ${kd(st.dailyNeed)} is in the bag — anything more shrinks tomorrow's number.`
-            : `to win today ${mood} · earned ${kd(st.todayContribution)} of ${kd(st.dailyNeed)}`}
+            : `profit still needed today ${mood} — today's goal ${kd(st.dailyNeed)}, profit made so far ${kd(st.todayContribution)} (${st.todayOrders} orders)`}
         </div>
         {!monthWon && (
           <div style={{ height: 12, background: "rgba(255,255,255,.18)", borderRadius: 7, overflow: "hidden", margin: "10px auto 0", maxWidth: 420 }}>
@@ -4677,7 +4677,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
       {/* ── the roads: what to sell ── */}
       {!monthWon && !dayWon && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, textAlign: "center" }}>Pick your road — any one of these closes today:</div>
+          <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, textAlign: "center" }}>Pick your road — any ONE of these covers today's remaining profit:</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 8 }}>
             {st.rows.filter(g => g.name !== "Other" && g.avg > 0.5).slice(0, 6).map(g => {
               const n = Math.ceil(leftToday / g.avg);
