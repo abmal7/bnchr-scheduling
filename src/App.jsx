@@ -4584,12 +4584,14 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
 
   const groups = {};
   [...ST_GROUPS, "Other"].forEach(g => { groups[g] = { name: g, n: 0, contrib: 0, mtdUnits: 0, mtdContrib: 0 }; });
-  hist.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.n++; g.contrib += stContribution(j); });
+  hist.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.n++; g.contrib += stContribution(j); g.rev = (g.rev || 0) + (Number(j.total) || 0); });
   mtd.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.mtdUnits++; g.mtdContrib += stContribution(j); });
+  const todayStr = ref.toISOString().split("T")[0];
+  const today = mtd.filter(j => String(j.completed_at || j.scheduled_at || "").split("T")[0] === todayStr);
 
   const totalN = hist.length || 1;
   const rows = Object.values(groups).filter(g => g.n > 0).map(g => ({
-    ...g, avg: g.contrib / g.n, share: g.n / totalN,
+    ...g, avg: g.contrib / g.n, avgTicket: (g.rev || 0) / g.n, share: g.n / totalN,
   }));
   const blendedAvg = rows.reduce((x, g) => x + g.share * g.avg, 0) || 1;
 
@@ -4616,8 +4618,14 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
   rows.sort((a, b) => b.share - a.share);
   const daysInMonth = new Date(y, m + 1, 0).getDate();
   const dayOfMonth = ref.getDate();
+  const remainingDays = Math.max(1, daysInMonth - dayOfMonth + 1); // today counts
+  const dailyNeed = remaining / remainingDays;
+  const todayContribution = today.reduce((x, j) => x + stContribution(j), 0);
+  const avgTicket = hist.reduce((x, j) => x + (Number(j.total) || 0), 0) / totalN;
+  rows.forEach(g => { g.perDay = Math.max(0, g.unitsTarget - g.mtdUnits) / remainingDays; });
   return { rows, required, mtdContribution, remaining, ordersCurrent, ordersSmart, blendedAvg, smartBlended,
-    mtdOrders: mtd.length, paceNeeded: required / daysInMonth * dayOfMonth };
+    mtdOrders: mtd.length, paceNeeded: required / daysInMonth * dayOfMonth,
+    remainingDays, dailyNeed, todayContribution, todayOrders: today.length, avgTicket };
 }
 
 // ═══ 🎯 Service Targets view — the profitable-month map ═════════════════════
@@ -4642,7 +4650,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
           )}
         </div>
         <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
-          Fixed {kd(fixedMonthly)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> contribution needed this month · fees for Tabby/Taly orders already deducted
+          Fixed {kd(fixedMonthly)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> contribution needed this month · avg ticket {kd(st.avgTicket)} · fees for Tabby/Taly orders already deducted
         </div>
 
         {/* progress */}
@@ -4659,6 +4667,17 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
           </div>
         </div>
 
+        {/* today */}
+        {st.remaining > 0 && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: st.todayContribution >= st.dailyNeed ? "#E8F4EC" : "#FFF7EC", border: `1.5px solid ${st.todayContribution >= st.dailyNeed ? "#BFDFC9" : "#FDDCAB"}`, borderRadius: 12, padding: "9px 14px", marginBottom: 12 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 800 }}>📅 Today's target: {kd(st.dailyNeed)}</span>
+            <span style={{ fontSize: 12, fontWeight: 700 }}>earned {kd(st.todayContribution)} · {st.todayOrders} orders</span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: st.todayContribution >= st.dailyNeed ? "var(--success)" : "#B45309" }}>
+              {st.todayContribution >= st.dailyNeed ? "✓ day covered" : `${kd(st.dailyNeed - st.todayContribution)} left today ≈ ${Math.ceil(Math.max(0, st.dailyNeed - st.todayContribution) / (st.rows[0] ? st.rows[0].avg : 50))} tire changes`}
+            </span>
+            <span style={{ fontSize: 10.5, color: "var(--muted)", marginLeft: "auto" }}>{st.remainingDays} days left · daily bar self-adjusts to what remains</span>
+          </div>
+        )}
         {/* live path */}
         {st.remaining > 0 && (
           <div style={{ marginBottom: 12 }}>
@@ -4677,7 +4696,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
         <div style={{ overflowX: "auto" }}>
           <table className="rep-table" style={{ width: "100%", fontSize: 12.5 }}>
             <thead><tr>
-              <th style={{ textAlign: "left" }}>Service</th><th>Avg contribution</th><th>Mix</th><th>Target units</th><th>Sold</th><th>Remaining</th><th style={{ width: "22%" }}>Progress</th>
+              <th style={{ textAlign: "left" }}>Service</th><th>Avg ticket</th><th>Avg contribution</th><th>Mix</th><th>Target units</th><th>Sold</th><th>Remaining</th><th>/ day</th><th style={{ width: "18%" }}>Progress</th>
             </tr></thead>
             <tbody>
               {st.rows.map(g => {
@@ -4685,6 +4704,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
                 return (
                   <tr key={g.name}>
                     <td style={{ fontWeight: 800 }}>{g.name}</td>
+                    <td style={{ textAlign: "center", color: "var(--muted)" }}>{g.avgTicket.toFixed(0)}</td>
                     <td style={{ textAlign: "center" }}>{g.avg.toFixed(1)}</td>
                     <td style={{ textAlign: "center", color: "var(--muted)" }}>{Math.round(g.smartShare * 100)}%</td>
                     <td style={{ textAlign: "center", fontWeight: 800 }}>{g.unitsTarget}</td>
@@ -4692,6 +4712,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
                     <td style={{ textAlign: "center", fontWeight: 700, color: g.mtdUnits >= g.unitsTarget ? "var(--success)" : "var(--text)" }}>
                       {Math.max(0, g.unitsTarget - g.mtdUnits) || "✓"}
                     </td>
+                    <td style={{ textAlign: "center", fontWeight: 800, color: "#1D4ED8" }}>{g.perDay > 0 ? (g.perDay < 0.95 ? g.perDay.toFixed(1) : Math.ceil(g.perDay)) : "✓"}</td>
                     <td><div style={{ height: 8, background: "var(--border)", borderRadius: 5, overflow: "hidden" }}>
                       <div style={{ width: gp + "%", height: "100%", background: gp >= 100 ? "var(--success)" : "var(--accent)" }} />
                     </div></td>
