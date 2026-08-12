@@ -3637,7 +3637,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
             {/* 4 — Admin */}
             <div className="form-section-title">4 · Admin</div>
             <div className="form-field"><label>Lead From</label><select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select></div>
-            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Taly","Sparts","Warranty","Cash","KNET"].map(s => <option key={s} value={s}>{s === "Tabby" ? "Tabby (7% fee)" : s === "Taly" ? "Taly (5.5% fee)" : s}</option>)}</select></div>
+            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Taly","Sparts","Warranty","Cash","KNET"].map(s => <option key={s} value={s}>{s === "Tabby" ? "Tabby (7% fee)" : s === "Taly" ? "Taly (6% + 100 fils)" : s}</option>)}</select></div>
             <div className="form-field"><label>Sales Agent</label>
               <select value={f.sales_agent} onChange={set("sales_agent")}>
                 <option value="">Select agent…</option>
@@ -4555,12 +4555,182 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
 }
 
 // ═══ 🎯 Technician monthly target & incentive dashboard ═══════════════════════
+// ═══ 🎯 Service Targets — contribution-margin break-even engine ══════════════
+const ST_GROUPS = ["Tire Change & Balancing", "Battery", "Oil & Filter", "Tire Patch", "Brake Pads", "Major Service"];
+const stPrimary = (svc) => {
+  const p = String(svc || "").split("+")[0].trim();
+  return ST_GROUPS.includes(p) ? p : "Other";
+};
+const stBnplFee = (j) => {
+  const pt = String(j.payment_through || "").toLowerCase();
+  const rev = Number(j.total) || 0;
+  if (pt === "tabby") return rev * 0.07;
+  if (pt === "taly") return rev * 0.06 + 0.100;
+  return 0;
+};
+const stContribution = (j) => {
+  const rev = Number(j.total) || 0;
+  const cost = (j.items || []).reduce((x, it) => x + (Number(it.cost) || 0) * (Number(it.qty) || 1), 0);
+  return rev - cost - stBnplFee(j);
+};
+function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
+  const ref = refDate || new Date();
+  const from90 = new Date(ref); from90.setDate(from90.getDate() - 90);
+  const y = ref.getFullYear(), m = ref.getMonth();
+  const done = jobs.filter(j => jobSuccessful(j));
+  const dOf = (j) => new Date(j.completed_at || j.scheduled_at || j.created_at);
+  const hist = done.filter(j => { const d = dOf(j); return d >= from90 && d <= ref; });
+  const mtd = done.filter(j => { const d = dOf(j); return d.getFullYear() === y && d.getMonth() === m; });
+
+  const groups = {};
+  [...ST_GROUPS, "Other"].forEach(g => { groups[g] = { name: g, n: 0, contrib: 0, mtdUnits: 0, mtdContrib: 0 }; });
+  hist.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.n++; g.contrib += stContribution(j); });
+  mtd.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.mtdUnits++; g.mtdContrib += stContribution(j); });
+
+  const totalN = hist.length || 1;
+  const rows = Object.values(groups).filter(g => g.n > 0).map(g => ({
+    ...g, avg: g.contrib / g.n, share: g.n / totalN,
+  }));
+  const blendedAvg = rows.reduce((x, g) => x + g.share * g.avg, 0) || 1;
+
+  // smart mix: below-average services donate 15% of their share to above-average ones
+  const receivers = rows.filter(g => g.avg >= blendedAvg && g.name !== "Other");
+  const donors = rows.filter(g => !(g.avg >= blendedAvg && g.name !== "Other"));
+  const pool = donors.reduce((x, g) => x + g.share * 0.15, 0);
+  const recvShare = receivers.reduce((x, g) => x + g.share, 0) || 1;
+  rows.forEach(g => {
+    g.smartShare = receivers.includes(g) ? g.share + pool * (g.share / recvShare) : g.share * 0.85;
+  });
+  const smartBlended = rows.reduce((x, g) => x + g.smartShare * g.avg, 0) || 1;
+
+  const required = (Number(fixedMonthly) || 0) + (Number(profitTarget) || 0);
+  const mtdContribution = mtd.reduce((x, j) => x + stContribution(j), 0);
+  const remaining = Math.max(0, required - mtdContribution);
+  const ordersCurrent = Math.ceil(required / blendedAvg);
+  const ordersSmart = Math.ceil(required / smartBlended);
+  rows.forEach(g => {
+    g.unitsTarget = Math.ceil(ordersSmart * g.smartShare);
+    g.remainAlone = g.avg > 0.5 ? Math.ceil(remaining / g.avg) : null;
+    g.aloneUnits = g.avg > 0.5 ? Math.ceil(required / g.avg) : null;
+  });
+  rows.sort((a, b) => b.share - a.share);
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const dayOfMonth = ref.getDate();
+  return { rows, required, mtdContribution, remaining, ordersCurrent, ordersSmart, blendedAvg, smartBlended,
+    mtdOrders: mtd.length, paceNeeded: required / daysInMonth * dayOfMonth };
+}
+
+// ═══ 🎯 Service Targets view — the profitable-month map ═════════════════════
+function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, canEdit }) {
+  const [showPower, setShowPower] = useState(false);
+  const [tDraft, setTDraft] = useState(String(profitTarget));
+  const st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget);
+  const kd = (n) => `KWD ${(Number(n) || 0).toFixed(0)}`;
+  const pct = Math.min(100, Math.round((st.mtdContribution / st.required) * 100));
+  const onPace = st.mtdContribution >= st.paceNeeded;
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div className="card-body" style={{ padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontSize: 15, fontWeight: 800 }}>🎯 Service Targets — the road to a profitable month</div>
+          {canEdit && (
+            <span style={{ fontSize: 11.5, color: "var(--muted)", display: "flex", gap: 5, alignItems: "center", fontWeight: 700 }}>
+              profit target:
+              <input value={tDraft} onChange={e => setTDraft(e.target.value)} onBlur={() => onSaveTarget(Number(tDraft) || 0)}
+                className="filter-input" style={{ width: 74, padding: "3px 7px", fontSize: 11.5 }} /> KWD
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
+          Fixed {kd(fixedMonthly)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> contribution needed this month · fees for Tabby/Taly orders already deducted
+        </div>
+
+        {/* progress */}
+        <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 14px", marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, fontWeight: 800, marginBottom: 5 }}>
+            <span>{kd(st.mtdContribution)} earned · {st.mtdOrders} orders</span>
+            <span style={{ color: st.remaining === 0 ? "var(--success)" : "var(--text)" }}>{st.remaining === 0 ? "🎉 PROFITABLE MONTH REACHED" : `${kd(st.remaining)} to go`}</span>
+          </div>
+          <div style={{ height: 10, background: "var(--border)", borderRadius: 6, overflow: "hidden" }}>
+            <div style={{ width: pct + "%", height: "100%", background: st.remaining === 0 ? "var(--success)" : onPace ? "#1D4ED8" : "#B45309", transition: "width .4s" }} />
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>
+            {pct}% of the month's requirement · {onPace ? "🟢 ahead of pace" : "🟠 behind pace"} (pace line: {kd(st.paceNeeded)})
+          </div>
+        </div>
+
+        {/* live path */}
+        {st.remaining > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5 }}>⚡ The remaining {kd(st.remaining)} — any of these roads (or any mix):</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {st.rows.filter(g => g.remainAlone && g.name !== "Other").map(g => (
+                <span key={g.name} style={{ fontSize: 11.5, fontWeight: 700, background: "#EFF6FF", border: "1px solid #BFDBFE", color: "#1D4ED8", borderRadius: 8, padding: "4px 9px" }}>
+                  {g.remainAlone} × {g.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* mix table */}
+        <div style={{ overflowX: "auto" }}>
+          <table className="rep-table" style={{ width: "100%", fontSize: 12.5 }}>
+            <thead><tr>
+              <th style={{ textAlign: "left" }}>Service</th><th>Avg contribution</th><th>Mix</th><th>Target units</th><th>Sold</th><th>Remaining</th><th style={{ width: "22%" }}>Progress</th>
+            </tr></thead>
+            <tbody>
+              {st.rows.map(g => {
+                const gp = g.unitsTarget ? Math.min(100, Math.round((g.mtdUnits / g.unitsTarget) * 100)) : 0;
+                return (
+                  <tr key={g.name}>
+                    <td style={{ fontWeight: 800 }}>{g.name}</td>
+                    <td style={{ textAlign: "center" }}>{g.avg.toFixed(1)}</td>
+                    <td style={{ textAlign: "center", color: "var(--muted)" }}>{Math.round(g.smartShare * 100)}%</td>
+                    <td style={{ textAlign: "center", fontWeight: 800 }}>{g.unitsTarget}</td>
+                    <td style={{ textAlign: "center" }}>{g.mtdUnits}</td>
+                    <td style={{ textAlign: "center", fontWeight: 700, color: g.mtdUnits >= g.unitsTarget ? "var(--success)" : "var(--text)" }}>
+                      {Math.max(0, g.unitsTarget - g.mtdUnits) || "✓"}
+                    </td>
+                    <td><div style={{ height: 8, background: "var(--border)", borderRadius: 5, overflow: "hidden" }}>
+                      <div style={{ width: gp + "%", height: "100%", background: gp >= 100 ? "var(--success)" : "var(--accent)" }} />
+                    </div></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0" }}>
+          Total: <strong>{st.ordersSmart} orders</strong> at the smart mix (vs {st.ordersCurrent} at the plain 90-day mix) — the mix leans {Math.abs(st.ordersCurrent - st.ordersSmart)} orders lighter by favoring higher-contribution services.
+        </div>
+
+        {/* power table */}
+        <button className="btn btn-ghost btn-sm" style={{ fontSize: 11.5 }} onClick={() => setShowPower(o => !o)}>{showPower ? "▲ hide" : "💪 if one service carried the whole month…"}</button>
+        {showPower && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+            {st.rows.filter(g => g.aloneUnits && g.name !== "Other").map(g => (
+              <span key={g.name} style={{ fontSize: 11.5, fontWeight: 700, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 8, padding: "4px 9px" }}>
+                {g.name}: <strong>{g.aloneUnits}</strong> alone
+              </span>
+            ))}
+          </div>
+        )}
+        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
+          Mix auto-refreshes from the trailing 90 days · smart mix shifts 15% of order share toward services earning above the blended average · combos count under their first-listed service
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ═══ 🎛 Incentive Hub — the master's single page for every scheme ═════════════
 function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
   enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa,
+  targetsOn, onToggleTargets, profitTarget, onSaveProfitTarget,
   compareVisible, onToggleCompare }) {
   const [view, setView] = useState("master");
-  const VIEWS = [["master", "🎛 Master"], ["tech", "🚛 Technicians"], ["sales", "💎 Sales"], ["pa", "🎯 Purchase"]];
+  const VIEWS = [["master", "🎛 Master"], ["tech", "🚛 Technicians"], ["sales", "💎 Sales"], ["pa", "🎯 Purchase"], ["targets", "🎯 Service targets"]];
   const previewBar = (label, on, onFlip) => (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, background: "#EFF6FF", border: "1.5px solid #BFDBFE", borderRadius: 12, padding: "9px 14px", marginBottom: 12 }}>
       <span style={{ fontSize: 12.5, fontWeight: 800, color: "#1D4ED8" }}>👁 Preview — exactly what the {label} team sees on their dashboard</span>
@@ -4595,6 +4765,10 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
       {view === "pa" && (<>
         {previewBar("purchasing & accounting", paOn, onTogglePa)}
         <PAIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} />
+      </>)}
+      {view === "targets" && (<>
+        {previewBar("sales", targetsOn, onToggleTargets)}
+        <ServiceTargetsView jobs={jobs} fixedMonthly={fixedExpenses} profitTarget={profitTarget} onSaveTarget={onSaveProfitTarget} canEdit={true} />
       </>)}
     </>
   );
@@ -5423,7 +5597,7 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
                   <button type="button" className="btn btn-primary btn-sm" onClick={() => savePlan(planUI.type)}>Save plan</button>
                 </div>
               )}
-              {!plan && !showB && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>For loyal customers: pay-later, partial, or 2–4 month installments on Kuwait salary days — 0% fee vs Taly 5.5% / Tabby 7%.</div>}
+              {!plan && !showB && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>For loyal customers: pay-later, partial, or 2–4 month installments on Kuwait salary days — 0% fee vs Taly 6%+100fils / Tabby 7%.</div>}
             </div>
           </div>
         );
@@ -9294,6 +9468,11 @@ export default function App() {
   const incentiveOn = appSettings.incentive_enabled === true;               // technicians
   const salesIncentOn = appSettings.sales_incentive_enabled === true;       // sales
   const paIncentOn = appSettings.pa_incentive_enabled === true;             // purchasing & accounting
+  const serviceTargetsOn = appSettings.service_targets_enabled === true;    // sales service targets
+  const setServiceTargetsEnabled = async (on) => {
+    setAppSettings(p => ({ ...p, service_targets_enabled: on }));
+    await saveAppSetting("service_targets_enabled", on);
+  };
   const setIncentiveEnabled = async (on) => {
     setAppSettings(p => ({ ...p, incentive_enabled: on }));
     await saveAppSetting("incentive_enabled", on);
@@ -9313,6 +9492,7 @@ export default function App() {
     { key: "incenthub",   label: "Incentive",    icon: "🎛", roles: ["sales"] },
     { key: "employees",   label: "Employees",    icon: "👥", roles: ["sales", "purchaser"] },
     { key: "salesincent", label: "Incentive",    icon: "💎", roles: ["sales"] },
+    { key: "servicetargets", label: "Targets",   icon: "🎯", roles: ["sales"] },
     { key: "paincent",    label: "Incentive",    icon: "🎯", roles: ["purchaser"] },
     { key: "upsells",    label: "Upsells",         icon: "⬆", roles: ["sales", "purchaser"] },
     { key: "reports",    label: "Reports",         icon: "📊", roles: ["sales"] },
@@ -9333,6 +9513,7 @@ export default function App() {
     .filter(t => t.key !== "employees" || isOwner || role === "purchaser")
     .filter(t => t.key !== "incenthub" || isOwner)
     .filter(t => t.key !== "salesincent" || (salesIncentOn && !isOwner))
+    .filter(t => t.key !== "servicetargets" || (serviceTargetsOn && !isOwner))
     .filter(t => t.key !== "paincent" || (paIncentOn && !isOwner)); // teams get their tab when LIVE; the owner uses the 🎛 hub
 
   if (!authed) {
@@ -9462,11 +9643,18 @@ export default function App() {
               enabled={incentiveOn} onToggle={setIncentiveEnabled}
               salesOn={salesIncentOn} onToggleSales={setSalesIncentEnabled}
               paOn={paIncentOn} onTogglePa={setPaIncentEnabled}
+              targetsOn={serviceTargetsOn} onToggleTargets={setServiceTargetsEnabled}
+              profitTarget={Number(appSettings.service_profit_target) || 3000}
+              onSaveProfitTarget={(n) => { setAppSettings(p => ({ ...p, service_profit_target: n })); saveAppSetting("service_profit_target", n); }}
               compareVisible={appSettings.truck_compare_visible !== "off"}
               onToggleCompare={(v) => { setAppSettings(p => ({ ...p, truck_compare_visible: v ? "on" : "off" })); saveAppSetting("truck_compare_visible", v ? "on" : "off"); }} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "employees" && (isOwner || role === "purchaser") && (
             <EmployeesView employees={employees} onAdd={addEmployee} onUpdate={updateEmployee} onRemove={removeEmployee} restricted={!isOwner} />
+          )}
+          {!loading && !selectedJob && !selectedCustomer && tab === "servicetargets" && (
+            <ServiceTargetsView jobs={jobs} fixedMonthly={Number(appSettings.fixed_expenses) || 10600}
+              profitTarget={Number(appSettings.service_profit_target) || 3000} onSaveTarget={() => {}} canEdit={false} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "salesincent" && (
             <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
