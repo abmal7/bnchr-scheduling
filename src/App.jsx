@@ -4677,15 +4677,15 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
       {/* ── the roads: what to sell ── */}
       {!monthWon && !dayWon && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, textAlign: "center" }}>Pick your road — any ONE of these covers today's remaining profit:</div>
+          <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 6, textAlign: "center" }}>Pick your road — sell any ONE of these amounts (or mix them) to finish today:</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 8 }}>
             {st.rows.filter(g => g.name !== "Other" && g.avg > 0.5).slice(0, 6).map(g => {
               const n = Math.ceil(leftToday / g.avg);
               return (
                 <div key={g.name} style={{ background: "var(--card)", border: "1.5px solid var(--border)", borderRadius: 14, padding: "10px 6px", textAlign: "center" }}>
                   <div style={{ fontSize: 26 }}>{EMOJI[g.name]}</div>
-                  <div style={{ fontSize: 19, fontWeight: 800 }}>{n}</div>
-                  <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--muted)" }}>{SHORT[g.name]}</div>
+                  <div style={{ fontSize: 19, fontWeight: 800 }}>{n}× <span style={{ fontSize: 12.5 }}>{SHORT[g.name]}</span></div>
+                  <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--muted)" }}>≈ {g.avg.toFixed(0)} KD profit each</div>
                 </div>
               );
             })}
