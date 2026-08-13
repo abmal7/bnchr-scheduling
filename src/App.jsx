@@ -8155,7 +8155,7 @@ function CostsView({ jobs, onUpdate }) {
   const [q, setQ] = useState("");
 
   const custOwned = (it) => /customer/i.test(String(it.supplier || "")); // customer-supplied → nothing to cost
-  const costable = (it) => !custOwned(it) && !isLaborLine(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part");
+  const costable = (it) => !custOwned(it) && !isLaborLine(it) && (it.kind === "tire" || it.kind === "part"); // any tire/part needs a cost — catalog-linked or manually typed
   const needsCost = (it) => costable(it) && !(Number(it.cost) > 0);
   const ql = q.trim().toLowerCase();
   const rows = jobs
@@ -8464,7 +8464,7 @@ function ReportsView({ jobs, quotes, customers, owner }) {
   const itemCostOf = (it) => (Number(it.cost) || 0) * (Number(it.qty) || 1);
   const jobItemsCost = (j) => (j.items || []).reduce((s, it) => s + itemCostOf(it), 0);
   const custOwnedIt = (it) => /customer/i.test(String(it.supplier || ""));
-  const costableIt = (it) => !custOwnedIt(it) && !isLaborLine(it) && ((it.kind === "tire" && it.tire_id) || it.kind === "part");
+  const costableIt = (it) => !custOwnedIt(it) && !isLaborLine(it) && (it.kind === "tire" || it.kind === "part");
   // collections: sold & delivered but money not in (either paid signal counts)
   const uncollectedJobs = inRange.filter(j => jobSuccessful(j) && j.payment_status !== "paid" && j.status !== "paid");
   const uncollectedKD = uncollectedJobs.reduce((s, j) => s + (Number(j.total) || 0), 0);
