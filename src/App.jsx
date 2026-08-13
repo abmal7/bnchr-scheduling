@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // ─── Supabase ────────────────────────────────────────────────────────────────
@@ -8289,7 +8289,7 @@ function CostsView({ jobs, onUpdate }) {
                       const chg = { background: "#FFF7EC", borderRadius: 6, padding: "1px 6px", fontWeight: 800, display: "inline-block" };
                       const oldV = { color: "var(--muted)", textDecoration: "line-through", fontSize: 10.5, marginRight: 4 };
                       return (
-                        <React.Fragment key={h.id}>
+                        <Fragment key={h.id}>
                           <tr>
                             <td style={{ ...td3, color: "var(--muted)", fontSize: 11 }}>{String(h.created_at).slice(5, 16).replace("T", " ")}</td>
                             <td style={td3}><div style={{ fontWeight: 700, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>{h.customer_name || "—"}</div><div style={{ fontSize: 10.5, color: "var(--muted)" }}>{h.invoice_no || ""}</div></td>
@@ -8317,7 +8317,7 @@ function CostsView({ jobs, onUpdate }) {
                               </div>
                             </td></tr>
                           )}
-                        </React.Fragment>
+                        </Fragment>
                       );
                     })}
                   </tbody>
