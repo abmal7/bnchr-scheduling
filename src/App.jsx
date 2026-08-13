@@ -5102,7 +5102,7 @@ function paIncentParts(jobs, refDate, monthNet, profitGate, range = null) {
     if (TIRE_SIZE_RX.test(String(it.name || ""))) {
       TIRE_SIZE_RX.lastIndex = 0;
       const qty = Number(it.qty) || 1;
-      tRev += (Number(it.price) || 0) * qty;
+      tRev += (Number(it.price ?? it.unit_price) || 0) * qty;
       tCost += (Number(it.cost) || 0) * qty;
     }
     TIRE_SIZE_RX.lastIndex = 0;
@@ -5126,7 +5126,7 @@ function PAIncentiveView({ jobs, fixedExpenses }) {
     if (TIRE_SIZE_RX.test(String(it.name || ""))) {
       TIRE_SIZE_RX.lastIndex = 0;
       const qty = Number(it.qty) || 1;
-      tRev += (Number(it.price) || 0) * qty;
+      tRev += (Number(it.price ?? it.unit_price) || 0) * qty;
       tCost += (Number(it.cost) || 0) * qty;
     }
     TIRE_SIZE_RX.lastIndex = 0;
