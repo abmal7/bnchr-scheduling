@@ -4717,8 +4717,31 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
             : `profit still needed today ${mood} — today's goal ${kd(st.dailyNeed)}, profit booked so far ${kd(st.todayContribution)} (${st.todayOrders} orders)`}
         </div>
         {!monthWon && (
-          <div style={{ height: 12, background: "rgba(255,255,255,.18)", borderRadius: 7, overflow: "hidden", margin: "10px auto 0", maxWidth: 420 }}>
-            <div style={{ width: dayPct + "%", height: "100%", background: dayWon ? "#4ADE80" : "#FBBF24", transition: "width .5s" }} />
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "stretch", gap: 12, marginTop: 12 }}>
+            {/* the funnel: fills bottom → top through five 20% stages */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 3, height: 180, width: 52 }}>
+              {[5, 4, 3, 2, 1].map(i => {
+                const lo = (i - 1) * 20;
+                const fillPct = Math.max(0, Math.min(100, (dayPct - lo) / 20 * 100));
+                return (
+                  <div key={i} style={{ flex: 1, background: "rgba(255,255,255,.14)", borderRadius: i === 5 ? "10px 10px 4px 4px" : i === 1 ? "4px 4px 10px 10px" : 4, overflow: "hidden", position: "relative" }}>
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: fillPct + "%", background: dayWon ? "#4ADE80" : fillPct >= 100 ? "#4ADE80" : "#FBBF24", transition: "height .5s" }} />
+                  </div>
+                );
+              })}
+            </div>
+            {/* stage thresholds */}
+            <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: 186, textAlign: "left", paddingTop: 0 }}>
+              {[100, 80, 60, 40, 20].map(p => {
+                const hit = dayPct >= p;
+                return (
+                  <div key={p} style={{ fontSize: p === 100 ? 12.5 : 10.5, fontWeight: 800, color: hit ? "#4ADE80" : "rgba(255,255,255,.55)", lineHeight: 1.1 }}>
+                    {p === 100 ? "🎯 " : ""}{kd(st.dailyNeed * p / 100)}{hit ? " ✓" : ""}
+                    <span style={{ fontSize: 8.5, fontWeight: 700, color: "rgba(255,255,255,.4)", marginLeft: 3 }}>{p}%</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
         {st.pendingCostToday > 0 && (
