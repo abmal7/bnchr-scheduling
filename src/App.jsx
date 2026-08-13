@@ -8107,6 +8107,7 @@ function CostsView({ jobs, onUpdate }) {
   const [hTo, setHTo] = useState("");
   const [hEdit, setHEdit] = useState(null); // { key, jobId, itemId, cost, supplier, po }
   const [hSearch, setHSearch] = useState("");
+  const [hErr, setHErr] = useState("");
   const histShown = useMemo(() => {
     const t2 = hSearch.trim().toLowerCase();
     if (!t2) return hist;
@@ -8127,7 +8128,12 @@ function CostsView({ jobs, onUpdate }) {
       old_supplier: it.supplier || null, new_supplier: out.supplier || null,
       old_po: it.po || null, new_po: out.po || null,
     };
-    try { await sb("/order_cost_log", { method: "POST", prefer: "return=minimal", body: JSON.stringify([entry]) }); } catch (e) {}
+    try {
+      await sb("/order_cost_log", { method: "POST", prefer: "return=minimal", body: JSON.stringify([entry]) });
+      setHErr("");
+    } catch (e) {
+      setHErr("⚠ The correction saved to the order, but writing the history line FAILED — run migration_cost_log.sql v2 (item_id column) and retry.");
+    }
     setHist(prev => [{ ...entry, id: Math.random(), created_at: new Date().toISOString() }, ...prev]);
     setHEdit(null);
   };
@@ -8193,8 +8199,11 @@ function CostsView({ jobs, onUpdate }) {
     if (logRows.length) {
       try {
         await sb("/order_cost_log", { method: "POST", prefer: "return=minimal", body: JSON.stringify(logRows) });
-        setHist(prev => [...logRows.map(r => ({ ...r, id: Math.random(), created_at: new Date().toISOString() })), ...prev].slice(0, 80));
-      } catch (e) {}
+        setHist(prev => [...logRows.map(r => ({ ...r, id: Math.random(), created_at: new Date().toISOString() })), ...prev]);
+        setHErr("");
+      } catch (e) {
+        setHErr("⚠ Costs saved to the order, but the history entries FAILED to record — run migration_cost_log.sql v2 and retry.");
+      }
     }
     setDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
     setSupDrafts(prev => { const c = { ...prev }; delete c[job.id]; return c; });
@@ -8247,6 +8256,7 @@ function CostsView({ jobs, onUpdate }) {
               {histShown.length} change{histShown.length === 1 ? "" : "s"} · {[...new Set(histShown.map(h => h.job_id))].length} order{[...new Set(histShown.map(h => h.job_id))].length === 1 ? "" : "s"}
             </span>
           </div>
+          {hErr && <div style={{ fontSize: 12, fontWeight: 800, color: "#B91C1C", background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 10, padding: "8px 12px", marginBottom: 8 }}>{hErr}</div>}
           <div className="card">
             <div className="card-body" style={{ padding: "6px 10px", overflowX: "auto" }}>
               {histShown.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: 14, textAlign: "center" }}>No cost changes match.</div>}
@@ -8285,8 +8295,8 @@ function CostsView({ jobs, onUpdate }) {
                             <td style={td3}><div style={{ fontWeight: 700, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>{h.customer_name || "—"}</div><div style={{ fontSize: 10.5, color: "var(--muted)" }}>{h.invoice_no || ""}</div></td>
                             <td style={{ ...td3, whiteSpace: "normal", minWidth: 140, maxWidth: 210 }}>{h.item_name}</td>
                             <td style={td3}>{costChanged ? (<><span style={oldV}>{h.old_cost ?? "—"}</span><span style={chg}>{h.new_cost}</span></>) : <span style={{ fontWeight: 700 }}>{h.new_cost ?? h.old_cost ?? "—"}</span>}</td>
-                            <td style={td3}>{supChanged ? (<><span style={oldV}>{h.old_supplier || "—"}</span><span style={chg}>{h.new_supplier || "—"}</span></>) : (h.new_supplier || h.old_supplier || "—")}</td>
-                            <td style={td3}>{poChanged ? (<><span style={oldV}>{h.old_po || "—"}</span><span style={chg}>{h.new_po || "—"}</span></>) : (h.new_po || h.old_po || "—")}</td>
+                            <td style={td3}>{supChanged ? (<><span style={oldV}>{h.old_supplier || "—"}</span><span style={chg}>{h.new_supplier || "—"}</span></>) : (h.new_supplier || h.old_supplier || (it && it.supplier ? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>now: {it.supplier}</span> : "—"))}</td>
+                            <td style={td3}>{poChanged ? (<><span style={oldV}>{h.old_po || "—"}</span><span style={chg}>{h.new_po || "—"}</span></>) : (h.new_po || h.old_po || (it && it.po ? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>now: {it.po}</span> : "—"))}</td>
                             <td style={{ ...td3, fontWeight: 700 }}>{price != null && price > 0 ? price : "—"}</td>
                             <td style={td3}>{profit != null ? (
                               <span style={{ fontWeight: 800, color: profit >= 0 ? "var(--success)" : "var(--danger)" }}>
