@@ -4714,33 +4714,38 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
         <div style={{ fontSize: 13, fontWeight: 700, color: "#D4EDDA" }}>
           {monthWon ? `The month's ${kd(st.required)} is fully covered — everything now is pure extra.`
             : dayWon ? `Today's ${kd(st.dailyNeed)} is in the bag — anything more shrinks tomorrow's number.`
-            : `profit still needed today ${mood} — today's goal ${kd(st.dailyNeed)}, profit booked so far ${kd(st.todayContribution)} (${st.todayOrders} orders)`}
+            : `profit still needed today ${mood} · ${st.todayOrders} order${st.todayOrders === 1 ? "" : "s"} booked`}
         </div>
         {!monthWon && (
-          <div style={{ display: "flex", justifyContent: "center", alignItems: "stretch", gap: 12, marginTop: 12 }}>
-            {/* the funnel: fills bottom → top through five 20% stages */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 3, height: 180, width: 52 }}>
-              {[5, 4, 3, 2, 1].map(i => {
-                const lo = (i - 1) * 20;
-                const fillPct = Math.max(0, Math.min(100, (dayPct - lo) / 20 * 100));
-                return (
-                  <div key={i} style={{ flex: 1, background: "rgba(255,255,255,.14)", borderRadius: i === 5 ? "10px 10px 4px 4px" : i === 1 ? "4px 4px 10px 10px" : 4, overflow: "hidden", position: "relative" }}>
-                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: fillPct + "%", background: dayWon ? "#4ADE80" : fillPct >= 100 ? "#4ADE80" : "#FBBF24", transition: "height .5s" }} />
-                  </div>
-                );
-              })}
+          <div style={{ margin: "12px auto 0", maxWidth: 460 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, display: "flex", gap: 4 }}>
+                {[1, 2, 3, 4, 5].map(i => {
+                  const lo = (i - 1) * 20;
+                  const fillPct = Math.max(0, Math.min(100, (dayPct - lo) / 20 * 100));
+                  return (
+                    <div key={i} style={{ flex: 1, height: 12, background: "rgba(255,255,255,.16)", borderRadius: i === 1 ? "6px 3px 3px 6px" : i === 5 ? "3px 6px 6px 3px" : 3, overflow: "hidden" }}>
+                      <div style={{ width: fillPct + "%", height: "100%", background: fillPct >= 100 ? "#4ADE80" : "#FBBF24", transition: "width .5s" }} />
+                    </div>
+                  );
+                })}
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 800, whiteSpace: "nowrap" }}>🎯 {kd(st.dailyNeed)}</span>
             </div>
-            {/* stage thresholds */}
-            <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", height: 186, textAlign: "left", paddingTop: 0 }}>
-              {[100, 80, 60, 40, 20].map(p => {
-                const hit = dayPct >= p;
+            <div style={{ display: "flex", gap: 4, marginTop: 3, marginRight: 86 }}>
+              {[1, 2, 3, 4].map(i => {
+                const hit = dayPct >= i * 20;
                 return (
-                  <div key={p} style={{ fontSize: p === 100 ? 12.5 : 10.5, fontWeight: 800, color: hit ? "#4ADE80" : "rgba(255,255,255,.55)", lineHeight: 1.1 }}>
-                    {p === 100 ? "🎯 " : ""}{kd(st.dailyNeed * p / 100)}{hit ? " ✓" : ""}
-                    <span style={{ fontSize: 8.5, fontWeight: 700, color: "rgba(255,255,255,.4)", marginLeft: 3 }}>{p}%</span>
+                  <div key={i} style={{ flex: 1, textAlign: "right", fontSize: 9, fontWeight: 700, color: hit ? "#4ADE80" : "rgba(255,255,255,.45)" }}>
+                    {kd(st.dailyNeed * i / 5)}{hit ? " ✓" : ""}
                   </div>
                 );
               })}
+              <div style={{ flex: 1 }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12.5, fontWeight: 800 }}>
+              <span style={{ color: "#4ADE80" }}>✓ {kd(st.todayContribution)} booked</span>
+              <span style={{ color: "#FBBF24" }}>{kd(leftToday)} remaining</span>
             </div>
           </div>
         )}
