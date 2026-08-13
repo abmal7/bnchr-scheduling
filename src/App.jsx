@@ -8106,6 +8106,12 @@ function CostsView({ jobs, onUpdate }) {
   const [hFrom, setHFrom] = useState("");
   const [hTo, setHTo] = useState("");
   const [hEdit, setHEdit] = useState(null); // { key, jobId, itemId, cost, supplier, po }
+  const [hSearch, setHSearch] = useState("");
+  const histShown = useMemo(() => {
+    const t2 = hSearch.trim().toLowerCase();
+    if (!t2) return hist;
+    return hist.filter(h => `${h.customer_name || ""} ${h.invoice_no || ""} ${h.item_name || ""} ${h.old_supplier || ""} ${h.new_supplier || ""} ${h.old_po || ""} ${h.new_po || ""} ${h.old_cost ?? ""} ${h.new_cost ?? ""}`.toLowerCase().includes(t2));
+  }, [hist, hSearch]);
   const saveHistEdit = async () => {
     const job = jobs.find(j => j.id === hEdit.jobId);
     if (!job) return;
@@ -8233,52 +8239,84 @@ function CostsView({ jobs, onUpdate }) {
               <span style={{ fontSize: 12, color: "var(--muted)" }}>→</span>
               <input type="date" className="filter-input" value={hTo} onChange={e => setHTo(e.target.value)} style={{ fontSize: 12 }} />
             </>)}
-            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)", marginLeft: "auto" }}>
-              {hist.length} change{hist.length === 1 ? "" : "s"} · {[...new Set(hist.map(h => h.job_id))].length} order{[...new Set(hist.map(h => h.job_id))].length === 1 ? "" : "s"}
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <input className="filter-input" placeholder="🔎 Trace: customer, invoice, item, supplier, PO…" value={hSearch}
+              onChange={e => setHSearch(e.target.value)} style={{ flex: "1 1 240px" }} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>
+              {histShown.length} change{histShown.length === 1 ? "" : "s"} · {[...new Set(histShown.map(h => h.job_id))].length} order{[...new Set(histShown.map(h => h.job_id))].length === 1 ? "" : "s"}
             </span>
           </div>
           <div className="card">
-            <div className="card-body" style={{ padding: "8px 14px" }}>
-              {hist.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: 12, textAlign: "center" }}>No cost changes in this period.</div>}
-              {hist.map(h => {
-                const bits = [];
-                if (Number(h.old_cost || 0) !== Number(h.new_cost || 0)) bits.push(`cost ${h.old_cost ?? "—"} → ${h.new_cost}`);
-                if ((h.old_supplier || "") !== (h.new_supplier || "")) bits.push(`supplier ${h.old_supplier || "—"} → ${h.new_supplier || "—"}`);
-                if ((h.old_po || "") !== (h.new_po || "")) bits.push(`PO ${h.old_po || "—"} → ${h.new_po || "—"}`);
-                const job = jobs.find(j => j.id === h.job_id);
-                let it = job && h.item_id ? (job.items || []).find(x => x.id === h.item_id) : null;
-                if (job && !it) {
-                  // pre-v2 log rows have no item link — match by display name, only when unambiguous
-                  const nameOf = (x) => x.kind === "tire"
-                    ? `${x.brand} ${x.pattern || ""}`.trim() + (x.size ? ` · ${x.size}` : "")
-                    : (x.name || x.service_type || "item");
-                  const matches = (job.items || []).filter(x => nameOf(x) === h.item_name);
-                  if (matches.length === 1) it = matches[0];
-                }
-                const editing = hEdit && hEdit.key === h.id;
-                return (
-                  <div key={h.id} style={{ padding: "6px 0", borderTop: "1px solid var(--border)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
-                      <span><strong>{h.customer_name || "—"}</strong>{h.invoice_no ? ` · ${h.invoice_no}` : ""} · {h.item_name} — {bits.join(" · ") || "updated"}</span>
-                      <span style={{ color: "var(--muted)", whiteSpace: "nowrap", display: "flex", gap: 6, alignItems: "center" }}>
-                        {String(h.created_at).slice(5, 16).replace("T", " ")}
-                        {it && !editing && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px", fontSize: 11 }} onClick={() => setHEdit({ key: h.id, jobId: job.id, itemId: it.id, cost: it.cost || "", supplier: it.supplier || "", po: it.po || "" })}>✎ edit</button>}
-                      </span>
-                    </div>
-                    {editing && (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 6, background: "var(--bg)", border: "1px dashed var(--border)", borderRadius: 8, padding: "7px 9px" }}>
-                        <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--muted)" }}>CORRECT CURRENT VALUES:</span>
-                        <input className="filter-input" type="number" step="0.001" style={{ width: 86 }} placeholder="cost" value={hEdit.cost} onChange={e => setHEdit(p => ({ ...p, cost: e.target.value }))} />
-                        <input className="filter-input" style={{ width: 130 }} placeholder="supplier" list="cost-suppliers" value={hEdit.supplier} onChange={e => setHEdit(p => ({ ...p, supplier: e.target.value }))} />
-                        <input className="filter-input" style={{ width: 100 }} placeholder="PO ref" value={hEdit.po} onChange={e => setHEdit(p => ({ ...p, po: e.target.value }))} />
-                        <button className="btn btn-primary btn-sm" onClick={saveHistEdit}>Save</button>
-                        <button className="btn btn-ghost btn-sm" onClick={() => setHEdit(null)}>cancel</button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="card-body" style={{ padding: "6px 10px", overflowX: "auto" }}>
+              {histShown.length === 0 && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: 14, textAlign: "center" }}>No cost changes match.</div>}
+              {histShown.length > 0 && (
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 760 }}>
+                  <thead><tr>
+                    {["When", "Order", "Item", "Cost", "Supplier", "P.O.", "Price", "Profit", ""].map(h2 => (
+                      <th key={h2} style={{ fontSize: 10, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase", textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>{h2}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {histShown.map(h => {
+                      const job = jobs.find(j => j.id === h.job_id);
+                      let it = job && h.item_id ? (job.items || []).find(x => x.id === h.item_id) : null;
+                      if (job && !it) {
+                        const nameOf = (x) => x.kind === "tire"
+                          ? `${x.brand} ${x.pattern || ""}`.trim() + (x.size ? ` · ${x.size}` : "")
+                          : (x.name || x.service_type || "item");
+                        const matches = (job.items || []).filter(x => nameOf(x) === h.item_name);
+                        if (matches.length === 1) it = matches[0];
+                      }
+                      const editing = hEdit && hEdit.key === h.id;
+                      const costChanged = Number(h.old_cost || 0) !== Number(h.new_cost || 0);
+                      const supChanged = (h.old_supplier || "") !== (h.new_supplier || "");
+                      const poChanged = (h.old_po || "") !== (h.new_po || "");
+                      const price = it ? Number(it.price ?? it.unit_price) || 0 : null;
+                      const curCost = it ? Number(it.cost) || 0 : Number(h.new_cost) || 0;
+                      const profit = price != null && price > 0 ? price - curCost : null;
+                      const td3 = { fontSize: 12, padding: "7px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top", whiteSpace: "nowrap" };
+                      const chg = { background: "#FFF7EC", borderRadius: 6, padding: "1px 6px", fontWeight: 800, display: "inline-block" };
+                      const oldV = { color: "var(--muted)", textDecoration: "line-through", fontSize: 10.5, marginRight: 4 };
+                      return (
+                        <React.Fragment key={h.id}>
+                          <tr>
+                            <td style={{ ...td3, color: "var(--muted)", fontSize: 11 }}>{String(h.created_at).slice(5, 16).replace("T", " ")}</td>
+                            <td style={td3}><div style={{ fontWeight: 700, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>{h.customer_name || "—"}</div><div style={{ fontSize: 10.5, color: "var(--muted)" }}>{h.invoice_no || ""}</div></td>
+                            <td style={{ ...td3, whiteSpace: "normal", minWidth: 140, maxWidth: 210 }}>{h.item_name}</td>
+                            <td style={td3}>{costChanged ? (<><span style={oldV}>{h.old_cost ?? "—"}</span><span style={chg}>{h.new_cost}</span></>) : <span style={{ fontWeight: 700 }}>{h.new_cost ?? h.old_cost ?? "—"}</span>}</td>
+                            <td style={td3}>{supChanged ? (<><span style={oldV}>{h.old_supplier || "—"}</span><span style={chg}>{h.new_supplier || "—"}</span></>) : (h.new_supplier || h.old_supplier || "—")}</td>
+                            <td style={td3}>{poChanged ? (<><span style={oldV}>{h.old_po || "—"}</span><span style={chg}>{h.new_po || "—"}</span></>) : (h.new_po || h.old_po || "—")}</td>
+                            <td style={{ ...td3, fontWeight: 700 }}>{price != null && price > 0 ? price : "—"}</td>
+                            <td style={td3}>{profit != null ? (
+                              <span style={{ fontWeight: 800, color: profit >= 0 ? "var(--success)" : "var(--danger)" }}>
+                                {profit >= 0 ? "+" : ""}{Math.round(profit * 100) / 100}{price > 0 ? <span style={{ color: "var(--muted)", fontWeight: 600 }}> · {Math.round(profit / price * 100)}%</span> : null}
+                              </span>) : "—"}
+                            </td>
+                            <td style={td3}>{it && !editing && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px", fontSize: 11 }} onClick={() => setHEdit({ key: h.id, jobId: job.id, itemId: it.id, cost: it.cost || "", supplier: it.supplier || "", po: it.po || "" })}>✎</button>}</td>
+                          </tr>
+                          {editing && (
+                            <tr><td colSpan={9} style={{ padding: "4px 8px 10px", borderBottom: "1px solid var(--border)" }}>
+                              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", background: "var(--bg)", border: "1px dashed var(--border)", borderRadius: 8, padding: "7px 9px" }}>
+                                <span style={{ fontSize: 10.5, fontWeight: 800, color: "var(--muted)" }}>CORRECT CURRENT VALUES:</span>
+                                <input className="filter-input" type="number" step="0.001" style={{ width: 86 }} placeholder="cost" value={hEdit.cost} onChange={e => setHEdit(p => ({ ...p, cost: e.target.value }))} />
+                                <input className="filter-input" style={{ width: 130 }} placeholder="supplier" list="cost-suppliers" value={hEdit.supplier} onChange={e => setHEdit(p => ({ ...p, supplier: e.target.value }))} />
+                                <input className="filter-input" style={{ width: 100 }} placeholder="PO ref" value={hEdit.po} onChange={e => setHEdit(p => ({ ...p, po: e.target.value }))} />
+                                <button className="btn btn-primary btn-sm" onClick={saveHistEdit}>Save</button>
+                                <button className="btn btn-ghost btn-sm" onClick={() => setHEdit(null)}>cancel</button>
+                              </div>
+                            </td></tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--muted)", margin: "6px 0 14px" }}>
+            🟡 highlighted = what changed (old value struck through) · Price & Profit read live from the order · ✎ corrects the item and logs a new line
           </div>
         </>
       )}
