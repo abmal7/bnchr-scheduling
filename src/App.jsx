@@ -8108,36 +8108,6 @@ function CostsView({ jobs, onUpdate }) {
   const [hEdit, setHEdit] = useState(null); // { key, jobId, itemId, cost, supplier, po }
   const [hSearch, setHSearch] = useState("");
   const [hErr, setHErr] = useState("");
-  const histShown = useMemo(() => {
-    // Merge: logged changes + costs that ARRIVED WITH orders in the period (quote pipeline)
-    const r = histRange();
-    const covered = new Set(hist.map(h => `${h.job_id}:${h.item_id}`));
-    const synth = [];
-    if (r) {
-      jobs.forEach(j => {
-        if (j.status === "cancelled") return;
-        const d = String(j.scheduled_at || j.created_at || "").split("T")[0];
-        if (!(d >= r[0] && d <= r[1])) return;
-        (j.items || []).forEach(it => {
-          if (!(Number(it.cost) > 0)) return;
-          if (isLaborLine(it) || /customer/i.test(String(it.supplier || ""))) return;
-          if (!(it.kind === "tire" || it.kind === "part")) return;
-          if (covered.has(`${j.id}:${it.id}`)) return;
-          synth.push({
-            id: "ord-" + j.id + "-" + it.id, _src: "order",
-            job_id: j.id, item_id: it.id, invoice_no: j.invoice_no || null, customer_name: j.customer_name || null,
-            item_name: it.kind === "tire" ? `${it.brand || ""} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : (it.name || it.service_type || "item"),
-            old_cost: null, new_cost: Number(it.cost), old_supplier: null, new_supplier: it.supplier || null,
-            old_po: null, new_po: it.po || null, created_at: j.scheduled_at || j.created_at,
-          });
-        });
-      });
-    }
-    const merged = [...hist, ...synth].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-    const t2 = hSearch.trim().toLowerCase();
-    if (!t2) return merged;
-    return merged.filter(h => `${h.customer_name || ""} ${h.invoice_no || ""} ${h.item_name || ""} ${h.old_supplier || ""} ${h.new_supplier || ""} ${h.old_po || ""} ${h.new_po || ""} ${h.old_cost ?? ""} ${h.new_cost ?? ""}`.toLowerCase().includes(t2));
-  }, [hist, jobs, histPeriod, hFrom, hTo, hSearch]);
   const saveHistEdit = async () => {
     const job = jobs.find(j => j.id === hEdit.jobId);
     if (!job) return;
@@ -8169,6 +8139,36 @@ function CostsView({ jobs, onUpdate }) {
     if (histPeriod === "month") { const d = new Date(); return [`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`, today]; }
     return hFrom && hTo && hFrom <= hTo ? [hFrom, hTo] : null;
   };
+  const histShown = useMemo(() => {
+    // Merge: logged changes + costs that ARRIVED WITH orders in the period (quote pipeline)
+    const r = histRange();
+    const covered = new Set(hist.map(h => `${h.job_id}:${h.item_id}`));
+    const synth = [];
+    if (r) {
+      jobs.forEach(j => {
+        if (j.status === "cancelled") return;
+        const d = String(j.scheduled_at || j.created_at || "").split("T")[0];
+        if (!(d >= r[0] && d <= r[1])) return;
+        (j.items || []).forEach(it => {
+          if (!(Number(it.cost) > 0)) return;
+          if (isLaborLine(it) || /customer/i.test(String(it.supplier || ""))) return;
+          if (!(it.kind === "tire" || it.kind === "part")) return;
+          if (covered.has(`${j.id}:${it.id}`)) return;
+          synth.push({
+            id: "ord-" + j.id + "-" + it.id, _src: "order",
+            job_id: j.id, item_id: it.id, invoice_no: j.invoice_no || null, customer_name: j.customer_name || null,
+            item_name: it.kind === "tire" ? `${it.brand || ""} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : (it.name || it.service_type || "item"),
+            old_cost: null, new_cost: Number(it.cost), old_supplier: null, new_supplier: it.supplier || null,
+            old_po: null, new_po: it.po || null, created_at: j.scheduled_at || j.created_at,
+          });
+        });
+      });
+    }
+    const merged = [...hist, ...synth].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const t2 = hSearch.trim().toLowerCase();
+    if (!t2) return merged;
+    return merged.filter(h => `${h.customer_name || ""} ${h.invoice_no || ""} ${h.item_name || ""} ${h.old_supplier || ""} ${h.new_supplier || ""} ${h.old_po || ""} ${h.new_po || ""} ${h.old_cost ?? ""} ${h.new_cost ?? ""}`.toLowerCase().includes(t2));
+  }, [hist, jobs, histPeriod, hFrom, hTo, hSearch]);
   useEffect(() => {
     const r = histRange();
     if (!r) return;
