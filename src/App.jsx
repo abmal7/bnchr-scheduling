@@ -2903,7 +2903,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog }) {
+function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog, fixedMonthly = 10600, profitTargetKD = 3000 }) {
   const isEdit = !!editJob;
   // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
   const hydrateServices = (job) => {
@@ -3650,6 +3650,45 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
             <div className="form-field form-full"><label>Notes</label><textarea value={f.notes} onChange={set("notes")} placeholder="Gate code, special instructions…" /></div>
           </div>
         </div>
+        {(() => {
+          let st = null;
+          try { st = computeServiceTargets(jobs || [], new Date(), fixedMonthly, profitTargetKD); } catch (e) { return null; }
+          if (!st || !(grandTotal > 0)) return null;
+          const custSup = (x) => /customer/i.test(String(x || ""));
+          let costs = 0, missing = 0;
+          (f.services || []).forEach(sv => {
+            if (sv.kind === "tire") {
+              if (!sv.tire_id) return; // customer's own tires — labor only
+              costs += (Number(sv.cost) || 0) * (Number(sv.qty) || 1);
+              if (!custSup(sv.supplier) && !(Number(sv.cost) > 0)) missing++;
+            } else {
+              (sv.parts || []).filter(p => p.name || Number(p.price) > 0).forEach(p => {
+                costs += (Number(p.cost) || 0) * (Number(p.qty) || 1);
+                if (!custSup(p.supplier) && !(Number(p.cost) > 0)) missing++;
+              });
+            }
+          });
+          const pt = String(f.payment_through || "");
+          const fee = pt === "Tabby" ? grandTotal * 0.07 : pt === "Taly" ? grandTotal * 0.06 + 0.100 : 0;
+          const contrib = grandTotal - costs - fee;
+          const remaining = Math.max(0, st.dailyNeed - st.todayContribution);
+          const kd2 = (n) => `KWD ${(Number(n) || 0).toFixed(1)}`;
+          if (missing > 0) return (
+            <div style={{ margin: "0 16px 10px", background: "var(--bg)", border: "1.5px dashed var(--border)", borderRadius: 10, padding: "8px 12px", fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>
+              🎯 Today's mission: {remaining > 0 ? `${kd2(remaining)} still needed` : "already won 🎉"} · ⚠ this order won't count toward the target until {missing === 1 ? "its cost is" : `${missing} costs are`} filled (Costs page)
+            </div>
+          );
+          const wins = remaining > 0 && contrib >= remaining;
+          return (
+            <div style={{ margin: "0 16px 10px", background: wins ? "linear-gradient(135deg,#14532D,#16A34A)" : "#0F2419", color: "#fff", borderRadius: 10, padding: "8px 12px", fontSize: 12.5, fontWeight: 800 }}>
+              {remaining <= 0
+                ? <>🎉 Mission already won — this order adds {kd2(contrib)} of pure extra{fee > 0 ? ` (after ${pt} fee)` : ""}</>
+                : wins
+                  ? <>🏆 THIS ORDER WINS THE DAY — {kd2(contrib)} covers the remaining {kd2(remaining)}</>
+                  : <>🎯 This order adds <span style={{ color: "#4ADE80" }}>{kd2(contrib)}</span> toward today's mission{fee > 0 ? ` (after ${pt} fee)` : ""} · after booking: {kd2(remaining - contrib)} still needed</>}
+            </div>
+          );
+        })()}
         <div className="modal-footer">
           {!canSubmit && (
             <span style={{ fontSize: 12, color: "var(--danger)", marginRight: "auto", alignSelf: "center" }}>
@@ -9922,6 +9961,8 @@ export default function App() {
 
       {editingJob && (
         <NewJobModal
+          fixedMonthly={Number(appSettings.fixed_expenses) || 10600}
+          profitTargetKD={Number(appSettings.service_profit_target) || 3000}
           defaultAgent={sessionAgent}
           catalog={catalog}
           onCustomerCreated={(c) => setCustomers(prev => [c, ...prev])}
@@ -9940,6 +9981,8 @@ export default function App() {
 
       {showNew && (
         <NewJobModal
+          fixedMonthly={Number(appSettings.fixed_expenses) || 10600}
+          profitTargetKD={Number(appSettings.service_profit_target) || 3000}
           defaultAgent={sessionAgent}
           catalog={catalog}
           onCustomerCreated={(c) => setCustomers(prev => [c, ...prev])}
