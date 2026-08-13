@@ -4579,15 +4579,24 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
   const y = ref.getFullYear(), m = ref.getMonth();
   const done = jobs.filter(j => jobSuccessful(j));
   const dOf = (j) => new Date(j.completed_at || j.scheduled_at || j.created_at);
-  const hist = done.filter(j => { const d = dOf(j); return d >= from90 && d <= ref; });
-  const mtd = done.filter(j => { const d = dOf(j); return d.getFullYear() === y && d.getMonth() === m; });
+  const hist = done.filter(j => { const d = dOf(j); return d >= from90 && d <= ref; }); // mix & averages: real completed outcomes
+  // "Profit booked": every live booking counts the moment sales closes it — except orders still awaiting costs
+  const stMissingCost = (j) => (j.items || []).some(it =>
+    (it.kind === "tire" || it.kind === "part") && !isLaborLine(it)
+    && !/customer/i.test(String(it.supplier || "")) && !(Number(it.cost) > 0));
+  const booked = jobs.filter(j => j.status !== "cancelled" && j.status !== "draft");
+  const inMonthB = booked.filter(j => { const d = dOf(j); return d.getFullYear() === y && d.getMonth() === m; });
+  const mtd = inMonthB.filter(j => !stMissingCost(j));
+  const pendingCostMtd = inMonthB.length - mtd.length;
 
   const groups = {};
   [...ST_GROUPS, "Other"].forEach(g => { groups[g] = { name: g, n: 0, contrib: 0, mtdUnits: 0, mtdContrib: 0 }; });
   hist.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.n++; g.contrib += stContribution(j); g.rev = (g.rev || 0) + (Number(j.total) || 0); });
   mtd.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.mtdUnits++; g.mtdContrib += stContribution(j); });
   const todayStr = ref.toISOString().split("T")[0];
-  const today = mtd.filter(j => String(j.completed_at || j.scheduled_at || "").split("T")[0] === todayStr);
+  const dStrOf = (j) => String(j.scheduled_at || j.completed_at || j.created_at || "").split("T")[0];
+  const today = mtd.filter(j => dStrOf(j) === todayStr);
+  const pendingCostToday = inMonthB.filter(j => dStrOf(j) === todayStr && stMissingCost(j)).length;
 
   const totalN = hist.length || 1;
   const rows = Object.values(groups).filter(g => g.n > 0).map(g => ({
@@ -4625,7 +4634,7 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
   rows.forEach(g => { g.perDay = Math.max(0, g.unitsTarget - g.mtdUnits) / remainingDays; });
   const dailyQuota = required / daysInMonth;
   const byDay = {};
-  mtd.forEach(j => { const d = Number(String(j.completed_at || j.scheduled_at || "").split("T")[0].split("-")[2]); if (d) byDay[d] = (byDay[d] || 0) + stContribution(j); });
+  mtd.forEach(j => { const d = Number(dStrOf(j).split("-")[2]); if (d) byDay[d] = (byDay[d] || 0) + stContribution(j); });
   const dayLog = [];
   for (let d = 1; d <= daysInMonth; d++) {
     dayLog.push({ d, c: byDay[d] || 0, state: d > dayOfMonth ? "future" : (byDay[d] || 0) >= dailyQuota ? "won" : (byDay[d] || 0) >= dailyQuota * 0.5 ? "half" : "low" });
@@ -4634,7 +4643,8 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
   return { rows, required, mtdContribution, remaining, ordersCurrent, ordersSmart, blendedAvg, smartBlended,
     mtdOrders: mtd.length, paceNeeded: required / daysInMonth * dayOfMonth,
     remainingDays, dailyNeed, todayContribution, todayOrders: today.length, avgTicket,
-    dailyQuota, dayLog, daysWon, dayOfMonth, daysInMonth };
+    dailyQuota, dayLog, daysWon, dayOfMonth, daysInMonth,
+    pendingCostToday, pendingCostMtd };
 }
 
 // ═══ 🎯 Service Targets view — the profitable-month map ═════════════════════
@@ -4665,11 +4675,16 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
         <div style={{ fontSize: 13, fontWeight: 700, color: "#D4EDDA" }}>
           {monthWon ? `The month's ${kd(st.required)} is fully covered — everything now is pure extra.`
             : dayWon ? `Today's ${kd(st.dailyNeed)} is in the bag — anything more shrinks tomorrow's number.`
-            : `profit still needed today ${mood} — today's goal ${kd(st.dailyNeed)}, profit made so far ${kd(st.todayContribution)} (${st.todayOrders} orders)`}
+            : `profit still needed today ${mood} — today's goal ${kd(st.dailyNeed)}, profit booked so far ${kd(st.todayContribution)} (${st.todayOrders} orders)`}
         </div>
         {!monthWon && (
           <div style={{ height: 12, background: "rgba(255,255,255,.18)", borderRadius: 7, overflow: "hidden", margin: "10px auto 0", maxWidth: 420 }}>
             <div style={{ width: dayPct + "%", height: "100%", background: dayWon ? "#4ADE80" : "#FBBF24", transition: "width .5s" }} />
+          </div>
+        )}
+        {st.pendingCostToday > 0 && (
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#FCD34D", marginTop: 7 }}>
+            ⚠ {st.pendingCostToday} booked order{st.pendingCostToday === 1 ? "" : "s"} not counted yet — waiting for costs on the Costs page
           </div>
         )}
       </div>
@@ -4706,7 +4721,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--muted)", fontWeight: 700, marginTop: 3 }}>
             <span>{monthPct}% climbed</span>
-            <span>{monthWon ? "SUMMIT 🚩" : `${kd(st.remaining)} to the summit · ${st.remainingDays} days`}</span>
+            <span>{monthWon ? "SUMMIT 🚩" : `${kd(st.remaining)} to the summit · ${st.remainingDays} days${st.pendingCostMtd > 0 ? ` · ⚠ ${st.pendingCostMtd} awaiting costs` : ""}`}</span>
           </div>
           {/* day dots */}
           <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 9 }}>
@@ -4760,7 +4775,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
               </table>
             </div>
             <div style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0" }}>
-              {st.ordersSmart} orders at the smart mix (vs {st.ordersCurrent} plain) · mix refreshes from trailing 90 days · daily bar = remaining ÷ days left, so it self-adjusts
+              {st.ordersSmart} orders at the smart mix (vs {st.ordersCurrent} plain) · counts every live booking the moment it's made (cancelled/draft excluded; orders missing costs held out until costed) · mix from trailing 90 days of completed orders · daily bar self-adjusts
             </div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
               {st.rows.filter(g => g.aloneUnits && g.name !== "Other").map(g => (
