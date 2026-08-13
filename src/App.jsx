@@ -8332,6 +8332,32 @@ function CostsView({ jobs, onUpdate }) {
       )}
 
       {view === "fill" && (<>
+      {(() => {
+        const todayStr = new Date().toISOString().split("T")[0];
+        const todays = jobs.filter(j => j.status !== "cancelled" && String(j.scheduled_at || "").split("T")[0] === todayStr);
+        if (!todays.length) return null;
+        const stat = todays.map(j => {
+          const items = j.items || [];
+          const cItems = items.filter(costable);
+          const open = cItems.filter(needsCost);
+          return { j, nC: cItems.length, nOpen: open.length };
+        });
+        const full = stat.filter(x => x.nC > 0 && x.nOpen === 0).length;
+        const laborOnly = stat.filter(x => x.nC === 0).length;
+        const missing = stat.filter(x => x.nOpen > 0);
+        return (
+          <div style={{ background: missing.length ? "#FFF7EC" : "#E8F4EC", border: `1.5px solid ${missing.length ? "#FDDCAB" : "#BFDFC9"}`, borderRadius: 12, padding: "9px 14px", marginBottom: 12 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800 }}>
+              📋 Today's {todays.length} order{todays.length === 1 ? "" : "s"}: {full} fully costed{laborOnly ? ` · ${laborOnly} labor/customer-tire only (no cost needed)` : ""}{missing.length ? ` · ⚠ ${missing.length} still missing costs` : " · ✓ all covered"}
+            </div>
+            {missing.length > 0 && (
+              <div style={{ fontSize: 11.5, color: "#92400E", marginTop: 3 }}>
+                {missing.map(x => `${x.j.customer_name || "—"}${x.j.invoice_no ? ` (${x.j.invoice_no})` : ""} — ${x.nOpen} item${x.nOpen === 1 ? "" : "s"}`).join(" · ")}
+              </div>
+            )}
+          </div>
+        );
+      })()}
       <datalist id="cost-suppliers">
         {OTHER_SUPPLIERS.map(s => <option key={s} value={s} />)}
       </datalist>
