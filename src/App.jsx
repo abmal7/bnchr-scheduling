@@ -8109,10 +8109,35 @@ function CostsView({ jobs, onUpdate }) {
   const [hSearch, setHSearch] = useState("");
   const [hErr, setHErr] = useState("");
   const histShown = useMemo(() => {
+    // Merge: logged changes + costs that ARRIVED WITH orders in the period (quote pipeline)
+    const r = histRange();
+    const covered = new Set(hist.map(h => `${h.job_id}:${h.item_id}`));
+    const synth = [];
+    if (r) {
+      jobs.forEach(j => {
+        if (j.status === "cancelled") return;
+        const d = String(j.scheduled_at || j.created_at || "").split("T")[0];
+        if (!(d >= r[0] && d <= r[1])) return;
+        (j.items || []).forEach(it => {
+          if (!(Number(it.cost) > 0)) return;
+          if (isLaborLine(it) || /customer/i.test(String(it.supplier || ""))) return;
+          if (!(it.kind === "tire" || it.kind === "part")) return;
+          if (covered.has(`${j.id}:${it.id}`)) return;
+          synth.push({
+            id: "ord-" + j.id + "-" + it.id, _src: "order",
+            job_id: j.id, item_id: it.id, invoice_no: j.invoice_no || null, customer_name: j.customer_name || null,
+            item_name: it.kind === "tire" ? `${it.brand || ""} ${it.pattern || ""}`.trim() + (it.size ? ` · ${it.size}` : "") : (it.name || it.service_type || "item"),
+            old_cost: null, new_cost: Number(it.cost), old_supplier: null, new_supplier: it.supplier || null,
+            old_po: null, new_po: it.po || null, created_at: j.scheduled_at || j.created_at,
+          });
+        });
+      });
+    }
+    const merged = [...hist, ...synth].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     const t2 = hSearch.trim().toLowerCase();
-    if (!t2) return hist;
-    return hist.filter(h => `${h.customer_name || ""} ${h.invoice_no || ""} ${h.item_name || ""} ${h.old_supplier || ""} ${h.new_supplier || ""} ${h.old_po || ""} ${h.new_po || ""} ${h.old_cost ?? ""} ${h.new_cost ?? ""}`.toLowerCase().includes(t2));
-  }, [hist, hSearch]);
+    if (!t2) return merged;
+    return merged.filter(h => `${h.customer_name || ""} ${h.invoice_no || ""} ${h.item_name || ""} ${h.old_supplier || ""} ${h.new_supplier || ""} ${h.old_po || ""} ${h.new_po || ""} ${h.old_cost ?? ""} ${h.new_cost ?? ""}`.toLowerCase().includes(t2));
+  }, [hist, jobs, histPeriod, hFrom, hTo, hSearch]);
   const saveHistEdit = async () => {
     const job = jobs.find(j => j.id === hEdit.jobId);
     if (!job) return;
@@ -8279,9 +8304,10 @@ function CostsView({ jobs, onUpdate }) {
                         if (matches.length === 1) it = matches[0];
                       }
                       const editing = hEdit && hEdit.key === h.id;
-                      const costChanged = Number(h.old_cost || 0) !== Number(h.new_cost || 0);
-                      const supChanged = (h.old_supplier || "") !== (h.new_supplier || "");
-                      const poChanged = (h.old_po || "") !== (h.new_po || "");
+                      const isOrd = h._src === "order";
+                      const costChanged = !isOrd && Number(h.old_cost || 0) !== Number(h.new_cost || 0);
+                      const supChanged = !isOrd && (h.old_supplier || "") !== (h.new_supplier || "");
+                      const poChanged = !isOrd && (h.old_po || "") !== (h.new_po || "");
                       const price = it ? Number(it.price ?? it.unit_price) || 0 : null;
                       const curCost = it ? Number(it.cost) || 0 : Number(h.new_cost) || 0;
                       const profit = price != null && price > 0 ? price - curCost : null;
@@ -8293,7 +8319,7 @@ function CostsView({ jobs, onUpdate }) {
                           <tr>
                             <td style={{ ...td3, color: "var(--muted)", fontSize: 11 }}>{String(h.created_at).slice(5, 16).replace("T", " ")}</td>
                             <td style={td3}><div style={{ fontWeight: 700, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>{h.customer_name || "—"}</div><div style={{ fontSize: 10.5, color: "var(--muted)" }}>{h.invoice_no || ""}</div></td>
-                            <td style={{ ...td3, whiteSpace: "normal", minWidth: 140, maxWidth: 210 }}>{h.item_name}</td>
+                            <td style={{ ...td3, whiteSpace: "normal", minWidth: 140, maxWidth: 210 }}>{h.item_name}{h._src === "order" && <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--muted)" }}>📦 came with the order</div>}</td>
                             <td style={td3}>{costChanged ? (<><span style={oldV}>{h.old_cost ?? "—"}</span><span style={chg}>{h.new_cost}</span></>) : <span style={{ fontWeight: 700 }}>{h.new_cost ?? h.old_cost ?? "—"}</span>}</td>
                             <td style={td3}>{supChanged ? (<><span style={oldV}>{h.old_supplier || "—"}</span><span style={chg}>{h.new_supplier || "—"}</span></>) : (h.new_supplier || h.old_supplier || (it && it.supplier ? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>now: {it.supplier}</span> : "—"))}</td>
                             <td style={td3}>{poChanged ? (<><span style={oldV}>{h.old_po || "—"}</span><span style={chg}>{h.new_po || "—"}</span></>) : (h.new_po || h.old_po || (it && it.po ? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>now: {it.po}</span> : "—"))}</td>
@@ -8326,7 +8352,7 @@ function CostsView({ jobs, onUpdate }) {
             </div>
           </div>
           <div style={{ fontSize: 10.5, color: "var(--muted)", margin: "6px 0 14px" }}>
-            🟡 highlighted = what changed (old value struck through) · Price & Profit read live from the order · ✎ corrects the item and logs a new line
+            🟡 highlighted = manual change (old value struck through) · 📦 = cost arrived with the order (quote pipeline) · Price & Profit read live · ✎ corrects the item and logs a new line
           </div>
         </>
       )}
