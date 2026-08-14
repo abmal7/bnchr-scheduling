@@ -848,7 +848,7 @@ const incentiveTarget = (nActive) => nActive >= 3 ? 100 : nActive === 2 ? 150 : 
 // Stream 2 (upsell): 1.000/upsell/person — ALWAYS paid, even loss months.
 // Revisit: the order that caused it is voided; the revisit visit earns 0.
 // Five KWD 5 bonuses in profitable months; ties SPLIT equally; zero-revisit splits among qualifiers.
-function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null) {
+function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null, loan = 0) {
   const y = refDate.getFullYear(), m = refDate.getMonth();
   let inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
   let fixedApplied = Number(fixedExpenses) || 0;
@@ -887,7 +887,9 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null) {
   });
   const monthGross = rows.reduce((sm, r) => sm + r.profit, 0);
   const monthNet = Math.round((monthGross - fixedApplied) * 100) / 100;
-  const profitGate = monthNet >= INCENT.profitGateKD;
+  const loanApplied = range && range.from ? Math.round(((Number(loan) || 0) * Math.max(1, Math.round((new Date(range.to) - new Date(range.from)) / 86400000) + 1) / 30.44) * 100) / 100 : (Number(loan) || 0);
+  const trueNet = Math.round((monthNet - loanApplied) * 100) / 100;
+  const profitGate = trueNet >= INCENT.profitGateKD; // gate tests TRUE cash profit — after the bank loan (July lesson)
   rows.forEach(r => { r.baseUnlocked = profitGate && r.targetHit; });
   const cats = [["bOrders", (r) => r.orders], ["bReviews", (r) => r.avgReview || 0], ["bRevenue", (r) => r.revenue], ["bProfit", (r) => r.profit]];
   rows.forEach(r => { r.bonusShare = {}; r.bonusTotal = 0; });
@@ -904,7 +906,7 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null) {
     rows.forEach(r => { r.bonusTotal = Math.round(Object.values(r.bonusShare).reduce((a2, b2) => a2 + b2, 0) * 1000) / 1000; });
   }
   rows.forEach(r => { r.payout = Math.round(((r.baseUnlocked ? r.basePot : 0) + r.upsellPay + r.bonusTotal) * 1000) / 1000; });
-  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied };
+  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied, loanApplied, trueNet };
 }
 async function fetchTruckConfig() {
   try {
@@ -2903,7 +2905,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog, fixedMonthly = 10600, profitTargetKD = 3000 }) {
+function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog, fixedMonthly = 10600, profitTargetKD = 3000, loanKD = 933 }) {
   const isEdit = !!editJob;
   // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
   const hydrateServices = (job) => {
@@ -3652,7 +3654,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
         </div>
         {(() => {
           let st = null;
-          try { st = computeServiceTargets(jobs || [], new Date(), fixedMonthly, profitTargetKD); } catch (e) { return null; }
+          try { st = computeServiceTargets(jobs || [], new Date(), fixedMonthly, profitTargetKD, loanKD); } catch (e) { return null; }
           if (!st || !(grandTotal > 0)) return null;
           const custSup = (x) => /customer/i.test(String(x || ""));
           let costs = 0, missing = 0;
@@ -4399,7 +4401,7 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
 }
 
 // ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
-function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed }) {
+function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed, loan = 933, onSaveLoan, targetOrders = 400, salesScheme = "orders", paScheme = "orders" }) {
   const [mo, setMo] = useState(0);
   const [mode, setMode] = useState("month"); // month | range
   const [rFrom, setRFrom] = useState("");
@@ -4409,7 +4411,7 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
   const ref = new Date();
   ref.setMonth(ref.getMonth() + mo);
   const range = mode === "range" && rFrom && rTo && rFrom <= rTo ? { from: rFrom, to: rTo } : null;
-  const { target, rows: allRows, trucksActive, monthNet, profitGate, fixedApplied } = computeIncentives(jobs, ref, fixedExpenses, range);
+  const { target, rows: allRows, trucksActive, monthNet, profitGate, fixedApplied, loanApplied, trueNet } = computeIncentives(jobs, ref, fixedExpenses, range, loan);
   const rows = truckFilter === "all" ? allRows : allRows.filter(r => r.truck === truckFilter);
   const periodLabel = range ? `${range.from} → ${range.to}` : ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
@@ -4420,13 +4422,15 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
   const techs = act.filter(e => e.role === "technician");
   const salesE = act.filter(e => e.role === "sales");
   const paE = act.filter(e => e.role === "purchaser" || e.role === "accountant");
-  const tierS = salesTierFor(monthNet);
-  const salesPer = profitGate ? Math.max(0, Math.round(monthNet * tierS.pct) / 100) : 0;
-  const pa = paIncentParts(jobs, ref, monthNet, profitGate, range);
+  const oi = computeOrderIncent(jobs, ref, targetOrders);
   const truckPay = {}; allRows.forEach(r => { truckPay[r.truck] = r.payout; });
   const techTotal = techs.reduce((s2, e) => s2 + (truckPay[e.truck] || 0), 0);
-  const salesTotal = salesPer * salesE.length;
-  const paTotal = pa.total * paE.length;
+  const tierS = salesTierFor(Math.max(0, trueNet));
+  const tierPer = profitGate ? Math.max(0, Math.round(trueNet * tierS.pct) / 100) : 0;
+  const paM = paIncentParts(jobs, ref, Math.max(0, trueNet), profitGate);
+  const salesTotal = salesScheme === "tiers" ? tierPer * Math.max(1, salesE.length) : oi.poolPay;
+  const paTotal = paScheme === "margin" ? paM.total * Math.max(1, paE.length) : oi.poolPay;
+  const paEach = paScheme === "margin" ? paM.total : Math.round((oi.poolPay / Math.max(1, paE.length || 2)) * 1000) / 1000;
   const grand = Math.round((techTotal + salesTotal + paTotal) * 1000) / 1000;
   const unassignedTrucks = allRows.filter(r => !techs.some(e => e.truck === r.truck)).map(r => r.truck);
 
@@ -4472,12 +4476,14 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
 
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10, background: profitGate ? "#E8F4EC" : "#FEF2F2", border: `1px solid ${profitGate ? "#BFDFC9" : "#FECACA"}`, borderRadius: 10, padding: "8px 12px" }}>
           <span style={{ fontSize: 12.5, fontWeight: 800, color: profitGate ? "#1D7A45" : "#B91C1C" }}>
-            {profitGate ? "🟢 PROFIT GATE OPEN" : "🔴 PROFIT GATE CLOSED"} — net {kd(monthNet)} (needs ≥ {kd(INCENT.profitGateKD)})
+            {profitGate ? "🟢 PROFIT GATE OPEN" : "🔴 PROFIT GATE CLOSED"} — net {kd(monthNet)} − loan {kd(loanApplied)} = <strong>true {kd(trueNet)}</strong> (gate ≥ {kd(INCENT.profitGateKD)})
           </span>
           <span style={{ fontSize: 11.5, color: "var(--muted)", display: "flex", gap: 5, alignItems: "center" }}>
             fixed/month:
             <input value={feDraft} onChange={e => setFeDraft(e.target.value)} onBlur={() => onSaveFixed(Number(feDraft) || 0)} className="filter-input" style={{ width: 84, padding: "3px 7px", fontSize: 11.5 }} />
-            {range ? `→ ${kd(fixedApplied)} applied to range` : "KWD"}
+            · loan/month:
+            <input defaultValue={String(loan)} key={"loan" + loan} onBlur={e => onSaveLoan && onSaveLoan(Number(e.target.value) || 0)} className="filter-input" style={{ width: 70, padding: "3px 7px", fontSize: 11.5 }} />
+            {range ? `→ ${kd(fixedApplied)} fixed · ${kd(loanApplied)} loan applied` : "KWD"}
           </span>
         </div>
 
@@ -4533,17 +4539,21 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
             })}
           </div>
           <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px" }}>
-            <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>💎 Sales — {tierS.pct}% tier {profitGate ? "" : "(gate closed)"}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>💎 Sales — {salesScheme === "tiers" ? `${tierS.pct}% of true net${profitGate ? "" : " (gate 🔒)"}` : `${oi.total}/${oi.target} orders · ${oi.rate > 0 ? oi.rate.toFixed(3) + "/order" : "below 90%"}`}</div>
             {salesE.length === 0 && <div style={{ fontSize: 11, color: "var(--muted)" }}>No sales members defined.</div>}
-            {salesE.map(e2 => <div key={e2.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, borderTop: "1px solid var(--border)", padding: "4px 0" }}><span>· {e2.name}</span><span style={{ fontWeight: 700 }}>{kd(salesPer)}</span></div>)}
-            <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>{tierS.pct}% of net {kd(monthNet)} each</div>
+            {salesScheme === "tiers"
+              ? salesE.map(e2 => <div key={e2.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, borderTop: "1px solid var(--border)", padding: "4px 0" }}><span>· {e2.name}</span><span style={{ fontWeight: 700 }}>{kd(tierPer)}</span></div>)
+              : oi.agents.map(a2 => <div key={a2.name} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, borderTop: "1px solid var(--border)", padding: "4px 0" }}><span>· {a2.name} <span style={{ color: "var(--muted)" }}>({a2.n})</span></span><span style={{ fontWeight: 700 }}>{kd(a2.pay)}</span></div>)}
+            <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>{oi.rate > 0 ? `each paid on own orders × ${oi.rate.toFixed(3)}` : oi.nextBand ? `${oi.nextBand.at - oi.total} orders to ${oi.nextBand.label}` : ""} · no gate</div>
           </div>
           <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: "10px 12px" }}>
             <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>🎯 Purchasing & Accounting</div>
             {paE.length === 0 && <div style={{ fontSize: 11, color: "var(--muted)" }}>No members defined.</div>}
-            {paE.map(e2 => <div key={e2.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, borderTop: "1px solid var(--border)", padding: "4px 0" }}><span>· {e2.name} <span style={{ color: "var(--muted)" }}>({e2.role})</span></span><span style={{ fontWeight: 700 }}>{kd(pa.total)}</span></div>)}
+            {paE.length > 0
+              ? paE.map(e2 => <div key={e2.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, borderTop: "1px solid var(--border)", padding: "4px 0" }}><span>· {e2.name} <span style={{ color: "var(--muted)" }}>({e2.role})</span></span><span style={{ fontWeight: 700 }}>{kd(paEach)}</span></div>)
+              : <div style={{ fontSize: 11.5, borderTop: "1px solid var(--border)", padding: "4px 0" }}>Pool {kd(oi.poolPay)} · 50/50 = {kd(paEach)} each</div>}
             <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 4 }}>
-              margin {pa.marginPct != null ? pa.marginPct.toFixed(1) + "%" : "—"} → kicker {kd(pa.kicker)} · share {pa.sharePct}% → {kd(pa.share)}
+              pool = {oi.total} orders × {oi.rate.toFixed(3)} = {kd(oi.poolPay)} · split equally · no gate
             </div>
           </div>
         </div>
@@ -4612,7 +4622,7 @@ const stContribution = (j) => {
   const cost = (j.items || []).reduce((x, it) => x + (Number(it.cost) || 0) * (Number(it.qty) || 1), 0);
   return rev - cost - stBnplFee(j);
 };
-function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
+function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget, loan = 933) {
   const ref = refDate || new Date();
   const from90 = new Date(ref); from90.setDate(from90.getDate() - 90);
   const y = ref.getFullYear(), m = ref.getMonth();
@@ -4653,7 +4663,7 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
   });
   const smartBlended = rows.reduce((x, g) => x + g.smartShare * g.avg, 0) || 1;
 
-  const required = (Number(fixedMonthly) || 0) + (Number(profitTarget) || 0);
+  const required = (Number(fixedMonthly) || 0) + (Number(loan) || 0) + (Number(profitTarget) || 0);
   const mtdContribution = mtd.reduce((x, j) => x + stContribution(j), 0);
   const remaining = Math.max(0, required - mtdContribution);
   const ordersCurrent = Math.ceil(required / blendedAvg);
@@ -4687,10 +4697,10 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget) {
 }
 
 // ═══ 🎯 Service Targets view — the profitable-month map ═════════════════════
-function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, canEdit }) {
+function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSaveTarget, canEdit }) {
   const [showDetail, setShowDetail] = useState(false);
   const [tDraft, setTDraft] = useState(String(profitTarget));
-  const st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget);
+  const st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget, loan);
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(0)}`;
   const EMOJI = { "Tire Change & Balancing": "🛞", "Battery": "🔋", "Oil & Filter": "🛢", "Tire Patch": "🩹", "Brake Pads": "🛑", "Major Service": "🔧", "Other": "📦" };
   const SHORT = { "Tire Change & Balancing": "Tires", "Battery": "Battery", "Oil & Filter": "Oil", "Tire Patch": "Patch", "Brake Pads": "Brakes", "Major Service": "Major", "Other": "Other" };
@@ -4811,7 +4821,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
         <div className="card" style={{ marginTop: 6 }}>
           <div className="card-body" style={{ padding: "12px 16px" }}>
             <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
-              Fixed {kd(fixedMonthly)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> · avg ticket {kd(st.avgTicket)} · Tabby/Taly fees deducted per order
+              Fixed {kd(fixedMonthly)} + loan {kd(loan)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> · avg ticket {kd(st.avgTicket)} · Tabby/Taly fees deducted per order
               {canEdit && (
                 <span style={{ display: "inline-flex", gap: 5, alignItems: "center", fontWeight: 700, marginLeft: 8 }}>
                   · target:
@@ -4862,6 +4872,8 @@ function ServiceTargetsView({ jobs, fixedMonthly, profitTarget, onSaveTarget, ca
 function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
   enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa,
   targetsOn, onToggleTargets, profitTarget, onSaveProfitTarget,
+  loan = 933, onSaveLoan, targetOrders = 400, paCount = 2,
+  salesScheme = "orders", paScheme = "orders", onSetScheme,
   compareVisible, onToggleCompare }) {
   const [view, setView] = useState("master");
   const VIEWS = [["master", "🎛 Master"], ["tech", "🚛 Technicians"], ["sales", "💎 Sales"], ["pa", "🎯 Purchase"], ["targets", "🎯 Service targets"]];
@@ -4885,24 +4897,38 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
       </div>
       {view === "master" && (
         <IncentiveReport jobs={jobs} employees={employees} fixedExpenses={fixedExpenses} onSaveFixed={onSaveFixed}
+          loan={loan} onSaveLoan={onSaveLoan} targetOrders={targetOrders}
+          salesScheme={salesScheme} paScheme={paScheme}
           enabled={enabled} onToggle={onToggle} salesOn={salesOn} onToggleSales={onToggleSales} paOn={paOn} onTogglePa={onTogglePa} />
       )}
       {view === "tech" && (<>
         {previewBar("technician", enabled, onToggle)}
-        <TechTargetView jobs={jobs} truck={null} owner={true} fixedExpenses={fixedExpenses}
+        <TechTargetView jobs={jobs} truck={null} owner={true} fixedExpenses={fixedExpenses} loan={loan}
           compareVisible={compareVisible} onToggleCompare={onToggleCompare} />
       </>)}
       {view === "sales" && (<>
         {previewBar("sales", salesOn, onToggleSales)}
-        <SalesIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} />
+        <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 10 }}>
+          {[["orders", "📦 Orders 0.250/0.150"], ["tiers", "📈 Net-% tiers"]].map(([k, lb]) => (
+            <button key={k} className="btn btn-sm" onClick={() => onSetScheme && onSetScheme("sales_scheme", k)}
+              style={{ fontWeight: 700, background: salesScheme === k ? "var(--ink)" : "var(--card)", color: salesScheme === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
+          ))}
+        </div>
+        <SalesIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} loan={loan} targetOrders={targetOrders} scheme={salesScheme} />
       </>)}
       {view === "pa" && (<>
         {previewBar("purchasing & accounting", paOn, onTogglePa)}
-        <PAIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} />
+        <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 10 }}>
+          {[["orders", "📦 Orders pool 50/50"], ["margin", "📈 Margin kicker + share"]].map(([k, lb]) => (
+            <button key={k} className="btn btn-sm" onClick={() => onSetScheme && onSetScheme("pa_scheme", k)}
+              style={{ fontWeight: 700, background: paScheme === k ? "var(--ink)" : "var(--card)", color: paScheme === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
+          ))}
+        </div>
+        <PAIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} loan={loan} targetOrders={targetOrders} paCount={paCount} scheme={paScheme} />
       </>)}
       {view === "targets" && (<>
         {previewBar("sales", targetsOn, onToggleTargets)}
-        <ServiceTargetsView jobs={jobs} fixedMonthly={fixedExpenses} profitTarget={profitTarget} onSaveTarget={onSaveProfitTarget} canEdit={true} />
+        <ServiceTargetsView jobs={jobs} fixedMonthly={fixedExpenses} loan={loan} profitTarget={profitTarget} onSaveTarget={onSaveProfitTarget} canEdit={true} />
       </>)}
     </>
   );
@@ -5125,64 +5151,25 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove, restricted = fals
 }
 
 // ═══ 💎 Sales incentive (§4: net-profit tiers, per person) ═══════════════════
-const SALES_TIERS = [
-  { from: 4000, pct: 5 }, { from: 3000, pct: 4.5 }, { from: 2000, pct: 4 },
-  { from: 1000, pct: 3 }, { from: 500, pct: 2 }, { from: 0, pct: 0 },
-];
-const salesTierFor = (net) => SALES_TIERS.find(t => net >= t.from) || SALES_TIERS[SALES_TIERS.length - 1];
-function SalesIncentiveView({ jobs, fixedExpenses }) {
-  const now = new Date();
-  const { monthNet, profitGate } = computeIncentives(jobs, now, fixedExpenses);
-  const tier = salesTierFor(monthNet);
-  const perPerson = Math.max(0, Math.round(monthNet * tier.pct) / 100);
-  const ladder = [...SALES_TIERS].reverse().filter(t => t.from > 0);
-  const next = ladder.find(t => monthNet < t.from);
-  const monthName = now.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
-  return (
-    <div style={{ maxWidth: 560, margin: "0 auto" }}>
-      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ fontSize: 16, fontWeight: 800 }}>💎 Sales Incentive — {monthName}</div>
-        <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>A direct share of net profit — each of you earns the rate independently.</div>
-        <div style={{ marginTop: 12, textAlign: "center", background: profitGate ? "linear-gradient(135deg,#F0FDF4,#DCFCE7)" : "#FFFBEB", border: `1.5px solid ${profitGate ? "#86EFAC" : "#FCD34D"}`, borderRadius: 16, padding: "13px 10px" }}>
-          <div style={{ fontSize: 11, fontWeight: 800, color: profitGate ? "#166534" : "#92400E" }}>YOUR SHARE THIS MONTH — PER PERSON</div>
-          <div style={{ fontSize: 30, fontWeight: 800, color: profitGate ? "#15803D" : "#92400E" }}>KWD {perPerson.toFixed(3)}</div>
-          <div style={{ fontSize: 10.5, fontWeight: 600, color: profitGate ? "#166534" : "#92400E" }}>
-            {profitGate ? `${tier.pct}% of net profit · if the month ended today` : "activates when net profit crosses KWD 500"}
-          </div>
-        </div>
-        {next && (
-          <div style={{ marginTop: 10, background: "#EFF6FF", border: "1.5px solid #BFDBFE", borderRadius: 12, padding: "9px 13px", fontSize: 12.5, fontWeight: 800, color: "#1D4ED8" }}>
-            🚀 KWD {(next.from - monthNet).toFixed(0)} more net profit → {next.pct}% tier{next.pct === 3 ? " — the big jump: your rate rises 50%" : ""}
-          </div>
-        )}
-        <div style={{ marginTop: 12 }}>
-          {ladder.map(t => {
-            const on = tier.pct === t.pct && profitGate;
-            const passed = monthNet >= t.from;
-            return (
-              <div key={t.from} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border)", fontSize: 12.5, fontWeight: on ? 800 : 500, color: on ? "var(--success)" : passed ? "var(--text)" : "var(--muted)" }}>
-                <span>{passed ? "✓" : "○"} Net ≥ KWD {t.from.toLocaleString()}</span>
-                <span>{t.pct}% each{on ? " ← you are here" : ""}</span>
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>Every profitable order, every collected payment, every cost saved moves this number. It's the company's result — and yours.</div>
-      </div>
-    </div>
-  );
-}
+// ═══ 💎🎯 Order-count incentive (team-designed, Aug 2026) ═════════════════════
+// Sales & P&A: team target = per-truck benchmark × active trucks (scales with fleet).
+// 100% → 0.250/order · 90% → 0.150/order · below → 0. No profit gate: bounded cost, full predictability.
+const ORDER_INCENT = { full: 0.25, reduced: 0.15, band: 0.9, perTruckDefault: 133.33 };
 
-// ═══ 🎯 Purchase Agent & Accountant incentive (§1: margin kicker + profit share) ═══
-function paIncentParts(jobs, refDate, monthNet, profitGate, range = null) {
+// ── Legacy scheme (kept selectable): net-profit tiers for sales, margin kicker + share for P&A.
+// Upgraded post-July: all math runs on TRUE net (after the bank loan), gate included.
+const SALES_TIERS = [[4000, 5], [3000, 4.5], [2000, 4], [1000, 3], [500, 2]];
+const salesTierFor = (net) => {
+  for (const [min, pct] of SALES_TIERS) if (net >= min) return { min, pct };
+  return { min: 0, pct: 0 };
+};
+function paIncentParts(jobs, refDate, netForShare, profitGate) {
   const y = refDate.getFullYear(), m = refDate.getMonth();
-  let inP = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
-  if (range && range.from && range.to) inP = (iso) => { if (!iso) return false; const d = String(iso).split("T")[0]; return d >= range.from && d <= range.to; };
+  const inP = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
   const done = jobs.filter(j => jobSuccessful(j) && inP(j.completed_at || j.scheduled_at || j.created_at));
   let tRev = 0, tCost = 0;
   done.forEach(j => (j.items || []).forEach(it => {
     if (TIRE_SIZE_RX.test(String(it.name || ""))) {
-      TIRE_SIZE_RX.lastIndex = 0;
       const qty = Number(it.qty) || 1;
       tRev += (Number(it.price ?? it.unit_price) || 0) * qty;
       tCost += (Number(it.cost) || 0) * qty;
@@ -5192,73 +5179,183 @@ function paIncentParts(jobs, refDate, monthNet, profitGate, range = null) {
   const marginPct = tRev > 0 ? ((tRev - tCost) / tRev) * 100 : null;
   const pts = marginPct != null ? Math.max(0, marginPct - 20) : 0;
   const kicker = profitGate ? Math.round(pts * 10 * 100) / 100 : 0;
-  const sharePct = monthNet >= 1000 ? 2 : monthNet >= 500 ? 1 : 0;
-  const share = profitGate ? Math.max(0, Math.round(monthNet * sharePct) / 100) : 0;
+  const sharePct = netForShare >= 1000 ? 2 : netForShare >= 500 ? 1 : 0;
+  const share = profitGate ? Math.max(0, Math.round(netForShare * sharePct) / 100) : 0;
   const total = profitGate ? Math.round((kicker + share) * 1000) / 1000 : 0;
   return { marginPct, pts, kicker, sharePct, share, total };
 }
-function PAIncentiveView({ jobs, fixedExpenses }) {
-  const now = new Date();
-  const { monthNet, profitGate } = computeIncentives(jobs, now, fixedExpenses);
-  const y = now.getFullYear(), m = now.getMonth();
+const ORDER_INCENT_EXCLUDED = [/tire check/i, /mechanical check/i, /battery check/i, /computer check/i];
+const orderCountsForIncent = (j) => jobSuccessful(j) && !ORDER_INCENT_EXCLUDED.some(rx => rx.test(String(j.service_type || "")));
+function computeOrderIncent(jobs, refDate, targetOrders) {
+  const y = refDate.getFullYear(), m = refDate.getMonth();
   const inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
-  const done = jobs.filter(j => jobSuccessful(j) && inMonth(j.completed_at || j.scheduled_at || j.created_at));
-  let tRev = 0, tCost = 0;
-  done.forEach(j => (j.items || []).forEach(it => {
-    if (TIRE_SIZE_RX.test(String(it.name || ""))) {
-      TIRE_SIZE_RX.lastIndex = 0;
-      const qty = Number(it.qty) || 1;
-      tRev += (Number(it.price ?? it.unit_price) || 0) * qty;
-      tCost += (Number(it.cost) || 0) * qty;
-    }
-    TIRE_SIZE_RX.lastIndex = 0;
-  }));
-  const marginPct = tRev > 0 ? ((tRev - tCost) / tRev) * 100 : null;
-  const pts = marginPct != null ? Math.max(0, marginPct - 20) : 0;
-  const kicker = profitGate ? Math.round(pts * 10 * 100) / 100 : 0;
-  const sharePct = monthNet >= 1000 ? 2 : monthNet >= 500 ? 1 : 0;
-  const share = Math.max(0, Math.round(monthNet * sharePct) / 100);
-  const total = profitGate ? Math.round((kicker + share) * 1000) / 1000 : 0;
-  const monthName = now.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+  const counted = jobs.filter(j => orderCountsForIncent(j) && inMonth(j.completed_at || j.scheduled_at || j.created_at));
+  const byAgent = {};
+  counted.forEach(j => { const ag = (j.sales_agent || "—").trim() || "—"; byAgent[ag] = (byAgent[ag] || 0) + 1; });
+  const total = counted.length;
+  const target = Math.max(1, Math.round(targetOrders));
+  const pct = total / target;
+  const rate = pct >= 1 ? ORDER_INCENT.full : pct >= ORDER_INCENT.band ? ORDER_INCENT.reduced : 0;
+  const nextBand = pct >= 1 ? null : pct >= ORDER_INCENT.band
+    ? { at: target, label: "full 0.250/order" }
+    : { at: Math.ceil(target * ORDER_INCENT.band), label: "0.150/order unlocks" };
+  const agents = Object.entries(byAgent).sort((x, z) => z[1] - x[1])
+    .map(([name, n]) => ({ name, n, pay: Math.round(n * rate * 1000) / 1000 }));
+  const poolPay = Math.round(total * rate * 1000) / 1000;
+  return { total, target, pct, rate, nextBand, agents, poolPay };
+}
+
+// Transparency waterfall — the whole truth on every incentive page (July lesson)
+function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
+  const { monthNet, monthGross, fixedApplied } = computeIncentives(jobs, refDate, fixedExpenses);
+  const y = refDate.getFullYear(), m = refDate.getMonth();
+  const rev = jobs.filter(j => jobSuccessful(j) && (d => d.getFullYear() === y && d.getMonth() === m)(new Date(j.completed_at || j.scheduled_at || j.created_at)))
+    .reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
+  const costs = rev - monthGross;
+  const trueNet = Math.round((monthNet - (Number(loan) || 0)) * 100) / 100;
+  const row = (lb, v, opts = {}) => (
+    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", fontWeight: opts.bold ? 800 : 600, color: opts.color || "var(--text)", borderTop: opts.line ? "1.5px solid var(--border)" : "none" }}>
+      <span>{lb}</span><span>{v < 0 ? "−" : ""}KWD {Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+    </div>
+  );
   return (
-    <div style={{ maxWidth: 560, margin: "0 auto" }}>
-      <div className="card" style={{ padding: 16, marginBottom: 12 }}>
-        <div style={{ fontSize: 16, fontWeight: 800 }}>🎯 Purchasing & Accounting Incentive — {monthName}</div>
-        <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>Rewards margin quality and supplier discipline — each person earns independently.</div>
-        <div style={{ marginTop: 12, textAlign: "center", background: profitGate ? "linear-gradient(135deg,#F0FDF4,#DCFCE7)" : "#FFFBEB", border: `1.5px solid ${profitGate ? "#86EFAC" : "#FCD34D"}`, borderRadius: 16, padding: "13px 10px" }}>
-          <div style={{ fontSize: 11, fontWeight: 800, color: profitGate ? "#166534" : "#92400E" }}>YOUR MONTH SO FAR — PER PERSON</div>
-          <div style={{ fontSize: 30, fontWeight: 800, color: profitGate ? "#15803D" : "#92400E" }}>KWD {total.toFixed(3)}</div>
-          <div style={{ fontSize: 10.5, fontWeight: 600, color: profitGate ? "#166534" : "#92400E" }}>
-            {profitGate ? "if the month ended today · breakdown below" : "activates when net profit crosses KWD 500"}
-          </div>
-        </div>
-        <div style={{ marginTop: 10, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 13px" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 800 }}>📈 Tire Margin Kicker</div>
-          <div style={{ fontSize: 12, marginTop: 3 }}>
-            Blended tire margin: <strong>{marginPct != null ? marginPct.toFixed(1) + "%" : "no tire sales yet"}</strong>
-            {marginPct != null && <> · {pts > 0 ? `${pts.toFixed(1)} pts above 20% × KWD 10 = ` : "below the 20% floor — "}<strong style={{ color: pts > 0 ? "var(--success)" : "#B45309" }}>KWD {kicker.toFixed(2)}</strong></>}
-          </div>
-          <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 2 }}>KWD 10 per person per margin point above 20% · target level: 26%+</div>
-        </div>
-        <div style={{ marginTop: 8, background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 13px" }}>
-          <div style={{ fontSize: 12.5, fontWeight: 800 }}>💰 Profit Share</div>
-          <div style={{ fontSize: 12, marginTop: 3 }}>
-            {sharePct > 0
-              ? <>Net in the KWD {monthNet >= 1000 ? "1,000+" : "500–999"} band → <strong>{sharePct}%</strong> = <strong style={{ color: "var(--success)" }}>KWD {share.toFixed(2)}</strong> each</>
-              : "Starts at 1% when net reaches KWD 500 · 2% at KWD 1,000"}
-          </div>
-        </div>
-        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>Better buying prices and clean cost records move both numbers — your daily work, paid directly.</div>
-      </div>
+    <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 14px", margin: "10px 0" }}>
+      <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 4 }}>🧾 The whole truth — this month</div>
+      {row("Revenue", rev)}
+      {row("Item costs", -costs)}
+      {row("Gross profit", monthGross, { bold: true, line: true })}
+      {row("Fixed expenses", -fixedApplied)}
+      {row("Net (P&L)", monthNet, { bold: true, line: true })}
+      {row("Bank loan payment", -(Number(loan) || 0))}
+      {row("TRUE PROFIT", trueNet, { bold: true, line: true, color: trueNet >= 0 ? "var(--success)" : "var(--danger)" })}
+      <div style={{ fontSize: 9.5, color: "var(--muted)", marginTop: 3 }}>Same numbers the owner sees — nothing hidden.</div>
     </div>
   );
 }
 
-function TechTargetView({ jobs, truck, owner, fixedExpenses, compareVisible, onToggleCompare }) {
+// ═══ 💎 Sales — order-count dashboard ═════════════════════════════════════════
+function SalesIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 400, scheme = "orders" }) {
+  const ref = new Date();
+  const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
+  if (scheme === "tiers") {
+    const { monthNet, profitGate, trueNet, loanApplied } = computeIncentives(jobs, ref, fixedExpenses, null, loan);
+    const tier = salesTierFor(Math.max(0, trueNet));
+    const per = profitGate ? Math.max(0, Math.round(trueNet * tier.pct) / 100) : 0;
+    return (
+      <div style={{ maxWidth: 640, margin: "0 auto" }}>
+        <div className="page-title">💎 Sales incentive — {ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
+        <div className="card"><div className="card-body" style={{ padding: 16 }}>
+          <div style={{ textAlign: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "var(--muted)" }}>YOUR SHARE OF TRUE NET PROFIT</div>
+            <div style={{ fontSize: 40, fontWeight: 800, color: per > 0 ? "var(--success)" : "var(--muted)" }}>{kd(per)}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 800 }}>{profitGate ? `${tier.pct}% tier — true net ${kd(trueNet)}` : `🔒 gate closed — true net ${kd(trueNet)} (needs ≥ ${kd(INCENT.profitGateKD)})`}</div>
+          </div>
+          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "center", marginBottom: 6 }}>
+            {[...SALES_TIERS].reverse().map(([min, pct]) => (
+              <span key={min} style={{ fontSize: 11, fontWeight: 700, borderRadius: 8, padding: "3px 8px", background: trueNet >= min ? "#E8F4EC" : "var(--bg)", border: `1px solid ${trueNet >= min ? "#BFDFC9" : "var(--border)"}`, color: trueNet >= min ? "#1D7A45" : "var(--muted)" }}>{min}+ → {pct}%</span>
+            ))}
+          </div>
+          <ProfitWaterfall jobs={jobs} refDate={ref} fixedExpenses={fixedExpenses} loan={loan} />
+        </div></div>
+      </div>
+    );
+  }
+  const oi = computeOrderIncent(jobs, ref, targetOrders);
+  const pctShow = Math.min(100, Math.round(oi.pct * 100));
+  return (
+    <div style={{ maxWidth: 640, margin: "0 auto" }}>
+      <div className="page-title">💎 Sales incentive — {ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
+      <div className="card"><div className="card-body" style={{ padding: 16 }}>
+        <div style={{ textAlign: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "var(--muted)" }}>TEAM ORDERS THIS MONTH</div>
+          <div style={{ fontSize: 40, fontWeight: 800 }}>{oi.total} <span style={{ fontSize: 17, color: "var(--muted)" }}>/ {oi.target}</span></div>
+          <div style={{ fontSize: 12.5, fontWeight: 800, color: oi.rate === ORDER_INCENT.full ? "var(--success)" : oi.rate > 0 ? "#B45309" : "var(--muted)" }}>
+            {oi.rate === ORDER_INCENT.full ? "🏆 FULL RATE — 0.250 / order" : oi.rate > 0 ? "✅ 90% band — 0.150 / order" : oi.nextBand ? `${oi.nextBand.at - oi.total} orders to ${oi.nextBand.label}` : ""}
+          </div>
+          {oi.rate > 0 && oi.nextBand && <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)" }}>{oi.nextBand.at - oi.total} more → {oi.nextBand.label}</div>}
+        </div>
+        <div style={{ position: "relative", height: 14, background: "var(--border)", borderRadius: 8, overflow: "hidden", marginBottom: 4 }}>
+          <div style={{ width: pctShow + "%", height: "100%", background: oi.rate === ORDER_INCENT.full ? "var(--success)" : "linear-gradient(90deg,#B45309,#F59E0B)", transition: "width .4s" }} />
+          <div style={{ position: "absolute", left: "90%", top: 0, bottom: 0, width: 2, background: "var(--ink)" }} />
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, color: "var(--muted)", marginBottom: 10 }}>
+          <span>0</span><span>90% = {Math.ceil(oi.target * ORDER_INCENT.band)}</span><span>{oi.target}</span>
+        </div>
+        <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>Your money — by your own orders:</div>
+        {oi.agents.map(a2 => (
+          <div key={a2.name} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
+            <span style={{ fontWeight: 700 }}>{a2.name} <span style={{ color: "var(--muted)", fontWeight: 600 }}>· {a2.n} orders</span></span>
+            <span style={{ fontWeight: 800, color: a2.pay > 0 ? "var(--success)" : "var(--muted)" }}>{a2.pay > 0 ? kd(a2.pay) : `${kd(a2.n * ORDER_INCENT.reduced)} at 90%`}</span>
+          </div>
+        ))}
+        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
+          Completed orders only · cancelled & check-only visits don't count · target = ~133/truck × active trucks (reviewed quarterly) · no profit gate — the bands guarantee this pool
+        </div>
+        <ProfitWaterfall jobs={jobs} refDate={ref} fixedExpenses={fixedExpenses} loan={loan} />
+      </div></div>
+    </div>
+  );
+}
+
+// ═══ 🎯 Purchasing & Accounting — same bands, pool split equally ═══════════════
+function PAIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 400, paCount = 2, scheme = "orders" }) {
+  const ref = new Date();
+  const kd0 = (n2) => `KWD ${(Number(n2) || 0).toFixed(3)}`;
+  if (scheme === "margin") {
+    const { profitGate, trueNet } = computeIncentives(jobs, ref, fixedExpenses, null, loan);
+    const pa = paIncentParts(jobs, ref, Math.max(0, trueNet), profitGate);
+    return (
+      <div style={{ maxWidth: 640, margin: "0 auto" }}>
+        <div className="page-title">🎯 Purchasing & Accounting — {ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
+        <div className="card"><div className="card-body" style={{ padding: 16 }}>
+          <div style={{ textAlign: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "var(--muted)" }}>MARGIN KICKER + PROFIT SHARE (each)</div>
+            <div style={{ fontSize: 40, fontWeight: 800, color: pa.total > 0 ? "var(--success)" : "var(--muted)" }}>{kd0(pa.total)}</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>
+              tire margin {pa.marginPct != null ? pa.marginPct.toFixed(1) + "%" : "—"} → kicker {kd0(pa.kicker)} · share {pa.sharePct}% of true net → {kd0(pa.share)}
+              {!profitGate && " · 🔒 gate closed"}
+            </div>
+          </div>
+          <ProfitWaterfall jobs={jobs} refDate={ref} fixedExpenses={fixedExpenses} loan={loan} />
+        </div></div>
+      </div>
+    );
+  }
+  const oi = computeOrderIncent(jobs, ref, targetOrders);
+  const nSplit = Math.max(1, paCount);
+  const each = Math.round((oi.poolPay / nSplit) * 1000) / 1000;
+  const kd = (n2) => `KWD ${(Number(n2) || 0).toFixed(3)}`;
+  return (
+    <div style={{ maxWidth: 640, margin: "0 auto" }}>
+      <div className="page-title">🎯 Purchasing & Accounting — {ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
+      <div className="card"><div className="card-body" style={{ padding: 16 }}>
+        <div style={{ textAlign: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "var(--muted)" }}>TEAM ORDERS THIS MONTH</div>
+          <div style={{ fontSize: 40, fontWeight: 800 }}>{oi.total} <span style={{ fontSize: 17, color: "var(--muted)" }}>/ {oi.target}</span></div>
+          <div style={{ fontSize: 12.5, fontWeight: 800, color: oi.rate === ORDER_INCENT.full ? "var(--success)" : oi.rate > 0 ? "#B45309" : "var(--muted)" }}>
+            {oi.rate === ORDER_INCENT.full ? "🏆 FULL RATE — 0.250 / order" : oi.rate > 0 ? "✅ 90% band — 0.150 / order" : oi.nextBand ? `${oi.nextBand.at - oi.total} orders to ${oi.nextBand.label}` : ""}
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderTop: "1px solid var(--border)", fontWeight: 800 }}>
+          <span>Pool ({oi.total} × {oi.rate.toFixed(3)})</span><span>{kd(oi.poolPay)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
+          <span>Each ({nSplit === 2 ? "50 / 50" : `split × ${nSplit}`})</span><span style={{ fontWeight: 800, color: each > 0 ? "var(--success)" : "var(--muted)" }}>{kd(each)}</span>
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
+          Same team target and bands as sales · your work makes every order possible · reviewed quarterly · no profit gate
+        </div>
+        <ProfitWaterfall jobs={jobs} refDate={ref} fixedExpenses={fixedExpenses} loan={loan} />
+      </div></div>
+    </div>
+  );
+}
+
+function TechTargetView({ jobs, truck, owner, fixedExpenses, loan = 933, compareVisible, onToggleCompare }) {
   const trucksAll = activeTrucks();
   const [viewTruck, setViewTruck] = useState(truck || trucksAll[0] || "");
   const now = new Date();
-  const { target, rows, monthNet, profitGate } = computeIncentives(jobs, now, fixedExpenses);
+  const { target, rows, monthNet, profitGate, trueNet, loanApplied } = computeIncentives(jobs, now, fixedExpenses, null, loan);
   const activeTruckKey = owner ? viewTruck : truck;
   const me = rows.find(r => r.truck === activeTruckKey) || { orders: 0, baseN: 0, ups: 0, voided: 0, basePot: 0, upsellPay: 0, payout: 0, targetHit: false, baseUnlocked: false, bonusShare: {}, avgReview: null, nReviews: 0, revisitsCaused: 0, profit: 0, revenue: 0 };
   const day = now.getDate();
@@ -9703,6 +9800,12 @@ export default function App() {
   const salesIncentOn = appSettings.sales_incentive_enabled === true;       // sales
   const paIncentOn = appSettings.pa_incentive_enabled === true;             // purchasing & accounting
   const serviceTargetsOn = appSettings.service_targets_enabled === true;    // sales service targets
+  const loanKD = Number(appSettings.monthly_loan) || 933;
+  const salesScheme = appSettings.sales_scheme === "tiers" ? "tiers" : "orders";
+  const paScheme = appSettings.pa_scheme === "margin" ? "margin" : "orders";
+  const setScheme = (key, val) => { setAppSettings(p => ({ ...p, [key]: val })); saveAppSetting(key, val); };
+  const orderTargetKD = Math.round((Number(appSettings.order_target_per_truck) || ORDER_INCENT.perTruckDefault) * Math.max(1, activeTrucks().length));
+  const paCountActive = employees.filter(e => e.active && (e.role === "purchaser" || e.role === "accountant")).length || 2;
   const setServiceTargetsEnabled = async (on) => {
     setAppSettings(p => ({ ...p, service_targets_enabled: on }));
     await saveAppSetting("service_targets_enabled", on);
@@ -9872,7 +9975,11 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "incenthub" && isOwner && (
             <IncentiveHub jobs={jobs} employees={employees}
-              fixedExpenses={Number(appSettings.fixed_expenses) || 12500}
+              loan={loanKD} onSaveLoan={(n) => { setAppSettings(p => ({ ...p, monthly_loan: n })); saveAppSetting("monthly_loan", n); }}
+              targetOrders={orderTargetKD} paCount={paCountActive}
+              salesScheme={salesScheme} paScheme={paScheme}
+              onSetScheme={setScheme}
+              fixedExpenses={Number(appSettings.fixed_expenses) || 10600}
               onSaveFixed={(n) => { setAppSettings(p => ({ ...p, fixed_expenses: n })); saveAppSetting("fixed_expenses", n); }}
               enabled={incentiveOn} onToggle={setIncentiveEnabled}
               salesOn={salesIncentOn} onToggleSales={setSalesIncentEnabled}
@@ -9887,14 +9994,14 @@ export default function App() {
             <EmployeesView employees={employees} onAdd={addEmployee} onUpdate={updateEmployee} onRemove={removeEmployee} restricted={!isOwner} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "servicetargets" && (
-            <ServiceTargetsView jobs={jobs} fixedMonthly={Number(appSettings.fixed_expenses) || 10600}
+            <ServiceTargetsView jobs={jobs} fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
               profitTarget={Number(appSettings.service_profit_target) || 3000} onSaveTarget={() => {}} canEdit={false} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "salesincent" && (
-            <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
+            <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 10600} loan={loanKD} targetOrders={orderTargetKD} scheme={salesScheme} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "paincent" && (
-            <PAIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 12500} />
+            <PAIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 10600} loan={loanKD} targetOrders={orderTargetKD} paCount={paCountActive} scheme={paScheme} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "collections" && (
             <CollectionsView jobs={jobs} onSelectJob={setSelectedJob} onAction={handleJobAction} />
@@ -9950,7 +10057,7 @@ export default function App() {
             <MyJobsView jobs={jobs} onUpdate={handleJobUpdate} onSelectJob={setSelectedJob} lockedTruck={sessionTruck} onCreateUpsell={handleCreateUpsell} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "target" && (
-            <TechTargetView jobs={jobs} truck={sessionTruck} owner={isOwner} fixedExpenses={Number(appSettings.fixed_expenses) || 12500}
+            <TechTargetView jobs={jobs} truck={sessionTruck} owner={isOwner} fixedExpenses={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
                 compareVisible={appSettings.truck_compare_visible !== "off"}
                 onToggleCompare={(v) => { setAppSettings(p => ({ ...p, truck_compare_visible: v ? "on" : "off" })); saveAppSetting("truck_compare_visible", v ? "on" : "off"); }} />
           )}
@@ -9989,7 +10096,7 @@ export default function App() {
 
       {editingJob && (
         <NewJobModal
-          fixedMonthly={Number(appSettings.fixed_expenses) || 10600}
+          fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loanKD={loanKD}
           profitTargetKD={Number(appSettings.service_profit_target) || 3000}
           defaultAgent={sessionAgent}
           catalog={catalog}
@@ -10009,7 +10116,7 @@ export default function App() {
 
       {showNew && (
         <NewJobModal
-          fixedMonthly={Number(appSettings.fixed_expenses) || 10600}
+          fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loanKD={loanKD}
           profitTargetKD={Number(appSettings.service_profit_target) || 3000}
           defaultAgent={sessionAgent}
           catalog={catalog}
