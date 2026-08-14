@@ -5219,7 +5219,18 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
   const agents = Object.entries(byAgent).sort((x, z) => z[1] - x[1])
     .map(([name, n]) => ({ name, n, pay: Math.round(n * rate * 1000) / 1000 }));
   const poolPay = Math.round(total * rate * 1000) / 1000;
-  return { total, target, pct, rate, nextBand, agents, poolPay };
+  // daily plan: remaining ÷ remaining days — falling behind raises the bar, never hides it
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const dayOfMonth = refDate.getDate();
+  const remainingDays = Math.max(1, daysInMonth - dayOfMonth + 1);
+  const todayStr = refDate.toISOString().split("T")[0];
+  const todayCount = counted.filter(j => String(j.completed_at || j.scheduled_at || "").split("T")[0] === todayStr).length;
+  const need90 = Math.max(0, Math.ceil(target * ORDER_INCENT.band) - total);
+  const need100 = Math.max(0, target - total);
+  const perDay90 = Math.ceil(need90 / remainingDays);
+  const perDay100 = Math.ceil(need100 / remainingDays);
+  return { total, target, pct, rate, nextBand, agents, poolPay,
+    todayCount, remainingDays, perDay90, perDay100, nAgents: Math.max(1, agents.length) };
 }
 
 // Transparency waterfall — the whole truth on every incentive page (July lesson)
@@ -5272,9 +5283,23 @@ function SalesIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 40
           <div style={{ width: pctShow + "%", height: "100%", background: oi.rate === ORDER_INCENT.full ? "var(--success)" : "linear-gradient(90deg,#B45309,#F59E0B)", transition: "width .4s" }} />
           <div style={{ position: "absolute", left: "90%", top: 0, bottom: 0, width: 2, background: "var(--ink)" }} />
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, color: "var(--muted)", marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, color: "var(--muted)", marginBottom: 8 }}>
           <span>0</span><span>90% = {Math.ceil(oi.target * ORDER_INCENT.band)}</span><span>{oi.target}</span>
         </div>
+        {oi.rate < ORDER_INCENT.full && (
+          <div style={{ background: oi.todayCount >= oi.perDay100 ? "#E8F4EC" : oi.todayCount >= oi.perDay90 ? "#FFF7EC" : "var(--bg)", border: `1.5px solid ${oi.todayCount >= oi.perDay100 ? "#BFDFC9" : oi.todayCount >= oi.perDay90 ? "#FDDCAB" : "var(--border)"}`, borderRadius: 12, padding: "9px 13px", marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, fontSize: 12.5, fontWeight: 800 }}>
+              <span>📅 Today: {oi.todayCount} order{oi.todayCount === 1 ? "" : "s"}</span>
+              <span style={{ color: oi.todayCount >= oi.perDay100 ? "var(--success)" : oi.todayCount >= oi.perDay90 ? "#B45309" : "var(--muted)" }}>
+                {oi.todayCount >= oi.perDay100 ? "✓ full-target pace" : oi.todayCount >= oi.perDay90 ? `${oi.perDay100 - oi.todayCount} more for full pace` : `need ${Math.max(0, oi.perDay90 - oi.todayCount)} more for 90% pace`}
+              </span>
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", marginTop: 3 }}>
+              Daily plan ({oi.remainingDays} days left): <strong>{oi.perDay90}/day</strong> reaches 90% · <strong>{oi.perDay100}/day</strong> reaches the full {oi.target}
+              {oi.nAgents > 1 ? ` · ≈ ${Math.ceil(oi.perDay100 / oi.nAgents)}/day each` : ""} · the bar self-adjusts to what remains
+            </div>
+          </div>
+        )}
         <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>Your money — by your own orders:</div>
         {oi.agents.map(a2 => (
           <div key={a2.name} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
@@ -5328,6 +5353,11 @@ function PAIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 400, 
           <div style={{ fontSize: 12.5, fontWeight: 800, color: oi.rate === ORDER_INCENT.full ? "var(--success)" : oi.rate > 0 ? "#B45309" : "var(--muted)" }}>
             {oi.rate === ORDER_INCENT.full ? "🏆 FULL RATE — 0.250 / order" : oi.rate > 0 ? "✅ 90% band — 0.150 / order" : oi.nextBand ? `${oi.nextBand.at - oi.total} orders to ${oi.nextBand.label}` : ""}
           </div>
+          {oi.rate < ORDER_INCENT.full && (
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", marginTop: 3 }}>
+              📅 today: {oi.todayCount} · team needs {oi.perDay90}/day for 90% · {oi.perDay100}/day for full ({oi.remainingDays} days left)
+            </div>
+          )}
         </div>
         {oi.rate > 0 ? (<>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderTop: "1px solid var(--border)", fontWeight: 800 }}>
