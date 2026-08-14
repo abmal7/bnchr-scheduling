@@ -5291,7 +5291,6 @@ function SalesIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 40
         <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
           Completed orders only · cancelled & check-only visits don't count · target = ~133/truck × active trucks (reviewed quarterly) · no profit gate — the bands guarantee this pool
         </div>
-        <ProfitWaterfall jobs={jobs} refDate={ref} fixedExpenses={fixedExpenses} loan={loan} />
       </div></div>
     </div>
   );
@@ -5345,7 +5344,6 @@ function PAIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 400, 
         <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
           Same team target and bands as sales · your work makes every order possible · reviewed quarterly · no profit gate
         </div>
-        <ProfitWaterfall jobs={jobs} refDate={ref} fixedExpenses={fixedExpenses} loan={loan} />
       </div></div>
     </div>
   );
