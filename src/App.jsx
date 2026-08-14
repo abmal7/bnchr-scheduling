@@ -5341,12 +5341,23 @@ function PAIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 400, 
             {oi.rate === ORDER_INCENT.full ? "🏆 FULL RATE — 0.250 / order" : oi.rate > 0 ? "✅ 90% band — 0.150 / order" : oi.nextBand ? `${oi.nextBand.at - oi.total} orders to ${oi.nextBand.label}` : ""}
           </div>
         </div>
+        {oi.rate > 0 ? (<>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderTop: "1px solid var(--border)", fontWeight: 800 }}>
           <span>Pool ({oi.total} × {oi.rate.toFixed(3)})</span><span>{kd(oi.poolPay)}</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
-          <span>Each ({nSplit === 2 ? "50 / 50" : `split × ${nSplit}`})</span><span style={{ fontWeight: 800, color: each > 0 ? "var(--success)" : "var(--muted)" }}>{kd(each)}</span>
+          <span>Each ({nSplit === 2 ? "50 / 50" : `split × ${nSplit}`})</span><span style={{ fontWeight: 800, color: "var(--success)" }}>{kd(each)}</span>
         </div>
+        </>) : (<>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "8px 0", borderTop: "1px solid var(--border)", fontWeight: 700, color: "var(--muted)" }}>
+          <span>At 90% ({Math.ceil(oi.target * ORDER_INCENT.band)} orders)</span>
+          <span>pool ≈ {kd(Math.ceil(oi.target * ORDER_INCENT.band) * ORDER_INCENT.reduced)} · each {kd(Math.ceil(oi.target * ORDER_INCENT.band) * ORDER_INCENT.reduced / nSplit)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderTop: "1px solid var(--border)", fontWeight: 700, color: "var(--muted)" }}>
+          <span>At 100% ({oi.target} orders)</span>
+          <span>pool {kd(oi.target * ORDER_INCENT.full)} · each <strong style={{ color: "var(--success)" }}>{kd(oi.target * ORDER_INCENT.full / nSplit)}</strong></span>
+        </div>
+        </>)}
         <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
           Same team target and bands as sales · your work makes every order possible · reviewed quarterly · no profit gate
         </div>
