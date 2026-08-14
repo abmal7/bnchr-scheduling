@@ -4701,6 +4701,9 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
   const [showDetail, setShowDetail] = useState(false);
   const [tDraft, setTDraft] = useState(String(profitTarget));
   const st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget, loan);
+  const inc = computeIncentives(jobs, new Date(), fixedMonthly, null, loan);
+  const tier = salesTierFor(Math.max(0, inc.trueNet));
+  const tierPer = inc.profitGate ? Math.max(0, Math.round(inc.trueNet * tier.pct) / 100) : 0;
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(0)}`;
   const EMOJI = { "Tire Change & Balancing": "🛞", "Battery": "🔋", "Oil & Filter": "🛢", "Tire Patch": "🩹", "Brake Pads": "🛑", "Major Service": "🔧", "Other": "📦" };
   const SHORT = { "Tire Change & Balancing": "Tires", "Battery": "Battery", "Oil & Filter": "Oil", "Tire Patch": "Patch", "Brake Pads": "Brakes", "Major Service": "Major", "Other": "Other" };
@@ -4713,6 +4716,26 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
 
   return (
     <div style={{ maxWidth: 680, margin: "0 auto" }}>
+      {/* ── 📈 Net-% tiers: the pay this mission drives ── */}
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="card-body" style={{ padding: "12px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)" }}>📈 YOUR SHARE OF TRUE NET (each)</div>
+              <div style={{ fontSize: 30, fontWeight: 800, color: tierPer > 0 ? "var(--success)" : "var(--muted)" }}>{kd(tierPer)}</div>
+            </div>
+            <div style={{ textAlign: "right", fontSize: 12, fontWeight: 700 }}>
+              {inc.profitGate ? `✅ ${tier.pct}% tier · true net ${kd(inc.trueNet)}` : `🔒 gate closed · true net ${kd(inc.trueNet)}`}
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", marginTop: 4 }}>
+                {[...SALES_TIERS].reverse().map(([min, pct]) => (
+                  <span key={min} style={{ fontSize: 10, fontWeight: 700, borderRadius: 7, padding: "2px 6px", background: inc.trueNet >= min ? "#E8F4EC" : "var(--bg)", border: `1px solid ${inc.trueNet >= min ? "#BFDFC9" : "var(--border)"}`, color: inc.trueNet >= min ? "#1D7A45" : "var(--muted)" }}>{min}+→{pct}%</span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <ProfitWaterfall jobs={jobs} refDate={new Date()} fixedExpenses={fixedMonthly} loan={loan} />
+        </div>
+      </div>
       {/* ── HERO: today's mission ── */}
       <div style={{ background: monthWon ? "linear-gradient(135deg,#14532D,#16A34A)" : dayWon ? "linear-gradient(135deg,#0F2419,#1D7A45)" : "linear-gradient(135deg,#0F2419,#1D4B33)", color: "#fff", borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: "#A7D8B9" }}>
@@ -4908,13 +4931,7 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
       </>)}
       {view === "sales" && (<>
         {previewBar("sales", salesOn, onToggleSales)}
-        <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 10 }}>
-          {[["orders", "📦 Orders 0.250/0.150"], ["tiers", "📈 Net-% tiers"]].map(([k, lb]) => (
-            <button key={k} className="btn btn-sm" onClick={() => onSetScheme && onSetScheme("sales_scheme", k)}
-              style={{ fontWeight: 700, background: salesScheme === k ? "var(--ink)" : "var(--card)", color: salesScheme === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>{lb}</button>
-          ))}
-        </div>
-        <SalesIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} loan={loan} targetOrders={targetOrders} scheme={salesScheme} profitTargetKD={profitTarget} />
+        <SalesIncentiveView jobs={jobs} fixedExpenses={fixedExpenses} loan={loan} targetOrders={targetOrders} />
       </>)}
       {view === "pa" && (<>
         {previewBar("purchasing & accounting", paOn, onTogglePa)}
@@ -5234,38 +5251,9 @@ function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
 }
 
 // ═══ 💎 Sales — order-count dashboard ═════════════════════════════════════════
-function SalesIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 400, scheme = "orders", profitTargetKD = 3000 }) {
+function SalesIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 400 }) {
   const ref = new Date();
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
-  if (scheme === "tiers") {
-    const { monthNet, profitGate, trueNet, loanApplied } = computeIncentives(jobs, ref, fixedExpenses, null, loan);
-    const tier = salesTierFor(Math.max(0, trueNet));
-    const per = profitGate ? Math.max(0, Math.round(trueNet * tier.pct) / 100) : 0;
-    return (
-      <div style={{ maxWidth: 680, margin: "0 auto" }}>
-        <div className="page-title">💎 Sales incentive — {ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</div>
-        <div className="card"><div className="card-body" style={{ padding: "12px 16px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)" }}>YOUR SHARE OF TRUE NET (each)</div>
-              <div style={{ fontSize: 30, fontWeight: 800, color: per > 0 ? "var(--success)" : "var(--muted)" }}>{kd(per)}</div>
-            </div>
-            <div style={{ textAlign: "right", fontSize: 12, fontWeight: 700 }}>
-              {profitGate ? `✅ ${tier.pct}% tier · true net ${kd(trueNet)}` : `🔒 gate closed · true net ${kd(trueNet)}`}
-              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", marginTop: 4 }}>
-                {[...SALES_TIERS].reverse().map(([min, pct]) => (
-                  <span key={min} style={{ fontSize: 10, fontWeight: 700, borderRadius: 7, padding: "2px 6px", background: trueNet >= min ? "#E8F4EC" : "var(--bg)", border: `1px solid ${trueNet >= min ? "#BFDFC9" : "var(--border)"}`, color: trueNet >= min ? "#1D7A45" : "var(--muted)" }}>{min}+→{pct}%</span>
-                ))}
-              </div>
-            </div>
-          </div>
-          <ProfitWaterfall jobs={jobs} refDate={ref} fixedExpenses={fixedExpenses} loan={loan} />
-        </div></div>
-        {/* the road to that share: the mission screen drives the same net */}
-        <ServiceTargetsView jobs={jobs} fixedMonthly={fixedExpenses} loan={loan} profitTarget={profitTargetKD} onSaveTarget={() => {}} canEdit={false} />
-      </div>
-    );
-  }
   const oi = computeOrderIncent(jobs, ref, targetOrders);
   const pctShow = Math.min(100, Math.round(oi.pct * 100));
   return (
@@ -9816,7 +9804,7 @@ export default function App() {
   const paIncentOn = appSettings.pa_incentive_enabled === true;             // purchasing & accounting
   const serviceTargetsOn = appSettings.service_targets_enabled === true;    // sales service targets
   const loanKD = Number(appSettings.monthly_loan) || 933;
-  const salesScheme = appSettings.sales_scheme === "tiers" ? "tiers" : "orders";
+  const salesScheme = "orders"; // 💎 sales = order scheme; the Net-% tiers live under 🎯 Service targets
   const paScheme = appSettings.pa_scheme === "margin" ? "margin" : "orders";
   const setScheme = (key, val) => { setAppSettings(p => ({ ...p, [key]: val })); saveAppSetting(key, val); };
   const orderTargetKD = Math.round((Number(appSettings.order_target_per_truck) || ORDER_INCENT.perTruckDefault) * Math.max(1, activeTrucks().length));
@@ -10013,7 +10001,7 @@ export default function App() {
               profitTarget={Number(appSettings.service_profit_target) || 3000} onSaveTarget={() => {}} canEdit={false} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "salesincent" && (
-            <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 10600} loan={loanKD} targetOrders={orderTargetKD} scheme={salesScheme} profitTargetKD={Number(appSettings.service_profit_target) || 3000} />
+            <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 10600} loan={loanKD} targetOrders={orderTargetKD} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "paincent" && (
             <PAIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 10600} loan={loanKD} targetOrders={orderTargetKD} paCount={paCountActive} scheme={paScheme} />
