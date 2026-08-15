@@ -4642,8 +4642,8 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget, loan =
   [...ST_GROUPS, "Other"].forEach(g => { groups[g] = { name: g, n: 0, contrib: 0, mtdUnits: 0, mtdContrib: 0 }; });
   hist.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.n++; g.contrib += stContribution(j); g.rev = (g.rev || 0) + (Number(j.total) || 0); });
   mtd.forEach(j => { const g = groups[stPrimary(j.service_type)]; g.mtdUnits++; g.mtdContrib += stContribution(j); });
-  const todayStr = ref.toISOString().split("T")[0];
-  const dStrOf = (j) => String(j.scheduled_at || j.completed_at || j.created_at || "").split("T")[0];
+  const todayStr = new Date(ref.getTime() - ref.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const dStrOf = (j) => String(j.scheduled_at || j.completed_at || j.created_at || "").slice(0, 10);
   const today = mtd.filter(j => dStrOf(j) === todayStr);
   const todayContribDone = today.filter(j => jobSuccessful(j)).reduce((x, j) => x + stContribution(j), 0);
   const pendingCostToday = inMonthB.filter(j => dStrOf(j) === todayStr && stMissingCost(j)).length;
@@ -5174,7 +5174,7 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove, restricted = fals
 // ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
 function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner }) {
   // one bar, one scheme: the ACTIVE one (💎 orders wins if both are live; owner previews orders when none)
-  const mode = salesOn ? "orders" : targetsOn ? "mission" : isOwner ? "orders" : null;
+  const mode = salesOn ? "orders" : targetsOn ? "mission" : null; // strictly the ACTIVE scheme — no preview when everything is off
   if (!mode) return null;
   let oi = null, st = null;
   try { if (mode === "orders") oi = computeOrderIncent(jobs, new Date(), targetOrders); } catch (e) { return null; }
@@ -5184,17 +5184,37 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
   let goal, done, pending, label, doneLabel, hint;
   if (mode === "orders") {
     if (!oi) return null;
+    if (oi.rate === ORDER_INCENT.full) {
+      // 🔥 OVERTIME: target beaten — no ceiling, every order keeps paying
+      const beyond = oi.total - oi.target;
+      return (
+        <div style={{ background: "linear-gradient(135deg,#14532D,#16A34A)", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800 }}>
+          <span>🏆 Target beaten — OVERTIME: +{beyond} beyond {oi.target}</span>
+          <span style={{ fontSize: 11.5 }}>no ceiling — every order today = +0.250 in your pocket · today: {oi.todayCount}✓{oi.todayBooked ? ` +${oi.todayBooked}⏳` : ""}</span>
+        </div>
+      );
+    }
     goal = Math.max(1, oi.perDay100 || 1);
     done = oi.todayCount; pending = oi.todayBooked;
     label = `🎯 Today: ${done}✓${pending ? ` +${pending}⏳` : ""} / ${goal} orders`;
-    doneLabel = done >= goal ? "✓ full-target pace" : done + pending >= goal ? "bookings reach the goal — complete them!" : `${goal - done - pending} more to book`;
-    hint = oi.rate === ORDER_INCENT.full ? "🏆 full rate locked — every order pays 0.250" : null;
+    doneLabel = done >= goal ? "✓ full-target pace — keep going, every order pays" : done + pending >= goal ? "bookings reach the goal — complete them!" : `${goal - done - pending} more to book`;
+    hint = null;
   } else {
     if (!st) return null;
     goal = Math.max(1, st.dailyNeed);
     done = st.todayContribDone; pending = st.todayContribPending;
+    if (done >= goal) {
+      // 🔥 day won — count the extra out loud
+      const extra = done - goal;
+      return (
+        <div style={{ background: "linear-gradient(135deg,#14532D,#16A34A)", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800 }}>
+          <span>🎉 Day won{extra > 0.5 ? ` — EXTRA +KWD ${extra.toFixed(0)} 🔥` : ""}</span>
+          <span style={{ fontSize: 11.5 }}>every extra dinar shrinks tomorrow's goal{pending > 0.5 ? ` · +KWD ${pending.toFixed(0)}⏳ still completing` : ""}</span>
+        </div>
+      );
+    }
     label = `🎯 Today: KWD ${done.toFixed(0)}✓${pending > 0.5 ? ` +${pending.toFixed(0)}⏳` : ""} / ${goal.toFixed(0)}`;
-    doneLabel = done >= goal ? "✓ day won" : done + pending >= goal ? "booked profit reaches the goal — complete the jobs!" : `KWD ${(goal - done - pending).toFixed(0)} more to book`;
+    doneLabel = done + pending >= goal ? "booked profit reaches the goal — complete the jobs!" : `KWD ${(goal - done - pending).toFixed(0)} more to book`;
     hint = null;
   }
   const solidPct = Math.min(100, done / goal * 100);
@@ -5275,12 +5295,13 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
   const daysInMonth = new Date(y, m + 1, 0).getDate();
   const dayOfMonth = refDate.getDate();
   const remainingDays = Math.max(1, daysInMonth - dayOfMonth + 1);
-  const todayStr = refDate.toISOString().split("T")[0];
-  const todayCount = counted.filter(j => String(j.completed_at || j.scheduled_at || "").split("T")[0] === todayStr).length;
+  const todayStr = new Date(refDate.getTime() - refDate.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const dstr = (iso) => String(iso || "").slice(0, 10);
+  const todayCount = counted.filter(j => dstr(j.completed_at || j.scheduled_at) === todayStr).length;
   const todayBooked = jobs.filter(j =>
-    j.status !== "cancelled" && j.status !== "draft" && !jobSuccessful(j)
+    j.status !== "cancelled" && !jobSuccessful(j)
     && !ORDER_INCENT_EXCLUDED.some(rx => rx.test(String(j.service_type || "")))
-    && String(j.scheduled_at || "").split("T")[0] === todayStr).length;
+    && dstr(j.scheduled_at) === todayStr).length; // drafts on today's board count as pipeline — they're bookings awaiting completion
   const need90 = Math.max(0, Math.ceil(target * ORDER_INCENT.band) - total);
   const need100 = Math.max(0, target - total);
   const perDay90 = Math.ceil(need90 / remainingDays);
@@ -5331,7 +5352,7 @@ function SalesIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 40
           <div style={{ fontSize: 12, fontWeight: 800, color: "var(--muted)" }}>TEAM ORDERS THIS MONTH</div>
           <div style={{ fontSize: 40, fontWeight: 800 }}>{oi.total} <span style={{ fontSize: 17, color: "var(--muted)" }}>/ {oi.target}</span></div>
           <div style={{ fontSize: 12.5, fontWeight: 800, color: oi.rate === ORDER_INCENT.full ? "var(--success)" : oi.rate > 0 ? "#B45309" : "var(--muted)" }}>
-            {oi.rate === ORDER_INCENT.full ? "🏆 FULL RATE — 0.250 / order" : oi.rate > 0 ? "✅ 90% band — 0.150 / order" : oi.nextBand ? `${oi.nextBand.at - oi.total} orders to ${oi.nextBand.label}` : ""}
+            {oi.rate === ORDER_INCENT.full ? "🏆 FULL RATE — 0.250 / order · NO CEILING — every extra order keeps paying" : oi.rate > 0 ? "✅ 90% band — 0.150 / order" : oi.nextBand ? `${oi.nextBand.at - oi.total} orders to ${oi.nextBand.label}` : ""}
           </div>
           {oi.rate > 0 && oi.nextBand && <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)" }}>{oi.nextBand.at - oi.total} more → {oi.nextBand.label}</div>}
         </div>
