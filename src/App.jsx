@@ -2905,7 +2905,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 2) Service type → auto labor + items (with per-item match checkbox)
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
-function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog, fixedMonthly = 10600, profitTargetKD = 3000, loanKD = 933 }) {
+function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog, fixedMonthly = 10600, profitTargetKD = 3000, loanKD = 933, paletteKey = "vivid" }) {
   const isEdit = !!editJob;
   // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
   const hydrateServices = (job) => {
@@ -3682,7 +3682,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           );
           const wins = remaining > 0 && contrib >= remaining;
           return (
-            <div style={{ margin: "0 16px 10px", background: wins ? "linear-gradient(135deg,#22C55E,#84CC16)" : "linear-gradient(135deg,#FBBF24,#F97316)", color: "#fff", borderRadius: 10, padding: "8px 12px", fontSize: 12.5, fontWeight: 800, boxShadow: "0 3px 10px rgba(249,115,22,.28)" }}>
+            <div style={(() => { const mp = targetPalette(paletteKey, "strip", (wins || remaining <= 0) ? "win" : "chase"); return { margin: "0 16px 10px", background: mp.bg, color: mp.text, borderRadius: 10, padding: "8px 12px", fontSize: 12.5, fontWeight: 800, boxShadow: mp.shadow }; })()}>
               {remaining <= 0
                 ? <>🎉 Mission already won — this order adds {kd2(contrib)} of pure extra{fee > 0 ? ` (after ${pt} fee)` : ""}</>
                 : wins
@@ -4700,7 +4700,7 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget, loan =
 }
 
 // ═══ 🎯 Service Targets view — the profitable-month map ═════════════════════
-function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSaveTarget, canEdit }) {
+function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSaveTarget, canEdit, paletteKey = "vivid" }) {
   const [showDetail, setShowDetail] = useState(false);
   const [tDraft, setTDraft] = useState(String(profitTarget));
   const st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget, loan);
@@ -4716,6 +4716,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
   const monthWon = st.remaining === 0;
   const mood = monthWon ? "🏆" : dayWon ? "🎉" : dayPct >= 75 ? "🔥" : dayPct >= 50 ? "💪" : dayPct >= 25 ? "🙂" : "☕";
   const monthPct = Math.min(100, Math.round((st.mtdContribution / st.required) * 100));
+  const hp = targetPalette(paletteKey, "hero", (monthWon || dayWon) ? "win" : dayPct >= 75 ? "push" : "chase");
 
   return (
     <div style={{ maxWidth: 680, margin: "0 auto" }}>
@@ -4740,14 +4741,15 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
         </div>
       </div>
       {/* ── HERO: today's mission ── */}
-      <div style={{ background: monthWon ? "linear-gradient(135deg,#22C55E,#84CC16)" : dayWon ? "linear-gradient(135deg,#10B981,#84CC16)" : dayPct >= 75 ? "linear-gradient(135deg,#F97316,#EF4444)" : "linear-gradient(135deg,#FBBF24,#F97316)", color: "#fff", borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12, boxShadow: "0 6px 20px rgba(249,115,22,.30)" }}>
-        <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: "rgba(255,255,255,.9)" }}>
+      {(() => null)()}
+      <div style={{ background: hp.bg, color: hp.text, borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12, boxShadow: hp.shadow }}>
+        <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: hp.sub }}>
           {monthWon ? "PROFITABLE MONTH — DONE" : "🎯 TODAY'S MISSION — PROFIT TO MAKE"}
         </div>
         <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.15 }}>
           {monthWon ? "🏆 🎉" : dayWon ? "DAY WON 🎉" : kd(leftToday)}
         </div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,.92)" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: hp.sub }}>
           {monthWon ? `The month's ${kd(st.required)} is fully covered — everything now is pure extra.`
             : dayWon ? `Today's ${kd(st.dailyNeed)} is in the bag — anything more shrinks tomorrow's number.`
             : `profit still needed today ${mood} · ${st.todayOrders} order${st.todayOrders === 1 ? "" : "s"} booked`}
@@ -4760,8 +4762,8 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
                   const lo = (i - 1) * 20;
                   const fillPct = Math.max(0, Math.min(100, (dayPct - lo) / 20 * 100));
                   return (
-                    <div key={i} style={{ flex: 1, height: 12, background: "rgba(0,0,0,.18)", borderRadius: i === 1 ? "6px 3px 3px 6px" : i === 5 ? "3px 6px 6px 3px" : 3, overflow: "hidden" }}>
-                      <div style={{ width: fillPct + "%", height: "100%", background: "#fff", opacity: fillPct >= 100 ? 1 : 0.9, transition: "width .5s" }} />
+                    <div key={i} style={{ flex: 1, height: 12, background: hp.track, borderRadius: i === 1 ? "6px 3px 3px 6px" : i === 5 ? "3px 6px 6px 3px" : 3, overflow: "hidden" }}>
+                      <div style={{ width: fillPct + "%", height: "100%", background: hp.fill, opacity: fillPct >= 100 ? 1 : 0.9, transition: "width .5s" }} />
                     </div>
                   );
                 })}
@@ -4772,7 +4774,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
               {[1, 2, 3, 4].map(i => {
                 const hit = dayPct >= i * 20;
                 return (
-                  <div key={i} style={{ flex: 1, textAlign: "right", fontSize: 9, fontWeight: 700, color: hit ? "#fff" : "rgba(255,255,255,.55)" }}>
+                  <div key={i} style={{ flex: 1, textAlign: "right", fontSize: 9, fontWeight: 700, color: hit ? hp.text : hp.sub, opacity: hit ? 1 : 0.75 }}>
                     {kd(st.dailyNeed * i / 5)}{hit ? " ✓" : ""}
                   </div>
                 );
@@ -4780,13 +4782,13 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
               <div style={{ flex: 1 }} />
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12.5, fontWeight: 800 }}>
-              <span style={{ color: "#fff" }}>✓ {kd(st.todayContribution)} booked</span>
-              <span style={{ color: "rgba(255,255,255,.92)" }}>{kd(leftToday)} remaining</span>
+              <span style={{ color: hp.text }}>✓ {kd(st.todayContribution)} booked</span>
+              <span style={{ color: hp.sub }}>{kd(leftToday)} remaining</span>
             </div>
           </div>
         )}
         {st.pendingCostToday > 0 && (
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "rgba(0,0,0,.15)", display: "inline-block", borderRadius: 8, padding: "3px 10px", marginTop: 7 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: hp.text, background: hp.track, display: "inline-block", borderRadius: 8, padding: "3px 10px", marginTop: 7 }}>
             ⚠ {st.pendingCostToday} booked order{st.pendingCostToday === 1 ? "" : "s"} not counted yet — waiting for costs on the Costs page
           </div>
         )}
@@ -4900,6 +4902,7 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
   targetsOn, onToggleTargets, profitTarget, onSaveProfitTarget,
   loan = 933, onSaveLoan, targetOrders = 400, paCount = 2,
   salesScheme = "orders", paScheme = "orders", onSetScheme,
+  paletteKey = "vivid", onSetPalette,
   compareVisible, onToggleCompare }) {
   const [view, setView] = useState("master");
   const VIEWS = [["master", "🎛 Master"], ["tech", "🚛 Technicians"], ["sales", "💎 Sales"], ["pa", "🎯 Purchase"], ["targets", "🎯 Service targets"]];
@@ -4948,7 +4951,17 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
       </>)}
       {view === "targets" && (<>
         {previewBar("sales", targetsOn, onToggleTargets)}
-        <ServiceTargetsView jobs={jobs} fixedMonthly={fixedExpenses} loan={loan} profitTarget={profitTarget} onSaveTarget={onSaveProfitTarget} canEdit={true} />
+        <div style={{ display: "flex", gap: 6, justifyContent: "center", alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+          <span style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)" }}>🎨 Target colors:</span>
+          {Object.entries(TARGET_PALETTES).map(([k, p]) => (
+            <button key={k} className="btn btn-sm" onClick={() => onSetPalette && onSetPalette(k)}
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, background: paletteKey === k ? "var(--ink)" : "var(--card)", color: paletteKey === k ? "#fff" : "var(--ink)", border: "1px solid var(--border)" }}>
+              <span style={{ width: 26, height: 13, borderRadius: 4, background: targetPalette(k, "hero", "chase").bg, border: "1px solid rgba(0,0,0,.15)" }} />
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <ServiceTargetsView jobs={jobs} fixedMonthly={fixedExpenses} loan={loan} profitTarget={profitTarget} onSaveTarget={onSaveProfitTarget} canEdit={true} paletteKey={paletteKey} />
       </>)}
     </>
   );
@@ -5171,8 +5184,34 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove, restricted = fals
 }
 
 // ═══ 💎 Sales incentive (§4: net-profit tiers, per person) ═══════════════════
+// ═══ 🎨 Target visual palettes — selectable in the Incentive hub ═══════════════
+const TARGET_PALETTES = {
+  vivid: {
+    label: "🌅 Sky — vivid",
+    strip: {
+      chase: { bg: "linear-gradient(135deg,#0EA5E9,#38BDF8 55%,#FBBF24)", text: "#fff", sub: "rgba(255,255,255,.9)", fill: "#fff", track: "rgba(0,0,0,.18)", shadow: "0 4px 14px rgba(14,165,233,.30)" },
+      push:  { bg: "linear-gradient(135deg,#38BDF8,#F59E0B 55%,#F97316)", text: "#fff", sub: "rgba(255,255,255,.9)", fill: "#fff", track: "rgba(0,0,0,.18)", shadow: "0 4px 14px rgba(249,115,22,.32)" },
+      win:   { bg: "linear-gradient(135deg,#38BDF8,#34D399)",             text: "#fff", sub: "rgba(255,255,255,.92)", fill: "#fff", track: "rgba(0,0,0,.15)", shadow: "0 4px 14px rgba(52,211,153,.35)" },
+    },
+  },
+  dawn: {
+    label: "🕊 Sky — dawn",
+    strip: {
+      chase: { bg: "linear-gradient(135deg,#BAE6FD,#FDE68A)", text: "#0C4A6E", sub: "rgba(12,74,110,.75)", fill: "#0C4A6E", track: "rgba(12,74,110,.15)", shadow: "0 4px 14px rgba(125,211,252,.45)" },
+      push:  { bg: "linear-gradient(135deg,#FDE68A,#FDBA74)", text: "#7C2D12", sub: "rgba(124,45,18,.8)",  fill: "#7C2D12", track: "rgba(124,45,18,.15)", shadow: "0 4px 14px rgba(253,186,116,.5)" },
+      win:   { bg: "linear-gradient(135deg,#A7F3D0,#BAE6FD)", text: "#065F46", sub: "rgba(6,95,70,.8)",    fill: "#065F46", track: "rgba(6,95,70,.14)",  shadow: "0 4px 14px rgba(167,243,208,.5)" },
+    },
+  },
+  hybrid: { label: "🌗 Hybrid — vivid strip · dawn hero" },
+};
+function targetPalette(key, surface, state) {
+  const k = TARGET_PALETTES[key] ? key : "vivid";
+  if (k === "hybrid") return TARGET_PALETTES[surface === "hero" ? "dawn" : "vivid"].strip[state];
+  return TARGET_PALETTES[k].strip[state];
+}
+
 // ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
-function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner }) {
+function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid" }) {
   // one bar, one scheme: the ACTIVE one (💎 orders wins if both are live; owner previews orders when none)
   const mode = salesOn ? "orders" : targetsOn ? "mission" : null; // strictly the ACTIVE scheme — no preview when everything is off
   if (!mode) return null;
@@ -5187,8 +5226,9 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
     if (oi.rate === ORDER_INCENT.full) {
       // 🔥 OVERTIME: target beaten — no ceiling, every order keeps paying
       const beyond = oi.total - oi.target;
+      const wp = targetPalette(paletteKey, "strip", "win");
       return (
-        <div style={{ background: "linear-gradient(135deg,#22C55E,#84CC16)", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, boxShadow: "0 4px 14px rgba(34,197,94,.35)" }}>
+        <div style={{ background: wp.bg, color: wp.text, borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, boxShadow: wp.shadow }}>
           <span>🏆 Target beaten — OVERTIME: +{beyond} beyond {oi.target}</span>
           <span style={{ fontSize: 11.5 }}>no ceiling — every order today = +0.250 in your pocket · today: {oi.todayCount}✓{oi.todayBooked ? ` +${oi.todayBooked}⏳` : ""}</span>
         </div>
@@ -5206,8 +5246,9 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
     if (done >= goal) {
       // 🔥 day won — count the extra out loud
       const extra = done - goal;
+      const wp2 = targetPalette(paletteKey, "strip", "win");
       return (
-        <div style={{ background: "linear-gradient(135deg,#22C55E,#84CC16)", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, boxShadow: "0 4px 14px rgba(34,197,94,.35)" }}>
+        <div style={{ background: wp2.bg, color: wp2.text, borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, boxShadow: wp2.shadow }}>
           <span>🎉 Day won{extra > 0.5 ? ` — EXTRA +KWD ${extra.toFixed(0)} 🔥` : ""}</span>
           <span style={{ fontSize: 11.5 }}>every extra dinar shrinks tomorrow's goal{pending > 0.5 ? ` · +KWD ${pending.toFixed(0)}⏳ still completing` : ""}</span>
         </div>
@@ -5221,22 +5262,19 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
   const fadePct = Math.max(0, Math.min(100, (done + pending) / goal * 100) - solidPct);
   const won = done >= goal;
   const reachPct = (done + pending) / goal * 100;
-  // energy palette: sunrise → blazing as the day fills; lime-green at the win
-  const bg = won ? "linear-gradient(135deg,#22C55E,#84CC16)"
-    : reachPct >= 75 ? "linear-gradient(135deg,#F97316,#EF4444)"
-    : "linear-gradient(135deg,#FBBF24,#F97316)";
+  const pal = targetPalette(paletteKey, "strip", won ? "win" : reachPct >= 75 ? "push" : "chase");
   return (
-    <div style={{ background: bg, color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", boxShadow: "0 4px 14px rgba(249,115,22,.30)" }}>
+    <div style={{ background: pal.bg, color: pal.text, borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", boxShadow: pal.shadow }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, marginBottom: 6 }}>
         <span>{label}</span>
-        <span style={{ color: "#fff", fontSize: 11.5 }}>{hint || doneLabel}</span>
+        <span style={{ color: pal.sub, fontSize: 11.5 }}>{hint || doneLabel}</span>
       </div>
-      <div style={{ display: "flex", height: 11, background: "rgba(0,0,0,.18)", borderRadius: 6, overflow: "hidden" }}>
-        <div style={{ width: solidPct + "%", background: "#fff", transition: "width .5s" }} />
-        <div style={{ width: fadePct + "%", background: "#fff", opacity: 0.4, transition: "width .5s" }} />
+      <div style={{ display: "flex", height: 11, background: pal.track, borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ width: solidPct + "%", background: pal.fill, transition: "width .5s" }} />
+        <div style={{ width: fadePct + "%", background: pal.fill, opacity: 0.4, transition: "width .5s" }} />
       </div>
       {pending > 0 && !won && (
-        <div style={{ fontSize: 9.5, fontWeight: 700, color: "rgba(255,255,255,.85)", marginTop: 4 }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, color: pal.sub, marginTop: 4 }}>
           faded = booked, waiting to be completed — it turns solid the moment the job succeeds
         </div>
       )}
@@ -9920,6 +9958,7 @@ export default function App() {
   const setScheme = (key, val) => { setAppSettings(p => ({ ...p, [key]: val })); saveAppSetting(key, val); };
   const orderTargetKD = Math.round((Number(appSettings.order_target_per_truck) || ORDER_INCENT.perTruckDefault) * Math.max(1, activeTrucks().length));
   const paCountActive = employees.filter(e => e.active && (e.role === "purchaser" || e.role === "accountant")).length || 2;
+  const targetPaletteKey = TARGET_PALETTES[appSettings.target_palette] ? appSettings.target_palette : "vivid";
   const setServiceTargetsEnabled = async (on) => {
     setAppSettings(p => ({ ...p, service_targets_enabled: on }));
     await saveAppSetting("service_targets_enabled", on);
@@ -10085,7 +10124,7 @@ export default function App() {
             <DayTargetStrip jobs={jobs} targetOrders={orderTargetKD}
               fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
               profitTarget={Number(appSettings.service_profit_target) || 3000}
-              salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner} />
+              salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner} paletteKey={targetPaletteKey} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
             <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
@@ -10099,6 +10138,7 @@ export default function App() {
               targetOrders={orderTargetKD} paCount={paCountActive}
               salesScheme={salesScheme} paScheme={paScheme}
               onSetScheme={setScheme}
+              paletteKey={targetPaletteKey} onSetPalette={(k) => { setAppSettings(p => ({ ...p, target_palette: k })); saveAppSetting("target_palette", k); }}
               fixedExpenses={Number(appSettings.fixed_expenses) || 10600}
               onSaveFixed={(n) => { setAppSettings(p => ({ ...p, fixed_expenses: n })); saveAppSetting("fixed_expenses", n); }}
               enabled={incentiveOn} onToggle={setIncentiveEnabled}
@@ -10115,7 +10155,7 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "servicetargets" && (
             <ServiceTargetsView jobs={jobs} fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
-              profitTarget={Number(appSettings.service_profit_target) || 3000} onSaveTarget={() => {}} canEdit={false} />
+              profitTarget={Number(appSettings.service_profit_target) || 3000} onSaveTarget={() => {}} canEdit={false} paletteKey={targetPaletteKey} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "salesincent" && (
             <SalesIncentiveView jobs={jobs} fixedExpenses={Number(appSettings.fixed_expenses) || 10600} loan={loanKD} targetOrders={orderTargetKD} />
@@ -10216,7 +10256,7 @@ export default function App() {
 
       {editingJob && (
         <NewJobModal
-          fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loanKD={loanKD}
+          fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loanKD={loanKD} paletteKey={targetPaletteKey}
           profitTargetKD={Number(appSettings.service_profit_target) || 3000}
           defaultAgent={sessionAgent}
           catalog={catalog}
@@ -10236,7 +10276,7 @@ export default function App() {
 
       {showNew && (
         <NewJobModal
-          fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loanKD={loanKD}
+          fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loanKD={loanKD} paletteKey={targetPaletteKey}
           profitTargetKD={Number(appSettings.service_profit_target) || 3000}
           defaultAgent={sessionAgent}
           catalog={catalog}
