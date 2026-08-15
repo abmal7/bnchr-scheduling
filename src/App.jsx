@@ -5168,6 +5168,35 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove, restricted = fals
 }
 
 // ═══ 💎 Sales incentive (§4: net-profit tiers, per person) ═══════════════════
+// ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
+function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, showOrders, showMission }) {
+  if (!showOrders && !showMission) return null;
+  let oi = null, st = null;
+  try { if (showOrders) oi = computeOrderIncent(jobs, new Date(), targetOrders); } catch (e) {}
+  try { if (showMission) st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget, loan); } catch (e) {}
+  if (!oi && !st) return null;
+  const missionLeft = st ? Math.max(0, st.dailyNeed - st.todayContribution) : 0;
+  const ordersOk = oi && oi.todayCount >= oi.perDay100;
+  const missionOk = st && missionLeft === 0;
+  const allOk = (!oi || ordersOk || oi.rate === ORDER_INCENT.full) && (!st || missionOk);
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: allOk ? "#E8F4EC" : "#0F2419", color: allOk ? "#1D7A45" : "#fff", borderRadius: 12, padding: "8px 14px", margin: "0 0 10px", fontSize: 12.5, fontWeight: 800 }}>
+      <span>{allOk ? "🎉 Today's targets covered — everything more is extra" : "🎯 Today:"}</span>
+      {!allOk && oi && oi.rate < ORDER_INCENT.full && (
+        <span>
+          {oi.todayCount}<span style={{ opacity: .7 }}>/{oi.perDay100} orders</span>
+          {oi.todayBooked > 0 && <span style={{ color: "#FBBF24" }}> +{oi.todayBooked}⏳</span>}
+          {oi.todayCount >= oi.perDay100 ? " ✓" : ""}
+        </span>
+      )}
+      {!allOk && st && (
+        <span>{missionOk ? "profit ✓" : <>KWD {missionLeft.toFixed(0)}<span style={{ opacity: .7 }}> profit to go</span></>}</span>
+      )}
+      {!allOk && oi && oi.todayBooked > 0 && <span style={{ fontSize: 10.5, fontWeight: 700, color: "#FBBF24" }}>complete the ⏳ booked to bank them</span>}
+    </div>
+  );
+}
+
 // ═══ 💎🎯 Order-count incentive (team-designed, Aug 2026) ═════════════════════
 // Sales & P&A: team target = per-truck benchmark × active trucks (scales with fleet).
 // 100% → 0.250/order · 90% → 0.150/order · below → 0. No profit gate: bounded cost, full predictability.
@@ -5225,12 +5254,16 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
   const remainingDays = Math.max(1, daysInMonth - dayOfMonth + 1);
   const todayStr = refDate.toISOString().split("T")[0];
   const todayCount = counted.filter(j => String(j.completed_at || j.scheduled_at || "").split("T")[0] === todayStr).length;
+  const todayBooked = jobs.filter(j =>
+    j.status !== "cancelled" && j.status !== "draft" && !jobSuccessful(j)
+    && !ORDER_INCENT_EXCLUDED.some(rx => rx.test(String(j.service_type || "")))
+    && String(j.scheduled_at || "").split("T")[0] === todayStr).length;
   const need90 = Math.max(0, Math.ceil(target * ORDER_INCENT.band) - total);
   const need100 = Math.max(0, target - total);
   const perDay90 = Math.ceil(need90 / remainingDays);
   const perDay100 = Math.ceil(need100 / remainingDays);
   return { total, target, pct, rate, nextBand, agents, poolPay,
-    todayCount, remainingDays, perDay90, perDay100, nAgents: Math.max(1, agents.length) };
+    todayCount, todayBooked, remainingDays, perDay90, perDay100, nAgents: Math.max(1, agents.length) };
 }
 
 // Transparency waterfall — the whole truth on every incentive page (July lesson)
@@ -5289,14 +5322,14 @@ function SalesIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 40
         {oi.rate < ORDER_INCENT.full && (
           <div style={{ background: oi.todayCount >= oi.perDay100 ? "#E8F4EC" : oi.todayCount >= oi.perDay90 ? "#FFF7EC" : "var(--bg)", border: `1.5px solid ${oi.todayCount >= oi.perDay100 ? "#BFDFC9" : oi.todayCount >= oi.perDay90 ? "#FDDCAB" : "var(--border)"}`, borderRadius: 12, padding: "9px 13px", marginBottom: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, fontSize: 12.5, fontWeight: 800 }}>
-              <span>📅 Today: {oi.todayCount} order{oi.todayCount === 1 ? "" : "s"}</span>
+              <span>📅 Today: {oi.todayCount} completed ✓{oi.todayBooked > 0 ? <span style={{ color: "#B45309" }}> + {oi.todayBooked} booked ⏳</span> : null}</span>
               <span style={{ color: oi.todayCount >= oi.perDay100 ? "var(--success)" : oi.todayCount >= oi.perDay90 ? "#B45309" : "var(--muted)" }}>
                 {oi.todayCount >= oi.perDay100 ? "✓ full-target pace" : oi.todayCount >= oi.perDay90 ? `${oi.perDay100 - oi.todayCount} more for full pace` : `need ${Math.max(0, oi.perDay90 - oi.todayCount)} more for 90% pace`}
               </span>
             </div>
             <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", marginTop: 3 }}>
               Daily plan ({oi.remainingDays} days left): <strong>{oi.perDay90}/day</strong> reaches 90% · <strong>{oi.perDay100}/day</strong> reaches the full {oi.target}
-              {oi.nAgents > 1 ? ` · ≈ ${Math.ceil(oi.perDay100 / oi.nAgents)}/day each` : ""} · the bar self-adjusts to what remains
+              {oi.nAgents > 1 ? ` · ≈ ${Math.ceil(oi.perDay100 / oi.nAgents)}/day each` : ""} · the bar self-adjusts{oi.todayBooked > 0 ? ` · complete today's ${oi.todayBooked} booked to bank them` : ""}
             </div>
           </div>
         )}
@@ -10000,6 +10033,12 @@ export default function App() {
             />
           )}
 
+          {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && role === "sales" && (
+            <DayTargetStrip jobs={jobs} targetOrders={orderTargetKD}
+              fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
+              profitTarget={Number(appSettings.service_profit_target) || 3000}
+              showOrders={salesIncentOn || isOwner} showMission={serviceTargetsOn || isOwner} />
+          )}
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
             <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
