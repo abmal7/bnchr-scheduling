@@ -4645,6 +4645,7 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget, loan =
   const todayStr = ref.toISOString().split("T")[0];
   const dStrOf = (j) => String(j.scheduled_at || j.completed_at || j.created_at || "").split("T")[0];
   const today = mtd.filter(j => dStrOf(j) === todayStr);
+  const todayContribDone = today.filter(j => jobSuccessful(j)).reduce((x, j) => x + stContribution(j), 0);
   const pendingCostToday = inMonthB.filter(j => dStrOf(j) === todayStr && stMissingCost(j)).length;
 
   const totalN = hist.length || 1;
@@ -4691,7 +4692,9 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget, loan =
   const daysWon = dayLog.filter(x => x.state === "won").length;
   return { rows, required, mtdContribution, remaining, ordersCurrent, ordersSmart, blendedAvg, smartBlended,
     mtdOrders: mtd.length, paceNeeded: required / daysInMonth * dayOfMonth,
-    remainingDays, dailyNeed, todayContribution, todayOrders: today.length, avgTicket,
+    remainingDays, dailyNeed, todayContribution, todayContribDone,
+    todayContribPending: Math.max(0, 0) + (today.reduce((x, j) => x + stContribution(j), 0) - todayContribDone),
+    todayOrders: today.length, avgTicket,
     dailyQuota, dayLog, daysWon, dayOfMonth, daysInMonth,
     pendingCostToday, pendingCostMtd };
 }
@@ -5169,30 +5172,50 @@ function EmployeesView({ employees, onAdd, onUpdate, onRemove, restricted = fals
 
 // ═══ 💎 Sales incentive (§4: net-profit tiers, per person) ═══════════════════
 // ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
-function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, showOrders, showMission }) {
-  if (!showOrders && !showMission) return null;
+function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner }) {
+  // one bar, one scheme: the ACTIVE one (💎 orders wins if both are live; owner previews orders when none)
+  const mode = salesOn ? "orders" : targetsOn ? "mission" : isOwner ? "orders" : null;
+  if (!mode) return null;
   let oi = null, st = null;
-  try { if (showOrders) oi = computeOrderIncent(jobs, new Date(), targetOrders); } catch (e) {}
-  try { if (showMission) st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget, loan); } catch (e) {}
-  if (!oi && !st) return null;
-  const missionLeft = st ? Math.max(0, st.dailyNeed - st.todayContribution) : 0;
-  const ordersOk = oi && oi.todayCount >= oi.perDay100;
-  const missionOk = st && missionLeft === 0;
-  const allOk = (!oi || ordersOk || oi.rate === ORDER_INCENT.full) && (!st || missionOk);
+  try { if (mode === "orders") oi = computeOrderIncent(jobs, new Date(), targetOrders); } catch (e) { return null; }
+  try { if (mode === "mission") st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget, loan); } catch (e) { return null; }
+
+  // goal + done + pending (booked, not yet completed) for the two-tone bar
+  let goal, done, pending, label, doneLabel, hint;
+  if (mode === "orders") {
+    if (!oi) return null;
+    goal = Math.max(1, oi.perDay100 || 1);
+    done = oi.todayCount; pending = oi.todayBooked;
+    label = `🎯 Today: ${done}✓${pending ? ` +${pending}⏳` : ""} / ${goal} orders`;
+    doneLabel = done >= goal ? "✓ full-target pace" : done + pending >= goal ? "bookings reach the goal — complete them!" : `${goal - done - pending} more to book`;
+    hint = oi.rate === ORDER_INCENT.full ? "🏆 full rate locked — every order pays 0.250" : null;
+  } else {
+    if (!st) return null;
+    goal = Math.max(1, st.dailyNeed);
+    done = st.todayContribDone; pending = st.todayContribPending;
+    label = `🎯 Today: KWD ${done.toFixed(0)}✓${pending > 0.5 ? ` +${pending.toFixed(0)}⏳` : ""} / ${goal.toFixed(0)}`;
+    doneLabel = done >= goal ? "✓ day won" : done + pending >= goal ? "booked profit reaches the goal — complete the jobs!" : `KWD ${(goal - done - pending).toFixed(0)} more to book`;
+    hint = null;
+  }
+  const solidPct = Math.min(100, done / goal * 100);
+  const fadePct = Math.max(0, Math.min(100, (done + pending) / goal * 100) - solidPct);
+  const won = done >= goal;
+  const fill = won ? "#4ADE80" : "#FBBF24";
   return (
-    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: allOk ? "#E8F4EC" : "#0F2419", color: allOk ? "#1D7A45" : "#fff", borderRadius: 12, padding: "8px 14px", margin: "0 0 10px", fontSize: 12.5, fontWeight: 800 }}>
-      <span>{allOk ? "🎉 Today's targets covered — everything more is extra" : "🎯 Today:"}</span>
-      {!allOk && oi && oi.rate < ORDER_INCENT.full && (
-        <span>
-          {oi.todayCount}<span style={{ opacity: .7 }}>/{oi.perDay100} orders</span>
-          {oi.todayBooked > 0 && <span style={{ color: "#FBBF24" }}> +{oi.todayBooked}⏳</span>}
-          {oi.todayCount >= oi.perDay100 ? " ✓" : ""}
-        </span>
+    <div style={{ background: "#0F2419", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, marginBottom: 6 }}>
+        <span>{label}</span>
+        <span style={{ color: won ? "#4ADE80" : done + pending >= goal ? "#FBBF24" : "rgba(255,255,255,.75)", fontSize: 11.5 }}>{hint || doneLabel}</span>
+      </div>
+      <div style={{ display: "flex", height: 11, background: "rgba(255,255,255,.16)", borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ width: solidPct + "%", background: fill, transition: "width .5s" }} />
+        <div style={{ width: fadePct + "%", background: fill, opacity: 0.35, transition: "width .5s" }} />
+      </div>
+      {pending > 0 && !won && (
+        <div style={{ fontSize: 9.5, fontWeight: 700, color: "rgba(255,255,255,.6)", marginTop: 4 }}>
+          faded = booked, waiting to be completed — it turns solid the moment the job succeeds
+        </div>
       )}
-      {!allOk && st && (
-        <span>{missionOk ? "profit ✓" : <>KWD {missionLeft.toFixed(0)}<span style={{ opacity: .7 }}> profit to go</span></>}</span>
-      )}
-      {!allOk && oi && oi.todayBooked > 0 && <span style={{ fontSize: 10.5, fontWeight: 700, color: "#FBBF24" }}>complete the ⏳ booked to bank them</span>}
     </div>
   );
 }
@@ -10037,7 +10060,7 @@ export default function App() {
             <DayTargetStrip jobs={jobs} targetOrders={orderTargetKD}
               fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
               profitTarget={Number(appSettings.service_profit_target) || 3000}
-              showOrders={salesIncentOn || isOwner} showMission={serviceTargetsOn || isOwner} />
+              salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
             <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
