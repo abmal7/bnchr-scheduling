@@ -3682,12 +3682,12 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           );
           const wins = remaining > 0 && contrib >= remaining;
           return (
-            <div style={{ margin: "0 16px 10px", background: wins ? "linear-gradient(135deg,#14532D,#16A34A)" : "#0F2419", color: "#fff", borderRadius: 10, padding: "8px 12px", fontSize: 12.5, fontWeight: 800 }}>
+            <div style={{ margin: "0 16px 10px", background: wins ? "linear-gradient(135deg,#22C55E,#84CC16)" : "linear-gradient(135deg,#FBBF24,#F97316)", color: "#fff", borderRadius: 10, padding: "8px 12px", fontSize: 12.5, fontWeight: 800, boxShadow: "0 3px 10px rgba(249,115,22,.28)" }}>
               {remaining <= 0
                 ? <>🎉 Mission already won — this order adds {kd2(contrib)} of pure extra{fee > 0 ? ` (after ${pt} fee)` : ""}</>
                 : wins
                   ? <>🏆 THIS ORDER WINS THE DAY — {kd2(contrib)} covers the remaining {kd2(remaining)}</>
-                  : <>🎯 This order adds <span style={{ color: "#4ADE80" }}>{kd2(contrib)}</span> toward today's mission{fee > 0 ? ` (after ${pt} fee)` : ""} · after booking: {kd2(remaining - contrib)} still needed</>}
+                  : <>🎯 This order adds <span style={{ textDecoration: "underline" }}>{kd2(contrib)}</span> toward today's mission{fee > 0 ? ` (after ${pt} fee)` : ""} · after booking: {kd2(remaining - contrib)} still needed</>}
             </div>
           );
         })()}
@@ -4740,14 +4740,14 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
         </div>
       </div>
       {/* ── HERO: today's mission ── */}
-      <div style={{ background: monthWon ? "linear-gradient(135deg,#14532D,#16A34A)" : dayWon ? "linear-gradient(135deg,#0F2419,#1D7A45)" : "linear-gradient(135deg,#0F2419,#1D4B33)", color: "#fff", borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12 }}>
-        <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: "#A7D8B9" }}>
+      <div style={{ background: monthWon ? "linear-gradient(135deg,#22C55E,#84CC16)" : dayWon ? "linear-gradient(135deg,#10B981,#84CC16)" : dayPct >= 75 ? "linear-gradient(135deg,#F97316,#EF4444)" : "linear-gradient(135deg,#FBBF24,#F97316)", color: "#fff", borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12, boxShadow: "0 6px 20px rgba(249,115,22,.30)" }}>
+        <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: "rgba(255,255,255,.9)" }}>
           {monthWon ? "PROFITABLE MONTH — DONE" : "🎯 TODAY'S MISSION — PROFIT TO MAKE"}
         </div>
         <div style={{ fontSize: 46, fontWeight: 800, lineHeight: 1.15 }}>
           {monthWon ? "🏆 🎉" : dayWon ? "DAY WON 🎉" : kd(leftToday)}
         </div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#D4EDDA" }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "rgba(255,255,255,.92)" }}>
           {monthWon ? `The month's ${kd(st.required)} is fully covered — everything now is pure extra.`
             : dayWon ? `Today's ${kd(st.dailyNeed)} is in the bag — anything more shrinks tomorrow's number.`
             : `profit still needed today ${mood} · ${st.todayOrders} order${st.todayOrders === 1 ? "" : "s"} booked`}
@@ -4760,8 +4760,8 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
                   const lo = (i - 1) * 20;
                   const fillPct = Math.max(0, Math.min(100, (dayPct - lo) / 20 * 100));
                   return (
-                    <div key={i} style={{ flex: 1, height: 12, background: "rgba(255,255,255,.16)", borderRadius: i === 1 ? "6px 3px 3px 6px" : i === 5 ? "3px 6px 6px 3px" : 3, overflow: "hidden" }}>
-                      <div style={{ width: fillPct + "%", height: "100%", background: fillPct >= 100 ? "#4ADE80" : "#FBBF24", transition: "width .5s" }} />
+                    <div key={i} style={{ flex: 1, height: 12, background: "rgba(0,0,0,.18)", borderRadius: i === 1 ? "6px 3px 3px 6px" : i === 5 ? "3px 6px 6px 3px" : 3, overflow: "hidden" }}>
+                      <div style={{ width: fillPct + "%", height: "100%", background: "#fff", opacity: fillPct >= 100 ? 1 : 0.9, transition: "width .5s" }} />
                     </div>
                   );
                 })}
@@ -4772,7 +4772,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
               {[1, 2, 3, 4].map(i => {
                 const hit = dayPct >= i * 20;
                 return (
-                  <div key={i} style={{ flex: 1, textAlign: "right", fontSize: 9, fontWeight: 700, color: hit ? "#4ADE80" : "rgba(255,255,255,.45)" }}>
+                  <div key={i} style={{ flex: 1, textAlign: "right", fontSize: 9, fontWeight: 700, color: hit ? "#fff" : "rgba(255,255,255,.55)" }}>
                     {kd(st.dailyNeed * i / 5)}{hit ? " ✓" : ""}
                   </div>
                 );
@@ -4780,13 +4780,13 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
               <div style={{ flex: 1 }} />
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12.5, fontWeight: 800 }}>
-              <span style={{ color: "#4ADE80" }}>✓ {kd(st.todayContribution)} booked</span>
-              <span style={{ color: "#FBBF24" }}>{kd(leftToday)} remaining</span>
+              <span style={{ color: "#fff" }}>✓ {kd(st.todayContribution)} booked</span>
+              <span style={{ color: "rgba(255,255,255,.92)" }}>{kd(leftToday)} remaining</span>
             </div>
           </div>
         )}
         {st.pendingCostToday > 0 && (
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#FCD34D", marginTop: 7 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: "rgba(0,0,0,.15)", display: "inline-block", borderRadius: 8, padding: "3px 10px", marginTop: 7 }}>
             ⚠ {st.pendingCostToday} booked order{st.pendingCostToday === 1 ? "" : "s"} not counted yet — waiting for costs on the Costs page
           </div>
         )}
@@ -5188,7 +5188,7 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
       // 🔥 OVERTIME: target beaten — no ceiling, every order keeps paying
       const beyond = oi.total - oi.target;
       return (
-        <div style={{ background: "linear-gradient(135deg,#14532D,#16A34A)", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800 }}>
+        <div style={{ background: "linear-gradient(135deg,#22C55E,#84CC16)", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, boxShadow: "0 4px 14px rgba(34,197,94,.35)" }}>
           <span>🏆 Target beaten — OVERTIME: +{beyond} beyond {oi.target}</span>
           <span style={{ fontSize: 11.5 }}>no ceiling — every order today = +0.250 in your pocket · today: {oi.todayCount}✓{oi.todayBooked ? ` +${oi.todayBooked}⏳` : ""}</span>
         </div>
@@ -5207,7 +5207,7 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
       // 🔥 day won — count the extra out loud
       const extra = done - goal;
       return (
-        <div style={{ background: "linear-gradient(135deg,#14532D,#16A34A)", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800 }}>
+        <div style={{ background: "linear-gradient(135deg,#22C55E,#84CC16)", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, boxShadow: "0 4px 14px rgba(34,197,94,.35)" }}>
           <span>🎉 Day won{extra > 0.5 ? ` — EXTRA +KWD ${extra.toFixed(0)} 🔥` : ""}</span>
           <span style={{ fontSize: 11.5 }}>every extra dinar shrinks tomorrow's goal{pending > 0.5 ? ` · +KWD ${pending.toFixed(0)}⏳ still completing` : ""}</span>
         </div>
@@ -5220,19 +5220,23 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
   const solidPct = Math.min(100, done / goal * 100);
   const fadePct = Math.max(0, Math.min(100, (done + pending) / goal * 100) - solidPct);
   const won = done >= goal;
-  const fill = won ? "#4ADE80" : "#FBBF24";
+  const reachPct = (done + pending) / goal * 100;
+  // energy palette: sunrise → blazing as the day fills; lime-green at the win
+  const bg = won ? "linear-gradient(135deg,#22C55E,#84CC16)"
+    : reachPct >= 75 ? "linear-gradient(135deg,#F97316,#EF4444)"
+    : "linear-gradient(135deg,#FBBF24,#F97316)";
   return (
-    <div style={{ background: "#0F2419", color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px" }}>
+    <div style={{ background: bg, color: "#fff", borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", boxShadow: "0 4px 14px rgba(249,115,22,.30)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, marginBottom: 6 }}>
         <span>{label}</span>
-        <span style={{ color: won ? "#4ADE80" : done + pending >= goal ? "#FBBF24" : "rgba(255,255,255,.75)", fontSize: 11.5 }}>{hint || doneLabel}</span>
+        <span style={{ color: "#fff", fontSize: 11.5 }}>{hint || doneLabel}</span>
       </div>
-      <div style={{ display: "flex", height: 11, background: "rgba(255,255,255,.16)", borderRadius: 6, overflow: "hidden" }}>
-        <div style={{ width: solidPct + "%", background: fill, transition: "width .5s" }} />
-        <div style={{ width: fadePct + "%", background: fill, opacity: 0.35, transition: "width .5s" }} />
+      <div style={{ display: "flex", height: 11, background: "rgba(0,0,0,.18)", borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ width: solidPct + "%", background: "#fff", transition: "width .5s" }} />
+        <div style={{ width: fadePct + "%", background: "#fff", opacity: 0.4, transition: "width .5s" }} />
       </div>
       {pending > 0 && !won && (
-        <div style={{ fontSize: 9.5, fontWeight: 700, color: "rgba(255,255,255,.6)", marginTop: 4 }}>
+        <div style={{ fontSize: 9.5, fontWeight: 700, color: "rgba(255,255,255,.85)", marginTop: 4 }}>
           faded = booked, waiting to be completed — it turns solid the moment the job succeeds
         </div>
       )}
