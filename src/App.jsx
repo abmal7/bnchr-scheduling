@@ -5392,9 +5392,18 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
         <div style={{ textAlign: "right", fontSize: 9.5, fontWeight: 800, color: cp.sub, marginTop: 6 }}>
           🎯 {mode === "orders" ? goal : goal.toFixed(0)}
         </div>
-        <div style={{ display: "flex", height: 7, background: cp.track, borderRadius: 4, overflow: "hidden", marginTop: 3 }}>
-          <div style={{ width: solidPct + "%", background: cp.fill, transition: "width .5s" }} />
-          <div style={{ width: fadePct + "%", background: cp.fill, opacity: 0.4, transition: "width .5s" }} />
+        <div style={{ display: "flex", gap: 2, marginTop: 3 }}>
+          {[1, 2, 3, 4, 5].map(i => {
+            const lo = (i - 1) * 20;
+            const sSeg = Math.max(0, Math.min(100, (solidPct - lo) / 20 * 100));
+            const rSeg = Math.max(0, Math.min(100, ((solidPct + fadePct) - lo) / 20 * 100)) - sSeg;
+            return (
+              <div key={i} style={{ display: "flex", flex: 1, height: 7, background: cp.track, borderRadius: i === 1 ? "4px 2px 2px 4px" : i === 5 ? "2px 4px 4px 2px" : 2, overflow: "hidden" }}>
+                <div style={{ width: sSeg + "%", background: cp.fill, transition: "width .5s" }} />
+                <div style={{ width: rSeg + "%", background: cp.fill, opacity: 0.4, transition: "width .5s" }} />
+              </div>
+            );
+          })}
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 4, fontSize: 9.5, fontWeight: 800, color: cp.sub, marginTop: 3 }}>
           <span style={{ color: cp.text }}>✓ {mode === "orders" ? done : done.toFixed(0)} completed</span>
