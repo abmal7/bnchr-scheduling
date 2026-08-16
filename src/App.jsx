@@ -4824,6 +4824,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
 
   return (
     <div style={{ maxWidth: 680, margin: "0 auto" }}>
+      <MissionCelebrator done={doneT} goal={st.dailyNeed} won={dayWon} />
       {/* ── HERO: today's mission ── */}
       {(() => null)()}
       <div style={{ background: hp.bg, color: hp.text, borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12, boxShadow: hp.shadow }}>
@@ -5327,6 +5328,72 @@ function targetPalette(key, surface, state) {
   return TARGET_PALETTES[k].strip[state];
 }
 
+// ═══ 🎉 Mission celebrations: chime + confetti at each 20% stage, fireworks at 100% ═══
+let CELEB_CTX = null;
+if (typeof window !== "undefined") {
+  window.addEventListener("pointerdown", () => {
+    try {
+      if (!CELEB_CTX) CELEB_CTX = new (window.AudioContext || window.webkitAudioContext)();
+      if (CELEB_CTX.state === "suspended") CELEB_CTX.resume();
+    } catch (e) {}
+  }, { passive: true });
+}
+function celebChime(big) {
+  try {
+    const ctx = CELEB_CTX; if (!ctx || ctx.state !== "running") return;
+    const t0 = ctx.currentTime + 0.01;
+    const notes = big ? [523.25, 659.25, 783.99, 1046.5, 1318.5] : [659.25, 987.77]; // victory arpeggio vs bright ding
+    notes.forEach((f, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "triangle"; o.frequency.value = f;
+      const st = t0 + i * (big ? 0.12 : 0.09);
+      g.gain.setValueAtTime(0.0001, st);
+      g.gain.exponentialRampToValueAtTime(big ? 0.22 : 0.14, st + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, st + (big ? 0.55 : 0.26));
+      o.connect(g); g.connect(ctx.destination); o.start(st); o.stop(st + (big ? 0.6 : 0.3));
+    });
+  } catch (e) {}
+}
+function celebBurst(big) {
+  try {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:9999;overflow:hidden";
+    const emojis = big ? ["🎉", "🏆", "💚", "✨", "🎊", "💎"] : ["✨", "🎉", "💚"];
+    const n = big ? 80 : 26;
+    for (let i = 0; i < n; i++) {
+      const p = document.createElement("div");
+      p.textContent = emojis[i % emojis.length];
+      const dur = 1200 + Math.random() * (big ? 1600 : 700);
+      p.style.cssText = `position:absolute;left:${50 + (Math.random() - 0.5) * (big ? 92 : 55)}vw;top:-6vh;font-size:${big ? 16 + Math.random() * 22 : 12 + Math.random() * 13}px;transition:transform ${dur}ms cubic-bezier(.2,.6,.4,1),opacity ${dur}ms;will-change:transform`;
+      wrap.appendChild(p);
+      requestAnimationFrame(() => {
+        p.style.transform = `translateY(${105 + Math.random() * 15}vh) rotate(${(Math.random() - 0.5) * 540}deg)`;
+        p.style.opacity = "0.05";
+      });
+    }
+    document.body.appendChild(wrap);
+    setTimeout(() => wrap.remove(), big ? 3200 : 2200);
+  } catch (e) {}
+}
+// Fires once per stage per day (localStorage-guarded) — safe to mount on several screens at once
+function MissionCelebrator({ done, goal, won }) {
+  useEffect(() => {
+    if (!(goal > 0)) return;
+    try {
+      const key = "bnchr_mission_stage_" + new Date().toISOString().slice(0, 10);
+      const prev = Number(localStorage.getItem(key) || 0);
+      const pct = done / goal * 100;
+      const stage = won ? 5 : Math.min(4, Math.floor(pct / 20)); // 1–4 = 20/40/60/80% · 5 = target reached
+      if (stage > prev && stage >= 1) {
+        localStorage.setItem(key, String(stage));
+        const big = stage === 5;
+        celebBurst(big); celebChime(big);
+      }
+    } catch (e) {}
+  }, [done, goal, won]);
+  return null;
+}
+
 // ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
 function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid", variant = "bar", forceMode = null, agentName = null }) {
   // one bar, one scheme: the ACTIVE one (💎 orders wins if both are live; owner previews orders when none)
@@ -5366,6 +5433,7 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
       const wp2 = targetPalette(paletteKey, "strip", "win");
       return (
         <div style={{ background: wp2.bg, color: wp2.text, borderRadius: 12, padding: "9px 14px", margin: "0 0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 12.5, fontWeight: 800, boxShadow: wp2.shadow }}>
+          <MissionCelebrator done={done} goal={goal} won={true} />
           <span>🎉 Day won{extra > 0.5 ? ` — EXTRA +KWD ${extra.toFixed(0)} 🔥` : ""}</span>
           <span style={{ fontSize: 11.5 }}>every extra dinar shrinks tomorrow's goal{pending > 0.5 ? ` · +KWD ${pending.toFixed(0)}⏳ still completing` : ""}</span>
         </div>
@@ -5420,6 +5488,7 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
         <span>{label}</span>
         <span style={{ color: pal.sub, fontSize: 11.5 }}>{hint || doneLabel}</span>
       </div>
+      {mode === "mission" && <MissionCelebrator done={done} goal={goal} won={false} />}
       <div style={{ display: "flex", height: 11, background: pal.track, borderRadius: 6, overflow: "hidden" }}>
         <div style={{ width: solidPct + "%", background: pal.fill, transition: "width .5s" }} />
         <div style={{ width: fadePct + "%", background: pal.fill, opacity: 0.4, transition: "width .5s" }} />
@@ -6504,10 +6573,10 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-num">
-            <span style={{ color: "var(--success)" }}>{done}</span>
-            <span style={{ color: "var(--muted)", fontSize: "0.6em", fontWeight: 700 }}> / {base.filter(j => j.status !== "cancelled").length}</span>
+            <span style={{ color: "var(--accent)" }}>{base.filter(j => j.status !== "cancelled").length}</span>
+            <span style={{ color: "var(--success)", fontSize: "0.6em", fontWeight: 700 }}> / {done}</span>
           </div>
-          <div className="stat-lbl">Completed / Jobs today</div>
+          <div className="stat-lbl">Jobs today / Completed</div>
         </div>
         <div className="stat-card">
           <div className="stat-num" style={{ color: "var(--accent)" }}>KWD {salesKD.toFixed(3)}</div>
