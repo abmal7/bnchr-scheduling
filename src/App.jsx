@@ -4427,7 +4427,7 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
   const ref = new Date();
   ref.setMonth(ref.getMonth() + mo);
   const range = mode === "range" && rFrom && rTo && rFrom <= rTo ? { from: rFrom, to: rTo } : null;
-  const { target, rows: allRows, trucksActive, monthNet, profitGate, fixedApplied, loanApplied, trueNet } = computeIncentives(jobs, ref, fixedExpenses, range, loan);
+  const { target, rows: allRows, trucksActive, monthNet, profitGate, fixedApplied, loanApplied, trueNet, monthGross, feeTabby, feeTaly, feeLink, feeCard, gwApplied } = computeIncentives(jobs, ref, fixedExpenses, range, loan);
   const rows = truckFilter === "all" ? allRows : allRows.filter(r => r.truck === truckFilter);
   const periodLabel = range ? `${range.from} → ${range.to}` : ref.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(3)}`;
@@ -4540,6 +4540,47 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
               {cell("Gross profit", totRev - totCost, "#1D4ED8")}
               {cell("Fixed applied", -fixedApplied, "var(--muted)")}
               {cell("Net profit", monthNet, monthNet >= 0 ? "var(--success)" : "var(--danger)")}
+            </div>
+          );
+        })()}
+        {/* 📈 Owner projection — master eyes only: where the month is heading */}
+        {!range && (() => {
+          const revMTD = allRows.reduce((s2, r) => s2 + (r.revenue || 0), 0);
+          const ordersMTD = allRows.reduce((s2, r) => s2 + (r.orders || 0), 0);
+          if (!revMTD || !ordersMTD) return null;
+          const now = new Date();
+          const dom = now.getDate(), dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+          const daysLeft = Math.max(0, dim - dom);
+          const avgTicket = revMTD / ordersMTD;
+          const estRev = revMTD / dom * dim;
+          const estOrders = Math.round(ordersMTD / dom * dim);
+          const totalFees = (feeTabby || 0) + (feeTaly || 0) + (feeLink || 0) + (feeCard || 0) + (gwApplied || 0);
+          const cmRatio = (monthGross - totalFees) / revMTD; // contribution margin after item costs + payment fees
+          const required = fixedApplied + loanApplied + (Number(profitTarget) || 0);
+          const revNeeded = cmRatio > 0.01 ? required / cmRatio : null;
+          const gapRev = revNeeded != null ? revNeeded - estRev : null;
+          const short = gapRev != null && gapRev > 0;
+          const gapOrders = short ? Math.ceil(gapRev / avgTicket) : 0;
+          const perDayExtra = short && daysLeft > 0 ? Math.ceil(gapOrders / daysLeft) : 0;
+          const kd0 = (n) => `KWD ${Math.round(n).toLocaleString()}`;
+          return (
+            <div className="card" style={{ marginBottom: 12, border: "1.5px solid #C7D2FE" }}>
+              <div className="card-body" style={{ padding: "11px 15px" }}>
+                <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 5 }}>📈 Owner projection <span style={{ color: "var(--muted)", fontWeight: 600 }}>— master only · straight-line from {dom} days of {ref.toLocaleDateString("en-GB", { month: "long" })}</span></div>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12.5, fontWeight: 700 }}>
+                  <span>Month-end estimate: <strong>{kd0(estRev)}</strong> revenue · ≈ {estOrders} orders <span style={{ color: "var(--muted)", fontWeight: 600 }}>(avg ticket {kd0(avgTicket)})</span></span>
+                  {revNeeded != null && (
+                    <span>Mission needs: <strong>{kd0(revNeeded)}</strong> revenue <span style={{ color: "var(--muted)", fontWeight: 600 }}>(fixed + loan + target ÷ {Math.round(cmRatio * 100)}% margin)</span></span>
+                  )}
+                </div>
+                {revNeeded != null && (
+                  <div style={{ marginTop: 6, fontSize: 12.5, fontWeight: 800, color: short ? "#B45309" : "var(--success)" }}>
+                    {short
+                      ? `⚠ Trajectory short by ${kd0(gapRev)} ≈ ${gapOrders} orders — needs +${perDayExtra}/day above current pace (${daysLeft} days left)`
+                      : `🔥 Trajectory beats the mission by ${kd0(-gapRev)} — current pace lands the profitable month`}
+                  </div>
+                )}
+              </div>
             </div>
           );
         })()}
