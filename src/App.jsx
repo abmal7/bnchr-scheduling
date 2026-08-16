@@ -4765,7 +4765,7 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget, loan =
   });
   const smartBlended = rows.reduce((x, g) => x + g.smartShare * g.avg, 0) || 1;
 
-  const required = (Number(fixedMonthly) || 0) + (Number(loan) || 0) + (Number(profitTarget) || 0);
+  const required = (Number(fixedMonthly) || 0) + (Number(loan) || 0) + (Number(FEE_RATES.gateway_monthly) || 0) + (Number(profitTarget) || 0);
   const mtdContribution = mtd.reduce((x, j) => x + stContribution(j), 0);
   const remaining = Math.max(0, required - mtdContribution);
   const ordersCurrent = Math.ceil(required / blendedAvg);
