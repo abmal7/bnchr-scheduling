@@ -5328,7 +5328,7 @@ function targetPalette(key, surface, state) {
 }
 
 // ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
-function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid" }) {
+function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid", variant = "bar" }) {
   // one bar, one scheme: the ACTIVE one (💎 orders wins if both are live; owner previews orders when none)
   const mode = salesOn ? "orders" : targetsOn ? "mission" : null; // strictly the ACTIVE scheme — no preview when everything is off
   if (!mode) return null;
@@ -5378,6 +5378,27 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
   const solidPct = Math.min(100, done / goal * 100);
   const fadePct = Math.max(0, Math.min(100, (done + pending) / goal * 100) - solidPct);
   const won = done >= goal;
+  if (variant === "card") {
+    const cp = targetPalette(paletteKey, "strip", won ? "win" : (done + pending) / goal * 100 >= 75 ? "push" : "chase");
+    const bigNum = mode === "orders"
+      ? (won ? "🎉" : `${Math.max(0, goal - done - pending)}`)
+      : (won ? "🎉" : `KWD ${Math.max(0, goal - done - pending).toFixed(0)}`);
+    return (
+      <div className="stat-card" style={{ background: cp.bg, color: cp.text, boxShadow: cp.shadow, border: "none" }}>
+        <div className="stat-num" style={{ color: cp.text }}>{bigNum}</div>
+        <div className="stat-lbl" style={{ color: cp.sub, fontWeight: 800 }}>
+          {won ? (mode === "orders" ? "DAY TARGET WON" : "DAY MISSION WON") : mode === "orders" ? `orders to book · goal ${goal}` : "profit to book today"}
+        </div>
+        <div style={{ display: "flex", height: 7, background: cp.track, borderRadius: 4, overflow: "hidden", marginTop: 6 }}>
+          <div style={{ width: solidPct + "%", background: cp.fill, transition: "width .5s" }} />
+          <div style={{ width: fadePct + "%", background: cp.fill, opacity: 0.4, transition: "width .5s" }} />
+        </div>
+        <div style={{ fontSize: 9.5, fontWeight: 700, color: cp.sub, marginTop: 3 }}>
+          {mode === "orders" ? `${done}✓${pending ? ` +${pending}⏳` : ""}` : `✓ ${done.toFixed(0)}${pending > 0.5 ? ` +${pending.toFixed(0)}⏳` : ""}`}
+        </div>
+      </div>
+    );
+  }
   const reachPct = (done + pending) / goal * 100;
   const pal = targetPalette(paletteKey, "strip", won ? "win" : reachPct >= 75 ? "push" : "chase");
   return (
@@ -6383,7 +6404,7 @@ function OrderActions({ job, onAction, compact }) {
 
 // Filters survive opening an order and coming back (the list unmounts, its memory shouldn't)
 let SCHED_FILTER_MEMORY = null;
-function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
+function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role, dayTargetCard = null }) {
   const fm = SCHED_FILTER_MEMORY || {};
   const [filterTruck, setFilterTruck] = useState(fm.filterTruck ?? "all");
   const [stageF, setStageF] = useState(fm.stageF ?? "active");   // active | successful | all — default: the working queue
@@ -6440,6 +6461,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
   return (
     <>
       <div className="stats-grid">
+        {dayTargetCard}
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{base.filter(j => j.status !== "cancelled").length}</div><div className="stat-lbl">Jobs today</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{done}</div><div className="stat-lbl">Completed</div></div>
         <div className="stat-card">
@@ -10275,14 +10297,15 @@ export default function App() {
             />
           )}
 
-          {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && role === "sales" && (
-            <DayTargetStrip jobs={jobs} targetOrders={orderTargetKD}
-              fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
-              profitTarget={Number(appSettings.service_profit_target) || 3000}
-              salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner} paletteKey={targetPaletteKey} />
-          )}
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
-            <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role} onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
+            <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role}
+              dayTargetCard={role === "sales" ? (
+                <DayTargetStrip variant="card" jobs={jobs} targetOrders={orderTargetKD}
+                  fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
+                  profitTarget={Number(appSettings.service_profit_target) || 3000}
+                  salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner} paletteKey={targetPaletteKey} />
+              ) : null}
+              onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
             <QuotesView quotes={quotes} jobs={jobs} customers={customers} onBook={handleBookQuote} onSelectJob={setSelectedJob} onQuoteUpdate={handleQuoteUpdate} />
