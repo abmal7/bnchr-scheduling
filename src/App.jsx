@@ -8888,6 +8888,39 @@ function CostsView({ jobs, onUpdate }) {
               {histShown.length} change{histShown.length === 1 ? "" : "s"} · {[...new Set(histShown.map(h => h.job_id))].length} order{[...new Set(histShown.map(h => h.job_id))].length === 1 ? "" : "s"}
             </span>
           </div>
+          {(() => {
+            // 📊 totals for exactly what's filtered below — unique items, live values
+            const seen2 = new Set();
+            let nIt = 0, rev = 0, cost = 0;
+            histShown.forEach(h => {
+              const k2 = `${h.job_id}:${h.item_id || h.item_name}`;
+              if (seen2.has(k2)) return; seen2.add(k2);
+              const job = jobs.find(j => j.id === h.job_id);
+              let it = job && h.item_id ? (job.items || []).find(x => x.id === h.item_id) : null;
+              if (!it && job) {
+                const nameOf = (x) => x.kind === "tire" ? `${x.brand} ${x.pattern || ""}`.trim() + (x.size ? ` · ${x.size}` : "") : (x.name || x.service_type || "item");
+                const ms = (job.items || []).filter(x => nameOf(x) === h.item_name);
+                if (ms.length === 1) it = ms[0];
+              }
+              if (!it) { nIt += 1; cost += Number(h.new_cost) || 0; return; }
+              const q2 = Number(it.qty) || 1;
+              nIt += q2;
+              rev += (Number(it.price ?? it.unit_price) || 0) * q2;
+              cost += (Number(it.cost) || 0) * q2;
+            });
+            const prof = rev - cost;
+            if (!nIt) return null;
+            return (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                {[["🧾 Items (filtered)", nIt, null], ["Revenue", `KWD ${rev.toFixed(3)}`, null], ["Item costs", `KWD ${cost.toFixed(3)}`, null], ["Profit", `${prof >= 0 ? "+" : "−"}KWD ${Math.abs(prof).toFixed(3)}${rev > 0 ? ` · ${Math.round(prof / rev * 100)}%` : ""}`, prof >= 0 ? "var(--success)" : "var(--danger)"]].map(([lb, v, c2]) => (
+                  <div key={lb} style={{ flex: "1 1 130px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px" }}>
+                    <div style={{ fontSize: 9.5, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>{lb}</div>
+                    <div style={{ fontSize: 14.5, fontWeight: 800, color: c2 || "var(--text)" }}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
           {hErr && <div style={{ fontSize: 12, fontWeight: 800, color: "#B91C1C", background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: 10, padding: "8px 12px", marginBottom: 8 }}>{hErr}</div>}
           <div className="card">
             <div className="card-body" style={{ padding: "6px 10px", overflowX: "auto" }}>
@@ -8967,6 +9000,29 @@ function CostsView({ jobs, onUpdate }) {
       )}
 
       {view === "fill" && (<>
+      {(() => {
+        // 📊 today's items report: count · revenue · cost · profit
+        const todayStr2 = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+        const tj = jobs.filter(j => j.status !== "cancelled" && String(j.scheduled_at || "").slice(0, 10) === todayStr2);
+        let nIt = 0, rev = 0, cost = 0;
+        tj.forEach(j => (j.items || []).forEach(it => {
+          const q2 = Number(it.qty) || 1;
+          nIt += q2;
+          rev += (Number(it.price ?? it.unit_price) || 0) * q2;
+          cost += (Number(it.cost) || 0) * q2;
+        }));
+        const prof = rev - cost;
+        return (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            {[["🧾 Today's items", nIt, null], ["Revenue", `KWD ${rev.toFixed(3)}`, null], ["Item costs", `KWD ${cost.toFixed(3)}`, null], ["Profit", `${prof >= 0 ? "+" : "−"}KWD ${Math.abs(prof).toFixed(3)}${rev > 0 ? ` · ${Math.round(prof / rev * 100)}%` : ""}`, prof >= 0 ? "var(--success)" : "var(--danger)"]].map(([lb, v, c2]) => (
+              <div key={lb} style={{ flex: "1 1 130px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "7px 12px" }}>
+                <div style={{ fontSize: 9.5, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>{lb}</div>
+                <div style={{ fontSize: 15, fontWeight: 800, color: c2 || "var(--text)" }}>{v}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
       {(() => {
         const todayStr = new Date().toISOString().split("T")[0];
         const todays = jobs.filter(j => j.status !== "cancelled" && String(j.scheduled_at || "").split("T")[0] === todayStr);
