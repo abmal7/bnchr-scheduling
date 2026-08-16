@@ -887,15 +887,17 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null, l
   });
   const monthGross = rows.reduce((sm, r) => sm + r.profit, 0);
   // Payment fees are real variable costs (Xero Jul: 2,163) — netted so gate & tiers see truth
-  let feeTabby = 0, feeTaly = 0, feeLink = 0, feeKnet = 0;
+  let feeTabby = 0, feeTaly = 0, feeLink = 0, feeCard = 0, nLink = 0;
   done.forEach(j => {
     const pt = String(j.payment_through || ""); const f = payFeeOf(pt, j.total);
     if (pt === "Tabby") feeTabby += f; else if (pt === "Taly") feeTaly += f;
-    else if (pt === "Link") feeLink += f; else if (pt === "KNET") feeKnet += f;
+    else if (pt === "Link") { feeLink += f; nLink++; }
+    else if (pt === "KNET" || pt === "Visa/Master Card") feeCard += f;
   });
   feeTabby = Math.round(feeTabby * 100) / 100; feeTaly = Math.round(feeTaly * 100) / 100;
-  feeLink = Math.round(feeLink * 100) / 100; feeKnet = Math.round(feeKnet * 100) / 100;
-  const monthNet = Math.round((monthGross - feeTabby - feeTaly - feeLink - feeKnet - fixedApplied) * 100) / 100;
+  feeLink = Math.round(feeLink * 100) / 100; feeCard = Math.round(feeCard * 100) / 100;
+  const gwApplied = range && range.from ? Math.round((FEE_RATES.gateway_monthly * Math.max(1, Math.round((new Date(range.to) - new Date(range.from)) / 86400000) + 1) / 30.44) * 100) / 100 : FEE_RATES.gateway_monthly;
+  const monthNet = Math.round((monthGross - feeTabby - feeTaly - feeLink - feeCard - gwApplied - fixedApplied) * 100) / 100;
   const loanApplied = range && range.from ? Math.round(((Number(loan) || 0) * Math.max(1, Math.round((new Date(range.to) - new Date(range.from)) / 86400000) + 1) / 30.44) * 100) / 100 : (Number(loan) || 0);
   const trueNet = Math.round((monthNet - loanApplied) * 100) / 100;
   const profitGate = trueNet >= INCENT.profitGateKD; // gate tests TRUE cash profit — after the bank loan (July lesson)
@@ -915,7 +917,7 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null, l
     rows.forEach(r => { r.bonusTotal = Math.round(Object.values(r.bonusShare).reduce((a2, b2) => a2 + b2, 0) * 1000) / 1000; });
   }
   rows.forEach(r => { r.payout = Math.round(((r.baseUnlocked ? r.basePot : 0) + r.upsellPay + r.bonusTotal) * 1000) / 1000; });
-  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied, loanApplied, trueNet, feeTabby, feeTaly, feeLink, feeKnet };
+  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied, loanApplied, trueNet, feeTabby, feeTaly, feeLink, feeCard, nLink, gwApplied };
 }
 async function fetchTruckConfig() {
   try {
@@ -3648,7 +3650,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
             {/* 4 — Admin */}
             <div className="form-section-title">4 · Admin</div>
             <div className="form-field"><label>Lead From</label><select value={f.lead_from} onChange={set("lead_from")}>{LEAD_SOURCES.map(s => <option key={s}>{s}</option>)}</select></div>
-            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Taly","Sparts","Warranty","Cash","KNET"].map(s => <option key={s} value={s}>{s === "Tabby" ? "Tabby (7% fee)" : s === "Taly" ? "Taly (6% + 100 fils)" : s}</option>)}</select></div>
+            <div className="form-field"><label>Payment Through</label><select value={f.payment_through} onChange={set("payment_through")}>{["Link","Tabby","Taly","Sparts","Warranty","Cash","Visa/Master Card"].concat(f.payment_through === "KNET" ? ["KNET"] : []).map(s => <option key={s} value={s}>{s === "Tabby" ? `Tabby (${FEE_RATES.tabby_pct}% fee)` : s === "Taly" ? `Taly (${FEE_RATES.taly_pct}% + ${Math.round(FEE_RATES.taly_flat * 1000)} fils)` : s === "Link" ? `Link (${Math.round(FEE_RATES.link_flat * 1000)} fils/link)` : s === "Visa/Master Card" ? `Visa/Master Card (${FEE_RATES.card_pct}%)` : s}</option>)}</select></div>
             <div className="form-field"><label>Sales Agent</label>
               <select value={f.sales_agent} onChange={set("sales_agent")}>
                 <option value="">Select agent…</option>
@@ -4500,8 +4502,9 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
                 ["Order target / truck", orderPerTruck, (n) => onSaveOrderPerTruck && onSaveOrderPerTruck(n), `× ${trucksActive} trucks = ${Math.round(orderPerTruck * trucksActive)} team target`],
                 ["Tabby fee %", FEE_RATES.tabby_pct, (n) => onSaveFee && onSaveFee("fee_tabby_pct", n), "of order total"],
                 ["Taly fee %", FEE_RATES.taly_pct, (n) => onSaveFee && onSaveFee("fee_taly_pct", n), `+ ${FEE_RATES.taly_flat.toFixed(3)} flat per order`],
-                ["Link gateway fee %", FEE_RATES.link_pct, (n) => onSaveFee && onSaveFee("fee_link_pct", n), "MyFatoorah/KNET link — Xero says this isn't 0!"],
-                ["KNET/POS fee %", FEE_RATES.knet_pct, (n) => onSaveFee && onSaveFee("fee_knet_pct", n), "card machine acquiring rate"],
+                ["Link fee (KD per link)", FEE_RATES.link_flat, (n) => onSaveFee && onSaveFee("fee_link_flat", n), "flat charge per payment link"],
+                ["Visa/Master Card fee %", FEE_RATES.card_pct, (n) => onSaveFee && onSaveFee("fee_card_pct", n), "card acquiring rate"],
+                ["Gateway subscription / month", FEE_RATES.gateway_monthly, (n) => onSaveFee && onSaveFee("fee_gateway_monthly", n), "fixed monthly gateway charge"],
               ].map(([lb, val, save, note]) => (
                 <label key={lb} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                   <span style={{ fontSize: 10, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>{lb}</span>
@@ -4647,14 +4650,14 @@ const stPrimary = (svc) => {
 // ── Payment-method fees: EVERY method configurable (⚙ Variables). Xero's "Bank
 // Charges" (Jul: 2,163 = 4.8% of revenue) proved Link/KNET gateway fees dwarf BNPL —
 // modeling only Tabby/Taly understated costs everywhere.
-let FEE_RATES = { tabby_pct: 7, taly_pct: 6, taly_flat: 0.100, link_pct: 0, knet_pct: 0 };
+let FEE_RATES = { tabby_pct: 7, taly_pct: 6, taly_flat: 0.100, link_flat: 0.250, card_pct: 3, gateway_monthly: 10 };
 const payFeeOf = (method, total) => {
   const t = Number(total) || 0, R = FEE_RATES;
   switch (String(method || "")) {
     case "Tabby": return t * R.tabby_pct / 100;
     case "Taly":  return t * R.taly_pct / 100 + R.taly_flat;
-    case "Link":  return t * R.link_pct / 100;
-    case "KNET":  return t * R.knet_pct / 100;
+    case "Link":  return R.link_flat;                      // flat KD per payment link
+    case "KNET": case "Visa/Master Card": return t * R.card_pct / 100; // card acquiring
     default: return 0; // Cash / Sparts / Warranty
   }
 };
@@ -5402,7 +5405,7 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
 
 // Transparency waterfall — the whole truth on every incentive page (July lesson)
 function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
-  const { monthNet, monthGross, fixedApplied, feeTabby, feeTaly, feeLink, feeKnet } = computeIncentives(jobs, refDate, fixedExpenses);
+  const { monthNet, monthGross, fixedApplied, feeTabby, feeTaly, feeLink, feeCard, nLink, gwApplied } = computeIncentives(jobs, refDate, fixedExpenses);
   const y = refDate.getFullYear(), m = refDate.getMonth();
   const rev = jobs.filter(j => jobSuccessful(j) && (d => d.getFullYear() === y && d.getMonth() === m)(new Date(j.completed_at || j.scheduled_at || j.created_at)))
     .reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
@@ -5421,8 +5424,9 @@ function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
       {row("Gross profit", monthGross, { bold: true, line: true })}
       {feeTabby > 0 && row(`Tabby fees (${FEE_RATES.tabby_pct}%)`, -feeTabby)}
       {feeTaly > 0 && row(`Taly fees (${FEE_RATES.taly_pct}% + ${FEE_RATES.taly_flat.toFixed(3)})`, -feeTaly)}
-      {feeLink > 0 && row(`Link gateway fees (${FEE_RATES.link_pct}%)`, -feeLink)}
-      {feeKnet > 0 && row(`KNET/POS fees (${FEE_RATES.knet_pct}%)`, -feeKnet)}
+      {feeLink > 0 && row(`Link fees (${nLink} links × ${FEE_RATES.link_flat.toFixed(3)})`, -feeLink)}
+      {feeCard > 0 && row(`Visa/Master Card fees (${FEE_RATES.card_pct}%)`, -feeCard)}
+      {gwApplied > 0 && row("Payment gateway subscription", -gwApplied)}
       {row("Fixed expenses", -fixedApplied)}
       {row("Net (P&L)", monthNet, { bold: true, line: true })}
       {row("Bank loan payment", -(Number(loan) || 0))}
@@ -10038,8 +10042,9 @@ export default function App() {
     tabby_pct: Number(appSettings.fee_tabby_pct) || 7,
     taly_pct: Number(appSettings.fee_taly_pct) || 6,
     taly_flat: appSettings.fee_taly_flat != null && appSettings.fee_taly_flat !== "" ? Number(appSettings.fee_taly_flat) : 0.100,
-    link_pct: Number(appSettings.fee_link_pct) || 0,
-    knet_pct: Number(appSettings.fee_knet_pct) || 0,
+    link_flat: appSettings.fee_link_flat != null && appSettings.fee_link_flat !== "" ? Number(appSettings.fee_link_flat) : 0.250,
+    card_pct: appSettings.fee_card_pct != null && appSettings.fee_card_pct !== "" ? Number(appSettings.fee_card_pct) : 3,
+    gateway_monthly: appSettings.fee_gateway_monthly != null && appSettings.fee_gateway_monthly !== "" ? Number(appSettings.fee_gateway_monthly) : 10,
   };
   const setServiceTargetsEnabled = async (on) => {
     setAppSettings(p => ({ ...p, service_targets_enabled: on }));
