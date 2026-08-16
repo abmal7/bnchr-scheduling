@@ -5328,9 +5328,9 @@ function targetPalette(key, surface, state) {
 }
 
 // ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
-function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid", variant = "bar" }) {
+function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid", variant = "bar", forceMode = null, agentName = null }) {
   // one bar, one scheme: the ACTIVE one (💎 orders wins if both are live; owner previews orders when none)
-  const mode = salesOn ? "orders" : targetsOn ? "mission" : null; // strictly the ACTIVE scheme — no preview when everything is off
+  const mode = forceMode || (salesOn ? "orders" : targetsOn ? "mission" : null); // strictly the ACTIVE scheme
   if (!mode) return null;
   let oi = null, st = null;
   try { if (mode === "orders") oi = computeOrderIncent(jobs, new Date(), targetOrders); } catch (e) { return null; }
@@ -5416,6 +5416,20 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
           faded = booked, waiting to be completed — it turns solid the moment the job succeeds
         </div>
       )}
+      {mode === "orders" && agentName && oi && (() => {
+        const me = oi.agents.find(a2 => a2.name === agentName);
+        if (!me) return null;
+        return (
+          <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, fontSize: 11, fontWeight: 800, color: pal.text, background: pal.track, borderRadius: 8, padding: "5px 10px", marginTop: 6 }}>
+            <span>💰 You ({agentName}): {me.n} orders{me.ups > 0 ? ` · ${me.ups} upsell×4 → ${me.units} units` : ""}</span>
+            <span>
+              {oi.rate > 0
+                ? <>earning {`KWD ${me.pay.toFixed(3)}`} now{oi.rate < ORDER_INCENT.full ? ` → KWD ${me.at100.toFixed(3)} if team hits ${oi.target}` : " (full rate 🏆)"}</>
+                : <>KWD {me.at90.toFixed(3)} the moment the team crosses {Math.ceil(oi.target * ORDER_INCENT.band)} · KWD {me.at100.toFixed(3)} at {oi.target}</>}
+            </span>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -5458,9 +5472,19 @@ const orderCountsForIncent = (j) => jobSuccessful(j) && !ORDER_INCENT_EXCLUDED.s
 function computeOrderIncent(jobs, refDate, targetOrders) {
   const y = refDate.getFullYear(), m = refDate.getMonth();
   const inMonth = (iso) => { if (!iso) return false; const d = new Date(iso); return d.getFullYear() === y && d.getMonth() === m; };
-  const counted = jobs.filter(j => orderCountsForIncent(j) && inMonth(j.completed_at || j.scheduled_at || j.created_at));
+  const revisitedParents = new Set(jobs.filter(j => j.link_type === "revisit" && j.parent_job_id).map(j => j.parent_job_id));
+  const raw = jobs.filter(j => orderCountsForIncent(j) && inMonth(j.completed_at || j.scheduled_at || j.created_at));
+  // revisits void the order AND its parent — identical to the technicians' rule
+  const counted = raw.filter(j => !(j.link_type === "revisit" || revisitedParents.has(j.id)));
+  const voided = raw.length - counted.length;
   const byAgent = {};
-  counted.forEach(j => { const ag = (j.sales_agent || "—").trim() || "—"; byAgent[ag] = (byAgent[ag] || 0) + 1; });
+  counted.forEach(j => {
+    const ag = (j.sales_agent || "—").trim() || "—";
+    const g = byAgent[ag] || (byAgent[ag] = { n: 0, ups: 0, units: 0 });
+    const isUp = j.link_type === "upsell";
+    g.n++; if (isUp) g.ups++;
+    g.units += isUp ? 4 : 1; // converted upsell pays 4× the per-order rate
+  });
   const total = counted.length;
   const target = Math.max(1, Math.round(targetOrders));
   const pct = total / target;
@@ -5468,9 +5492,13 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
   const nextBand = pct >= 1 ? null : pct >= ORDER_INCENT.band
     ? { at: target, label: "full 0.250/order" }
     : { at: Math.ceil(target * ORDER_INCENT.band), label: "0.150/order unlocks" };
-  const agents = Object.entries(byAgent).sort((x, z) => z[1] - x[1])
-    .map(([name, n]) => ({ name, n, pay: Math.round(n * rate * 1000) / 1000 }));
-  const poolPay = Math.round(total * rate * 1000) / 1000;
+  const agents = Object.entries(byAgent).sort((x, z) => z[1].units - x[1].units)
+    .map(([name, g]) => ({ name, n: g.n, ups: g.ups, units: g.units,
+      pay: Math.round(g.units * rate * 1000) / 1000,
+      at90: Math.round(g.units * ORDER_INCENT.reduced * 1000) / 1000,
+      at100: Math.round(g.units * ORDER_INCENT.full * 1000) / 1000 }));
+  const teamUnits = agents.reduce((s2, a2) => s2 + a2.units, 0);
+  const poolPay = Math.round(teamUnits * rate * 1000) / 1000; // P&A pool: same weights, same voids
   // daily plan: remaining ÷ remaining days — falling behind raises the bar, never hides it
   const daysInMonth = new Date(y, m + 1, 0).getDate();
   const dayOfMonth = refDate.getDate();
@@ -5486,7 +5514,7 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
   const need100 = Math.max(0, target - total);
   const perDay90 = Math.ceil(need90 / remainingDays);
   const perDay100 = Math.ceil(need100 / remainingDays);
-  return { total, target, pct, rate, nextBand, agents, poolPay,
+  return { total, target, pct, rate, nextBand, agents, poolPay, teamUnits, voided,
     todayCount, todayBooked, remainingDays, perDay90, perDay100, nAgents: Math.max(1, agents.length) };
 }
 
@@ -5565,12 +5593,12 @@ function SalesIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 40
         <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}>Your money — by your own orders:</div>
         {oi.agents.map(a2 => (
           <div key={a2.name} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
-            <span style={{ fontWeight: 700 }}>{a2.name} <span style={{ color: "var(--muted)", fontWeight: 600 }}>· {a2.n} orders</span></span>
-            <span style={{ fontWeight: 800, color: a2.pay > 0 ? "var(--success)" : "var(--muted)" }}>{a2.pay > 0 ? kd(a2.pay) : `${kd(a2.n * ORDER_INCENT.reduced)} at 90%`}</span>
+            <span style={{ fontWeight: 700 }}>{a2.name} <span style={{ color: "var(--muted)", fontWeight: 600 }}>· {a2.n} orders{a2.ups > 0 ? ` (${a2.ups} upsell${a2.ups === 1 ? "" : "s"} ×4 → ${a2.units} units)` : ""}</span></span>
+            <span style={{ fontWeight: 800, color: a2.pay > 0 ? "var(--success)" : "var(--muted)" }}>{a2.pay > 0 ? kd(a2.pay) : `${kd(a2.at90)} at 90% · ${kd(a2.at100)} full`}</span>
           </div>
         ))}
         <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
-          Completed orders only · cancelled & check-only visits don't count · target = ~133/truck × active trucks (reviewed quarterly) · no profit gate — the bands guarantee this pool
+          Completed orders only · checks & cancelled don't count · 💎 converted upsell pays ×4 units · revisit voids the order AND its parent (like technicians) · target = ~133/truck × trucks (reviewed quarterly) · no gate
         </div>
       </div></div>
     </div>
@@ -5623,23 +5651,23 @@ function PAIncentiveView({ jobs, fixedExpenses, loan = 933, targetOrders = 400, 
         </div>
         {oi.rate > 0 ? (<>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderTop: "1px solid var(--border)", fontWeight: 800 }}>
-          <span>Pool ({oi.total} × {oi.rate.toFixed(3)})</span><span>{kd(oi.poolPay)}</span>
+          <span>Pool ({oi.teamUnits} units × {oi.rate.toFixed(3)})</span><span>{kd(oi.poolPay)}</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
           <span>Each ({nSplit === 2 ? "50 / 50" : `split × ${nSplit}`})</span><span style={{ fontWeight: 800, color: "var(--success)" }}>{kd(each)}</span>
         </div>
         </>) : (<>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "8px 0", borderTop: "1px solid var(--border)", fontWeight: 700, color: "var(--muted)" }}>
-          <span>At 90% ({Math.ceil(oi.target * ORDER_INCENT.band)} orders)</span>
-          <span>pool ≈ {kd(Math.ceil(oi.target * ORDER_INCENT.band) * ORDER_INCENT.reduced)} · each {kd(Math.ceil(oi.target * ORDER_INCENT.band) * ORDER_INCENT.reduced / nSplit)}</span>
+          <span>At 90% band — with today's {oi.teamUnits} units</span>
+          <span>pool {kd(oi.teamUnits * ORDER_INCENT.reduced)} · each {kd(oi.teamUnits * ORDER_INCENT.reduced / nSplit)}</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderTop: "1px solid var(--border)", fontWeight: 700, color: "var(--muted)" }}>
-          <span>At 100% ({oi.target} orders)</span>
-          <span>pool {kd(oi.target * ORDER_INCENT.full)} · each <strong style={{ color: "var(--success)" }}>{kd(oi.target * ORDER_INCENT.full / nSplit)}</strong></span>
+          <span>At 100% — with today's units</span>
+          <span>pool {kd(oi.teamUnits * ORDER_INCENT.full)} · each <strong style={{ color: "var(--success)" }}>{kd(oi.teamUnits * ORDER_INCENT.full / nSplit)}</strong></span>
         </div>
         </>)}
         <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8 }}>
-          Same team target and bands as sales · your work makes every order possible · reviewed quarterly · no profit gate
+          Same team target, bands & rules as sales — upsells ×4 units, revisits voided · your work makes every order possible · reviewed quarterly · no gate
         </div>
       </div></div>
     </div>
@@ -10297,10 +10325,17 @@ export default function App() {
             />
           )}
 
+          {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && role === "sales" && (
+            <DayTargetStrip jobs={jobs} targetOrders={orderTargetKD}
+              fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
+              profitTarget={Number(appSettings.service_profit_target) || 3000}
+              salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner}
+              paletteKey={targetPaletteKey} agentName={sessionAgent} />
+          )}
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
             <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role}
-              dayTargetCard={role === "sales" ? (
-                <DayTargetStrip variant="card" jobs={jobs} targetOrders={orderTargetKD}
+              dayTargetCard={role === "sales" && serviceTargetsOn ? (
+                <DayTargetStrip variant="card" forceMode="mission" jobs={jobs} targetOrders={orderTargetKD}
                   fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
                   profitTarget={Number(appSettings.service_profit_target) || 3000}
                   salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner} paletteKey={targetPaletteKey} />
