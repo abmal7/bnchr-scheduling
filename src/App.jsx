@@ -6502,8 +6502,13 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
   return (
     <>
       <div className="stats-grid">
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{base.filter(j => j.status !== "cancelled").length}</div><div className="stat-lbl">Jobs today</div></div>
-        <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{done}</div><div className="stat-lbl">Completed</div></div>
+        <div className="stat-card">
+          <div className="stat-num">
+            <span style={{ color: "var(--success)" }}>{done}</span>
+            <span style={{ color: "var(--muted)", fontSize: "0.6em", fontWeight: 700 }}> / {base.filter(j => j.status !== "cancelled").length}</span>
+          </div>
+          <div className="stat-lbl">Completed / Jobs today</div>
+        </div>
         <div className="stat-card">
           <div className="stat-num" style={{ color: "var(--accent)" }}>KWD {salesKD.toFixed(3)}</div>
           <div className="stat-lbl">{(filterDate || today()) === today() ? "Today's Revenue" : "Revenue (sold this day)"}</div>
