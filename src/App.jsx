@@ -4813,7 +4813,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
   const SHORT = { "Tire Change & Balancing": "Tires", "Battery": "Battery", "Oil & Filter": "Oil", "Tire Patch": "Patch", "Brake Pads": "Brakes", "Major Service": "Major", "Other": "Other" };
   const doneT = st.todayContribDone || 0;          // banked: completed orders only
   const pendT = st.todayContribPending || 0;        // booked, awaiting completion
-  const leftToday = Math.max(0, st.dailyNeed - doneT); // the mission excludes booked — completing banks it
+  const leftToday = Math.max(0, st.dailyNeed - doneT - pendT); // booking shrinks the number; completing turns the bar solid
   const dayPct = st.dailyNeed > 0 ? Math.min(100, Math.round((doneT / st.dailyNeed) * 100)) : 100;
   const reachPct = st.dailyNeed > 0 ? Math.min(100, Math.round(((doneT + pendT) / st.dailyNeed) * 100)) : 100;
   const dayWon = leftToday === 0 && st.remaining > 0;
@@ -4836,9 +4836,9 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
         <div style={{ fontSize: 13, fontWeight: 700, color: hp.sub }}>
           {monthWon ? `The month's ${kd(st.required)} is fully covered — everything now is pure extra.`
             : dayWon ? `Today's ${kd(st.dailyNeed)} is banked from completed orders — anything more shrinks tomorrow's number.`
-            : reachPct >= 100
-              ? `bookings reach the goal — complete them to bank it! ${mood} · ✓ ${kd(doneT)} banked + ${kd(pendT)} ⏳ booked`
-              : `profit still to make ${mood} · ✓ ${kd(doneT)} banked${pendT > 0.5 ? ` + ${kd(pendT)} ⏳ booked (counts when completed)` : ""}`}
+            : leftToday === 0
+              ? `today is fully booked ${mood} — completing the ⏳ jobs turns it solid and WINS the day · ✓ ${kd(doneT)} done + ${kd(pendT)} ⏳ in progress`
+              : `profit still to book ${mood} · ✓ ${kd(doneT)} completed${pendT > 0.5 ? ` + ${kd(pendT)} ⏳ booked` : ""}`}
         </div>
         {!monthWon && (
           <div style={{ margin: "12px auto 0", maxWidth: 460 }}>
@@ -4872,7 +4872,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 12.5, fontWeight: 800 }}>
               <span style={{ color: hp.text }}>✓ {kd(doneT)} banked</span>
               {pendT > 0.5 && <span style={{ color: hp.sub, opacity: .85 }}>⏳ {kd(pendT)} booked — turns solid on completion</span>}
-              <span style={{ color: hp.sub }}>{kd(leftToday)} to make</span>
+              <span style={{ color: hp.sub }}>{kd(leftToday)} to book</span>
             </div>
           </div>
         )}
