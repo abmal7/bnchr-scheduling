@@ -5630,17 +5630,24 @@ function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan, range = null, lab
     const d = new Date(dstr); return d.getFullYear() === y && d.getMonth() === m;
   };
   const rev = jobs.filter(j => jobSuccessful(j) && inScope(j)).reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
+  const bookedPending = jobs.filter(j => j.status !== "cancelled" && j.status !== "draft" && !jobSuccessful(j) && inScope(j))
+    .reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
   const costs = rev - monthGross;
   const trueNet = Math.round((monthNet - loanApplied) * 100) / 100;
   const row = (lb, v, opts = {}) => (
     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", fontWeight: opts.bold ? 800 : 600, color: opts.color || "var(--text)", borderTop: opts.line ? "1.5px solid var(--border)" : "none" }}>
-      <span>{lb}</span><span>{v < 0 ? "−" : ""}KWD {Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+      <span>{lb}</span><span>{v < 0 ? "−" : ""}KWD {Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: Math.abs(v) > 0 && Math.abs(v) < 100 ? 2 : 0 })}</span>
     </div>
   );
   return (
     <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 14px", margin: "10px 0" }}>
       <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 4 }}>🧾 The whole truth — {label || "this month"}</div>
-      {row("Revenue", rev)}
+      {row("Revenue (completed orders)", rev)}
+      {bookedPending > 0.5 && (
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, padding: "1px 0", fontWeight: 600, color: "var(--muted)", fontStyle: "italic" }}>
+          <span>⏳ booked, not yet completed — joins the truth on completion</span><span>+KWD {bookedPending.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+        </div>
+      )}
       {row("Item costs", -costs)}
       {row("Gross profit", monthGross, { bold: true, line: true })}
       {feeTabby > 0 && row(`Tabby fees (${FEE_RATES.tabby_pct}%)`, -feeTabby)}
@@ -7732,7 +7739,22 @@ function TechJobCard({ job, index, onUpdate, onCompletedPrompt }) {
         {/* 6 · total — highlighted like the sales row · 7 · note */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 7 }}>
           <span style={{ fontSize: 12, color: "#B45309", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.notes ? `⚠ ${j.notes}` : ""}</span>
-          <span style={{ fontFamily: "var(--font-head)", fontWeight: 700, color: "var(--accent)", fontSize: 15, whiteSpace: "nowrap" }}>KWD {Number(j.total || 0).toFixed(3)}</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 7, whiteSpace: "nowrap" }}>
+            {(() => {
+              const PM = { Link: ["🔗", "#EFF6FF", "#1D4ED8"], Tabby: ["🅃", "#FDF2F8", "#BE185D"], Taly: ["🅃", "#FEF3C7", "#B45309"], "Visa/Master Card": ["💳", "#F5F3FF", "#6D28D9"], KNET: ["💳", "#F5F3FF", "#6D28D9"], Cash: ["💵", "#ECFDF5", "#047857"], Sparts: ["🤝", "#F1F5F9", "#475569"], Warranty: ["🛡", "#F1F5F9", "#475569"] };
+              const pt = String(j.payment_through || "");
+              const p = PM[pt];
+              if (!p) return null;
+              const fee = payFeeOf(pt, j.total);
+              return (
+                <span title={fee > 0 ? `${pt} — fee KWD ${fee.toFixed(3)}` : pt}
+                  style={{ fontSize: 10, fontWeight: 800, background: p[1], color: p[2], borderRadius: 7, padding: "2px 7px" }}>
+                  {p[0]} {pt === "Visa/Master Card" ? "Visa/MC" : pt}
+                </span>
+              );
+            })()}
+            <span style={{ fontFamily: "var(--font-head)", fontWeight: 700, color: "var(--accent)", fontSize: 15 }}>KWD {Number(j.total || 0).toFixed(3)}</span>
+          </span>
         </div>
       </div>
 
