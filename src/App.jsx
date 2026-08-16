@@ -5389,14 +5389,16 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
         <div className="stat-lbl" style={{ color: cp.sub, fontWeight: 800 }}>
           {won ? (mode === "orders" ? "DAY TARGET WON" : "DAY MISSION WON") : mode === "orders" ? `orders to book · goal ${goal}` : "profit to book today"}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 4, fontSize: 9.5, fontWeight: 800, color: cp.sub, marginTop: 6 }}>
-          <span style={{ color: cp.text }}>✓ {mode === "orders" ? done : done.toFixed(0)}</span>
-          <span style={{ opacity: .8 }}>⏳ {mode === "orders" ? pending : pending.toFixed(0)}</span>
-          <span>🎯 {mode === "orders" ? goal : goal.toFixed(0)}</span>
+        <div style={{ textAlign: "right", fontSize: 9.5, fontWeight: 800, color: cp.sub, marginTop: 6 }}>
+          🎯 {mode === "orders" ? goal : goal.toFixed(0)}
         </div>
         <div style={{ display: "flex", height: 7, background: cp.track, borderRadius: 4, overflow: "hidden", marginTop: 3 }}>
           <div style={{ width: solidPct + "%", background: cp.fill, transition: "width .5s" }} />
           <div style={{ width: fadePct + "%", background: cp.fill, opacity: 0.4, transition: "width .5s" }} />
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 4, fontSize: 9.5, fontWeight: 800, color: cp.sub, marginTop: 3 }}>
+          <span style={{ color: cp.text }}>✓ {mode === "orders" ? done : done.toFixed(0)} completed</span>
+          <span style={{ opacity: .85 }}>⏳ {mode === "orders" ? done + pending : (done + pending).toFixed(0)} booked</span>
         </div>
       </div>
     );
