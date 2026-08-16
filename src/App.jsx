@@ -4554,9 +4554,9 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
           const avgTicket = revMTD / ordersMTD;
           const estRev = revMTD / dom * dim;
           const estOrders = Math.round(ordersMTD / dom * dim);
-          const totalFees = (feeTabby || 0) + (feeTaly || 0) + (feeLink || 0) + (feeCard || 0) + (gwApplied || 0);
-          const cmRatio = (monthGross - totalFees) / revMTD; // contribution margin after item costs + payment fees
-          const required = fixedApplied + loanApplied + (Number(profitTarget) || 0);
+          const propFees = (feeTabby || 0) + (feeTaly || 0) + (feeLink || 0) + (feeCard || 0); // proportional: scale with revenue & payment mix
+          const cmRatio = (monthGross - propFees) / revMTD; // real margin: after item costs + Tabby/Taly/Link/Visa fees
+          const required = fixedApplied + loanApplied + (gwApplied || 0) + (Number(profitTarget) || 0); // gateway subscription is fixed → lives here
           const revNeeded = cmRatio > 0.01 ? required / cmRatio : null;
           const gapRev = revNeeded != null ? revNeeded - estRev : null;
           const short = gapRev != null && gapRev > 0;
@@ -4576,7 +4576,7 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
                       <div style={{ fontSize: 10.5, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>🎯 Revenue needed this month to reach the target</div>
                       <div style={{ fontSize: 28, fontWeight: 800 }}>{kd0(revNeeded)}</div>
                       <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)" }}>
-                        = (fixed {kd0(fixedApplied)} + loan {kd0(loanApplied)} + target {kd0(Number(profitTarget) || 0)}) ÷ {Math.round(cmRatio * 100)}% real margin so far
+                        = (fixed {kd0(fixedApplied)} + loan {kd0(loanApplied)}{gwApplied ? ` + gateway ${kd0(gwApplied)}` : ""} + target {kd0(Number(profitTarget) || 0)}) ÷ {Math.round(cmRatio * 100)}% margin after item costs & ALL payment fees
                       </div>
                       <div style={{ fontSize: 12.5, fontWeight: 800, marginTop: 4 }}>
                         booked {kd0(revMTD)} → <span style={{ color: remRev > 0 ? "#B45309" : "var(--success)" }}>{remRev > 0 ? `${kd0(remRev)} to go` : "covered ✓"}</span>
