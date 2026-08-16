@@ -4811,36 +4811,19 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
   const kd = (n) => `KWD ${(Number(n) || 0).toFixed(0)}`;
   const EMOJI = { "Tire Change & Balancing": "🛞", "Battery": "🔋", "Oil & Filter": "🛢", "Tire Patch": "🩹", "Brake Pads": "🛑", "Major Service": "🔧", "Other": "📦" };
   const SHORT = { "Tire Change & Balancing": "Tires", "Battery": "Battery", "Oil & Filter": "Oil", "Tire Patch": "Patch", "Brake Pads": "Brakes", "Major Service": "Major", "Other": "Other" };
-  const leftToday = Math.max(0, st.dailyNeed - st.todayContribution);
-  const dayPct = st.dailyNeed > 0 ? Math.min(100, Math.round((st.todayContribution / st.dailyNeed) * 100)) : 100;
+  const doneT = st.todayContribDone || 0;          // banked: completed orders only
+  const pendT = st.todayContribPending || 0;        // booked, awaiting completion
+  const leftToday = Math.max(0, st.dailyNeed - doneT); // the mission excludes booked — completing banks it
+  const dayPct = st.dailyNeed > 0 ? Math.min(100, Math.round((doneT / st.dailyNeed) * 100)) : 100;
+  const reachPct = st.dailyNeed > 0 ? Math.min(100, Math.round(((doneT + pendT) / st.dailyNeed) * 100)) : 100;
   const dayWon = leftToday === 0 && st.remaining > 0;
   const monthWon = st.remaining === 0;
   const mood = monthWon ? "🏆" : dayWon ? "🎉" : dayPct >= 75 ? "🔥" : dayPct >= 50 ? "💪" : dayPct >= 25 ? "🙂" : "☕";
   const monthPct = Math.min(100, Math.round((st.mtdContribution / st.required) * 100));
-  const hp = targetPalette(paletteKey, "hero", (monthWon || dayWon) ? "win" : dayPct >= 75 ? "push" : "chase");
+  const hp = targetPalette(paletteKey, "hero", (monthWon || dayWon) ? "win" : reachPct >= 75 ? "push" : "chase");
 
   return (
     <div style={{ maxWidth: 680, margin: "0 auto" }}>
-      {/* ── 📈 Net-% tiers: the pay this mission drives ── */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <div className="card-body" style={{ padding: "12px 16px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)" }}>📈 YOUR SHARE OF TRUE NET (each)</div>
-              <div style={{ fontSize: 30, fontWeight: 800, color: tierPer > 0 ? "var(--success)" : "var(--muted)" }}>{kd(tierPer)}</div>
-            </div>
-            <div style={{ textAlign: "right", fontSize: 12, fontWeight: 700 }}>
-              {inc.profitGate ? `✅ ${tier.pct}% tier · true net ${kd(inc.trueNet)}` : `🔒 gate closed · true net ${kd(inc.trueNet)}`}
-              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", marginTop: 4 }}>
-                {[...SALES_TIERS].reverse().map(([min, pct]) => (
-                  <span key={min} style={{ fontSize: 10, fontWeight: 700, borderRadius: 7, padding: "2px 6px", background: inc.trueNet >= min ? "#E8F4EC" : "var(--bg)", border: `1px solid ${inc.trueNet >= min ? "#BFDFC9" : "var(--border)"}`, color: inc.trueNet >= min ? "#1D7A45" : "var(--muted)" }}>{min}+→{pct}%</span>
-                ))}
-              </div>
-            </div>
-          </div>
-          <ProfitWaterfall jobs={jobs} refDate={new Date()} fixedExpenses={fixedMonthly} loan={loan} />
-        </div>
-      </div>
       {/* ── HERO: today's mission ── */}
       {(() => null)()}
       <div style={{ background: hp.bg, color: hp.text, borderRadius: 18, padding: "18px 16px", textAlign: "center", marginTop: 12, boxShadow: hp.shadow }}>
@@ -4852,8 +4835,10 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
         </div>
         <div style={{ fontSize: 13, fontWeight: 700, color: hp.sub }}>
           {monthWon ? `The month's ${kd(st.required)} is fully covered — everything now is pure extra.`
-            : dayWon ? `Today's ${kd(st.dailyNeed)} is in the bag — anything more shrinks tomorrow's number.`
-            : `profit still needed today ${mood} · ${st.todayOrders} order${st.todayOrders === 1 ? "" : "s"} booked`}
+            : dayWon ? `Today's ${kd(st.dailyNeed)} is banked from completed orders — anything more shrinks tomorrow's number.`
+            : reachPct >= 100
+              ? `bookings reach the goal — complete them to bank it! ${mood} · ✓ ${kd(doneT)} banked + ${kd(pendT)} ⏳ booked`
+              : `profit still to make ${mood} · ✓ ${kd(doneT)} banked${pendT > 0.5 ? ` + ${kd(pendT)} ⏳ booked (counts when completed)` : ""}`}
         </div>
         {!monthWon && (
           <div style={{ margin: "12px auto 0", maxWidth: 460 }}>
@@ -4861,10 +4846,12 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
               <div style={{ flex: 1, display: "flex", gap: 4 }}>
                 {[1, 2, 3, 4, 5].map(i => {
                   const lo = (i - 1) * 20;
-                  const fillPct = Math.max(0, Math.min(100, (dayPct - lo) / 20 * 100));
+                  const sFill = Math.max(0, Math.min(100, (dayPct - lo) / 20 * 100));
+                  const rFill = Math.max(0, Math.min(100, (reachPct - lo) / 20 * 100)) - sFill;
                   return (
-                    <div key={i} style={{ flex: 1, height: 12, background: hp.track, borderRadius: i === 1 ? "6px 3px 3px 6px" : i === 5 ? "3px 6px 6px 3px" : 3, overflow: "hidden" }}>
-                      <div style={{ width: fillPct + "%", height: "100%", background: hp.fill, opacity: fillPct >= 100 ? 1 : 0.9, transition: "width .5s" }} />
+                    <div key={i} style={{ display: "flex", flex: 1, height: 12, background: hp.track, borderRadius: i === 1 ? "6px 3px 3px 6px" : i === 5 ? "3px 6px 6px 3px" : 3, overflow: "hidden" }}>
+                      <div style={{ width: sFill + "%", height: "100%", background: hp.fill, transition: "width .5s" }} />
+                      <div style={{ width: rFill + "%", height: "100%", background: hp.fill, opacity: 0.35, transition: "width .5s" }} />
                     </div>
                   );
                 })}
@@ -4882,9 +4869,10 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
               })}
               <div style={{ flex: 1 }} />
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12.5, fontWeight: 800 }}>
-              <span style={{ color: hp.text }}>✓ {kd(st.todayContribution)} booked</span>
-              <span style={{ color: hp.sub }}>{kd(leftToday)} remaining</span>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginTop: 6, fontSize: 12.5, fontWeight: 800 }}>
+              <span style={{ color: hp.text }}>✓ {kd(doneT)} banked</span>
+              {pendT > 0.5 && <span style={{ color: hp.sub, opacity: .85 }}>⏳ {kd(pendT)} booked — turns solid on completion</span>}
+              <span style={{ color: hp.sub }}>{kd(leftToday)} to make</span>
             </div>
           </div>
         )}
@@ -4946,8 +4934,28 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
 
       {/* ── details for the numbers people ── */}
       <button className="btn btn-ghost btn-sm" style={{ fontSize: 11.5, marginTop: 8 }} onClick={() => setShowDetail(o => !o)}>{showDetail ? "▲ hide the numbers" : "📊 the numbers behind it"}</button>
-      {showDetail && (
-        <div className="card" style={{ marginTop: 6 }}>
+      {showDetail && (<>
+      {/* ── 📈 Net-% tiers: the pay this mission drives ── */}
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="card-body" style={{ padding: "12px 16px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "var(--muted)" }}>📈 YOUR SHARE OF TRUE NET (each)</div>
+              <div style={{ fontSize: 30, fontWeight: 800, color: tierPer > 0 ? "var(--success)" : "var(--muted)" }}>{kd(tierPer)}</div>
+            </div>
+            <div style={{ textAlign: "right", fontSize: 12, fontWeight: 700 }}>
+              {inc.profitGate ? `✅ ${tier.pct}% tier · true net ${kd(inc.trueNet)}` : `🔒 gate closed · true net ${kd(inc.trueNet)}`}
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end", marginTop: 4 }}>
+                {[...SALES_TIERS].reverse().map(([min, pct]) => (
+                  <span key={min} style={{ fontSize: 10, fontWeight: 700, borderRadius: 7, padding: "2px 6px", background: inc.trueNet >= min ? "#E8F4EC" : "var(--bg)", border: `1px solid ${inc.trueNet >= min ? "#BFDFC9" : "var(--border)"}`, color: inc.trueNet >= min ? "#1D7A45" : "var(--muted)" }}>{min}+→{pct}%</span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <ProfitWaterfall jobs={jobs} refDate={new Date()} fixedExpenses={fixedMonthly} loan={loan} />
+        </div>
+      </div>
+      <div className="card" style={{ marginTop: 6 }}>
           <div className="card-body" style={{ padding: "12px 16px" }}>
             <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
               Fixed {kd(fixedMonthly)} + loan {kd(loan)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> · avg ticket {kd(st.avgTicket)} · Tabby/Taly fees deducted per order
@@ -4992,7 +5000,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
             </div>
           </div>
         </div>
-      )}
+      </>)}
     </div>
   );
 }
