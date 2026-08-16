@@ -4803,6 +4803,7 @@ function computeServiceTargets(jobs, refDate, fixedMonthly, profitTarget, loan =
 // ═══ 🎯 Service Targets view — the profitable-month map ═════════════════════
 function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSaveTarget, canEdit, paletteKey = "vivid" }) {
   const [showDetail, setShowDetail] = useState(false);
+  const [selDay, setSelDay] = useState(null); // tap a day dot → the waterfall shows that day
   const [tDraft, setTDraft] = useState(String(profitTarget));
   const st = computeServiceTargets(jobs, new Date(), fixedMonthly, profitTarget, loan);
   const inc = computeIncentives(jobs, new Date(), fixedMonthly, null, loan);
@@ -4921,9 +4922,13 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
           {/* day dots */}
           <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 9 }}>
             {st.dayLog.map(x => (
-              <span key={x.d} title={`day ${x.d}: KWD ${x.c.toFixed(0)}`} style={{ width: 14, height: 14, borderRadius: "50%", fontSize: 8, display: "inline-flex", alignItems: "center", justifyContent: "center",
-                background: x.state === "won" ? "#16A34A" : x.state === "half" ? "#FBBF24" : x.state === "low" ? "#FCA5A5" : "var(--border)",
-                border: x.d === st.dayOfMonth ? "2px solid var(--ink)" : "none" }} />
+              <span key={x.d} title={`day ${x.d}: KWD ${x.c.toFixed(0)} — tap for that day's truth`}
+                onClick={() => setSelDay(p => p === x.d ? null : x.d)}
+                style={{ width: 17, height: 17, borderRadius: "50%", fontSize: 8.5, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+                  color: x.state === "future" ? "var(--muted)" : "#fff",
+                  background: x.state === "won" ? "#16A34A" : x.state === "half" ? "#FBBF24" : x.state === "low" ? "#FCA5A5" : "var(--border)",
+                  border: x.d === st.dayOfMonth ? "2px solid var(--ink)" : "none",
+                  boxShadow: selDay === x.d ? "0 0 0 2.5px #2563EB" : "none" }}>{x.d}</span>
             ))}
           </div>
           <div style={{ fontSize: 11, fontWeight: 800, marginTop: 5 }}>
@@ -4954,7 +4959,21 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
               </div>
             </div>
           </div>
-          <ProfitWaterfall jobs={jobs} refDate={new Date()} fixedExpenses={fixedMonthly} loan={loan} />
+          {(() => {
+            const now = new Date();
+            const iso = selDay ? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(selDay).padStart(2, "0")}` : null;
+            return (<>
+              {selDay && (
+                <div style={{ fontSize: 11, fontWeight: 800, color: "#2563EB", margin: "2px 0 4px" }}>
+                  📅 Showing day {selDay} — fixed & loan shown as one day's share · tap the dot again (or here) to return to the month
+                  <button className="btn btn-ghost btn-sm" style={{ fontSize: 10, padding: "1px 8px", marginLeft: 8 }} onClick={() => setSelDay(null)}>✕ month</button>
+                </div>
+              )}
+              <ProfitWaterfall jobs={jobs} refDate={now} fixedExpenses={fixedMonthly} loan={loan}
+                range={iso ? { from: iso, to: iso } : null}
+                label={iso ? `day ${selDay} (${iso})` : null} />
+            </>);
+          })()}
         </div>
       </div>
       )}
@@ -5448,14 +5467,15 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
   const won = done >= goal;
   if (variant === "card") {
     const cp = targetPalette(paletteKey, "strip", won ? "win" : (done + pending) / goal * 100 >= 75 ? "push" : "chase");
-    const bigNum = mode === "orders"
-      ? (won ? "🎉" : `${Math.max(0, goal - done - pending)}`)
-      : (won ? "🎉" : `KWD ${Math.max(0, goal - done - pending).toFixed(0)}`);
+    const rem = Math.max(0, goal - done - pending);
+    const allBooked = rem === 0 && !won;
+    const bigNum = won ? "🎉" : allBooked ? "⏳" : mode === "orders" ? `${rem}` : `KWD ${rem.toFixed(0)}`;
     return (
       <div className="stat-card" style={{ background: cp.bg, color: cp.text, boxShadow: cp.shadow, border: "none" }}>
+        {mode === "mission" && <MissionCelebrator done={done} goal={goal} won={won} />}
         <div className="stat-num" style={{ color: cp.text }}>{bigNum}</div>
         <div className="stat-lbl" style={{ color: cp.sub, fontWeight: 800 }}>
-          {won ? (mode === "orders" ? "DAY TARGET WON" : "DAY MISSION WON") : mode === "orders" ? `orders to book · goal ${goal}` : "profit to book today"}
+          {won ? (mode === "orders" ? "🏆 DAY TARGET WON" : "🏆 DAY MISSION WON") : allBooked ? "fully booked — completing WINS it" : mode === "orders" ? `orders to book · goal ${goal}` : "profit to book today"}
         </div>
         <div style={{ textAlign: "right", fontSize: 9.5, fontWeight: 800, color: cp.sub, marginTop: 6 }}>
           🎯 {mode === "orders" ? goal : goal.toFixed(0)}
@@ -5601,13 +5621,17 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
 }
 
 // Transparency waterfall — the whole truth on every incentive page (July lesson)
-function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
-  const { monthNet, monthGross, fixedApplied, feeTabby, feeTaly, feeLink, feeCard, nLink, gwApplied } = computeIncentives(jobs, refDate, fixedExpenses);
+function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan, range = null, label = null }) {
+  const { monthNet, monthGross, fixedApplied, loanApplied, feeTabby, feeTaly, feeLink, feeCard, nLink, gwApplied } = computeIncentives(jobs, refDate, fixedExpenses, range, loan);
   const y = refDate.getFullYear(), m = refDate.getMonth();
-  const rev = jobs.filter(j => jobSuccessful(j) && (d => d.getFullYear() === y && d.getMonth() === m)(new Date(j.completed_at || j.scheduled_at || j.created_at)))
-    .reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
+  const inScope = (j) => {
+    const dstr = String(j.completed_at || j.scheduled_at || j.created_at || "").slice(0, 10);
+    if (range && range.from) return dstr >= range.from && dstr <= range.to;
+    const d = new Date(dstr); return d.getFullYear() === y && d.getMonth() === m;
+  };
+  const rev = jobs.filter(j => jobSuccessful(j) && inScope(j)).reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
   const costs = rev - monthGross;
-  const trueNet = Math.round((monthNet - (Number(loan) || 0)) * 100) / 100;
+  const trueNet = Math.round((monthNet - loanApplied) * 100) / 100;
   const row = (lb, v, opts = {}) => (
     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", fontWeight: opts.bold ? 800 : 600, color: opts.color || "var(--text)", borderTop: opts.line ? "1.5px solid var(--border)" : "none" }}>
       <span>{lb}</span><span>{v < 0 ? "−" : ""}KWD {Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
@@ -5615,7 +5639,7 @@ function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
   );
   return (
     <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12, padding: "10px 14px", margin: "10px 0" }}>
-      <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 4 }}>🧾 The whole truth — this month</div>
+      <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 4 }}>🧾 The whole truth — {label || "this month"}</div>
       {row("Revenue", rev)}
       {row("Item costs", -costs)}
       {row("Gross profit", monthGross, { bold: true, line: true })}
@@ -5626,7 +5650,7 @@ function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
       {gwApplied > 0 && row("Payment gateway subscription", -gwApplied)}
       {row("Fixed expenses", -fixedApplied)}
       {row("Net (P&L)", monthNet, { bold: true, line: true })}
-      {row("Bank loan payment", -(Number(loan) || 0))}
+      {row(range ? "Bank loan (day share)" : "Bank loan payment", -loanApplied)}
       {row("TRUE PROFIT", trueNet, { bold: true, line: true, color: trueNet >= 0 ? "var(--success)" : "var(--danger)" })}
       <div style={{ fontSize: 9.5, color: "var(--muted)", marginTop: 3 }}>Same numbers the owner sees — nothing hidden.</div>
     </div>
