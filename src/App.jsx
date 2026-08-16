@@ -6259,13 +6259,19 @@ function OrderActions({ job, onAction, compact }) {
   }
 }
 
+// Filters survive opening an order and coming back (the list unmounts, its memory shouldn't)
+let SCHED_FILTER_MEMORY = null;
 function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role }) {
-  const [filterTruck, setFilterTruck] = useState("all");
-  const [stageF, setStageF] = useState("active");   // active | successful | all — default: the working queue
-  const [payF, setPayF] = useState(null);           // null | paid | unpaid (toggle)
-  const [filterDate, setFilterDate] = useState(today());
-  const [search, setSearch] = useState("");
-  const [boardOpen, setBoardOpen] = useState(true); // Day Board shown by default, collapsible
+  const fm = SCHED_FILTER_MEMORY || {};
+  const [filterTruck, setFilterTruck] = useState(fm.filterTruck ?? "all");
+  const [stageF, setStageF] = useState(fm.stageF ?? "active");   // active | successful | all — default: the working queue
+  const [payF, setPayF] = useState(fm.payF ?? null);             // null | paid | unpaid (toggle)
+  const [filterDate, setFilterDate] = useState(fm.filterDate ?? today());
+  const [search, setSearch] = useState(fm.search ?? "");
+  const [boardOpen, setBoardOpen] = useState(fm.boardOpen ?? true); // Day Board shown by default, collapsible
+  useEffect(() => {
+    SCHED_FILTER_MEMORY = { filterTruck, stageF, payF, filterDate, search, boardOpen };
+  }, [filterTruck, stageF, payF, filterDate, search, boardOpen]);
 
   // base = the day (date/truck/search scope) — the summary reads from THIS, never from the pills
   const base = jobs.filter(j => {
@@ -8198,13 +8204,18 @@ function EditCustomerModal({ customer, onClose, onUpdated }) {
   );
 }
 
+let CUST_FILTER_MEMORY = null; // filters survive opening a customer profile and returning
 function CustomersView({ customers, cars, jobs, onSelectCustomer, onNewCustomer }) {
-  const [search, setSearch] = useState("");   // everything: name, mobile, area, cars, notes
-  const [mobileQ, setMobileQ] = useState(""); // phone only — exact
-  const [areaF, setAreaF] = useState("all");
-  const [govF, setGovF] = useState("all");
-  const [brandF, setBrandF] = useState("all");
-  const [sortBy, setSortBy] = useState("name");
+  const cfm = CUST_FILTER_MEMORY || {};
+  const [search, setSearch] = useState(cfm.search ?? "");   // everything: name, mobile, area, cars, notes
+  const [mobileQ, setMobileQ] = useState(cfm.mobileQ ?? ""); // phone only — exact
+  const [areaF, setAreaF] = useState(cfm.areaF ?? "all");
+  const [govF, setGovF] = useState(cfm.govF ?? "all");
+  const [brandF, setBrandF] = useState(cfm.brandF ?? "all");
+  const [sortBy, setSortBy] = useState(cfm.sortBy ?? "name");
+  useEffect(() => {
+    CUST_FILTER_MEMORY = { search, mobileQ, areaF, govF, brandF, sortBy };
+  }, [search, mobileQ, areaF, govF, brandF, sortBy]);
 
   const digits = (s) => (s || "").replace(/\D/g, "");
   const q = search.trim().toLowerCase();
