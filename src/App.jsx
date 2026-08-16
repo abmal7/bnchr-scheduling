@@ -4935,7 +4935,8 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
       {/* ── details for the numbers people ── */}
       <button className="btn btn-ghost btn-sm" style={{ fontSize: 11.5, marginTop: 8 }} onClick={() => setShowDetail(o => !o)}>{showDetail ? "▲ hide the numbers" : "📊 the numbers behind it"}</button>
       {showDetail && (<>
-      {/* ── 📈 Net-% tiers: the pay this mission drives ── */}
+      {/* ── 📈 Net-% tiers — owner's eyes only: team incentive runs on order count ── */}
+      {canEdit && (
       <div className="card" style={{ marginTop: 12 }}>
         <div className="card-body" style={{ padding: "12px 16px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
@@ -4955,10 +4956,11 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
           <ProfitWaterfall jobs={jobs} refDate={new Date()} fixedExpenses={fixedMonthly} loan={loan} />
         </div>
       </div>
+      )}
       <div className="card" style={{ marginTop: 6 }}>
           <div className="card-body" style={{ padding: "12px 16px" }}>
             <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
-              Fixed {kd(fixedMonthly)} + loan {kd(loan)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> · avg ticket {kd(st.avgTicket)} · Tabby/Taly fees deducted per order
+              {canEdit ? <>Fixed {kd(fixedMonthly)} + loan {kd(loan)} + target profit {kd(profitTarget)} = <strong>{kd(st.required)}</strong> · avg ticket</> : <>avg ticket</>} {kd(st.avgTicket)} · Tabby/Taly fees deducted per order
               {canEdit && (
                 <span style={{ display: "inline-flex", gap: 5, alignItems: "center", fontWeight: 700, marginLeft: 8 }}>
                   · target:
