@@ -4407,13 +4407,12 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
 }
 
 // ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
-function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed, loan = 933, onSaveLoan, targetOrders = 400, salesScheme = "orders", paScheme = "orders" }) {
+function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed, loan = 933, onSaveLoan, targetOrders = 400, salesScheme = "orders", paScheme = "orders", profitTarget = 3000, onSaveProfitTarget, orderPerTruck = 133.33, onSaveOrderPerTruck }) {
   const [mo, setMo] = useState(0);
   const [mode, setMode] = useState("month"); // month | range
   const [rFrom, setRFrom] = useState("");
   const [rTo, setRTo] = useState("");
   const [truckFilter, setTruckFilter] = useState("all");
-  const [feDraft, setFeDraft] = useState(String(fixedExpenses));
   const ref = new Date();
   ref.setMonth(ref.getMonth() + mo);
   const range = mode === "range" && rFrom && rTo && rFrom <= rTo ? { from: rFrom, to: rTo } : null;
@@ -4480,17 +4479,33 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
           </>)}
         </div>
 
+        {/* ⚙️ VARIABLES — every number the incentive machine runs on, editable in one place */}
+        <div className="card" style={{ marginBottom: 10 }}>
+          <div className="card-body" style={{ padding: "10px 14px" }}>
+            <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 7 }}>⚙️ Variables <span style={{ color: "var(--muted)", fontWeight: 600 }}>— save on blur · drive gate, tiers, targets & daily plans everywhere</span></div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              {[
+                ["Fixed costs / month", fixedExpenses, (n) => onSaveFixed(n), "salaries, rent, subs — from the P&L"],
+                ["Bank loan / month", loan, (n) => onSaveLoan && onSaveLoan(n), "deducted for TRUE profit & the gate"],
+                ["Profit target / month", profitTarget, (n) => onSaveProfitTarget && onSaveProfitTarget(n), "the 🎯 mission aims for fixed + loan + this"],
+                ["Order target / truck", orderPerTruck, (n) => onSaveOrderPerTruck && onSaveOrderPerTruck(n), `× ${trucksActive} trucks = ${Math.round(orderPerTruck * trucksActive)} team target`],
+              ].map(([lb, val, save, note]) => (
+                <label key={lb} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>{lb}</span>
+                  <input type="number" defaultValue={String(val)} key={lb + val}
+                    onBlur={e => { const n = Number(e.target.value); if (n > 0 && n !== Number(val)) save(n); }}
+                    className="filter-input" style={{ width: 120, padding: "5px 9px", fontSize: 13, fontWeight: 700 }} />
+                  <span style={{ fontSize: 9.5, color: "var(--muted)", maxWidth: 150 }}>{note}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10, background: profitGate ? "#E8F4EC" : "#FEF2F2", border: `1px solid ${profitGate ? "#BFDFC9" : "#FECACA"}`, borderRadius: 10, padding: "8px 12px" }}>
           <span style={{ fontSize: 12.5, fontWeight: 800, color: profitGate ? "#1D7A45" : "#B91C1C" }}>
             {profitGate ? "🟢 PROFIT GATE OPEN" : "🔴 PROFIT GATE CLOSED"} — net {kd(monthNet)} − loan {kd(loanApplied)} = <strong>true {kd(trueNet)}</strong> (gate ≥ {kd(INCENT.profitGateKD)})
           </span>
-          <span style={{ fontSize: 11.5, color: "var(--muted)", display: "flex", gap: 5, alignItems: "center" }}>
-            fixed/month:
-            <input value={feDraft} onChange={e => setFeDraft(e.target.value)} onBlur={() => onSaveFixed(Number(feDraft) || 0)} className="filter-input" style={{ width: 84, padding: "3px 7px", fontSize: 11.5 }} />
-            · loan/month:
-            <input defaultValue={String(loan)} key={"loan" + loan} onBlur={e => onSaveLoan && onSaveLoan(Number(e.target.value) || 0)} className="filter-input" style={{ width: 70, padding: "3px 7px", fontSize: 11.5 }} />
-            {range ? `→ ${kd(fixedApplied)} fixed · ${kd(loanApplied)} loan applied` : "KWD"}
-          </span>
+          {range && <span style={{ fontSize: 11, color: "var(--muted)" }}>{kd(fixedApplied)} fixed · {kd(loanApplied)} loan applied to range</span>}
         </div>
 
         {(() => {
@@ -4910,6 +4925,7 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
   loan = 933, onSaveLoan, targetOrders = 400, paCount = 2,
   salesScheme = "orders", paScheme = "orders", onSetScheme,
   paletteKey = "vivid", onSetPalette,
+  orderPerTruck = 133.33, onSaveOrderPerTruck,
   compareVisible, onToggleCompare }) {
   const [view, setView] = useState((HUB_FM || {}).view ?? "master");
   useEffect(() => { HUB_FM = { view }; }, [view]);
@@ -4935,6 +4951,8 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
       {view === "master" && (
         <IncentiveReport jobs={jobs} employees={employees} fixedExpenses={fixedExpenses} onSaveFixed={onSaveFixed}
           loan={loan} onSaveLoan={onSaveLoan} targetOrders={targetOrders}
+          profitTarget={profitTarget} onSaveProfitTarget={onSaveProfitTarget}
+          orderPerTruck={orderPerTruck} onSaveOrderPerTruck={onSaveOrderPerTruck}
           salesScheme={salesScheme} paScheme={paScheme}
           enabled={enabled} onToggle={onToggle} salesOn={salesOn} onToggleSales={onToggleSales} paOn={paOn} onTogglePa={onTogglePa} />
       )}
@@ -10170,6 +10188,8 @@ export default function App() {
               salesScheme={salesScheme} paScheme={paScheme}
               onSetScheme={setScheme}
               paletteKey={targetPaletteKey} onSetPalette={(k) => { setAppSettings(p => ({ ...p, target_palette: k })); saveAppSetting("target_palette", k); }}
+              orderPerTruck={Number(appSettings.order_target_per_truck) || ORDER_INCENT.perTruckDefault}
+              onSaveOrderPerTruck={(n) => { setAppSettings(p => ({ ...p, order_target_per_truck: n })); saveAppSetting("order_target_per_truck", n); }}
               fixedExpenses={Number(appSettings.fixed_expenses) || 10600}
               onSaveFixed={(n) => { setAppSettings(p => ({ ...p, fixed_expenses: n })); saveAppSetting("fixed_expenses", n); }}
               enabled={incentiveOn} onToggle={setIncentiveEnabled}
