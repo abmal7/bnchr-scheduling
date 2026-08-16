@@ -886,15 +886,16 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null, l
     };
   });
   const monthGross = rows.reduce((sm, r) => sm + r.profit, 0);
-  // BNPL fees are real variable costs (July: ~2,163!) — netted here so the gate & tiers see the truth
-  let feeTabby = 0, feeTaly = 0;
+  // Payment fees are real variable costs (Xero Jul: 2,163) — netted so gate & tiers see truth
+  let feeTabby = 0, feeTaly = 0, feeLink = 0, feeKnet = 0;
   done.forEach(j => {
-    const pt = String(j.payment_through || ""); const tot = Number(j.total) || 0;
-    if (pt === "Tabby") feeTabby += tot * 0.07;
-    else if (pt === "Taly") feeTaly += tot * 0.06 + 0.100;
+    const pt = String(j.payment_through || ""); const f = payFeeOf(pt, j.total);
+    if (pt === "Tabby") feeTabby += f; else if (pt === "Taly") feeTaly += f;
+    else if (pt === "Link") feeLink += f; else if (pt === "KNET") feeKnet += f;
   });
   feeTabby = Math.round(feeTabby * 100) / 100; feeTaly = Math.round(feeTaly * 100) / 100;
-  const monthNet = Math.round((monthGross - feeTabby - feeTaly - fixedApplied) * 100) / 100;
+  feeLink = Math.round(feeLink * 100) / 100; feeKnet = Math.round(feeKnet * 100) / 100;
+  const monthNet = Math.round((monthGross - feeTabby - feeTaly - feeLink - feeKnet - fixedApplied) * 100) / 100;
   const loanApplied = range && range.from ? Math.round(((Number(loan) || 0) * Math.max(1, Math.round((new Date(range.to) - new Date(range.from)) / 86400000) + 1) / 30.44) * 100) / 100 : (Number(loan) || 0);
   const trueNet = Math.round((monthNet - loanApplied) * 100) / 100;
   const profitGate = trueNet >= INCENT.profitGateKD; // gate tests TRUE cash profit — after the bank loan (July lesson)
@@ -914,7 +915,7 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null, l
     rows.forEach(r => { r.bonusTotal = Math.round(Object.values(r.bonusShare).reduce((a2, b2) => a2 + b2, 0) * 1000) / 1000; });
   }
   rows.forEach(r => { r.payout = Math.round(((r.baseUnlocked ? r.basePot : 0) + r.upsellPay + r.bonusTotal) * 1000) / 1000; });
-  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied, loanApplied, trueNet, feeTabby, feeTaly };
+  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied, loanApplied, trueNet, feeTabby, feeTaly, feeLink, feeKnet };
 }
 async function fetchTruckConfig() {
   try {
@@ -3679,7 +3680,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
             }
           });
           const pt = String(f.payment_through || "");
-          const fee = pt === "Tabby" ? grandTotal * 0.07 : pt === "Taly" ? grandTotal * 0.06 + 0.100 : 0;
+          const fee = payFeeOf(pt, grandTotal);
           const contrib = grandTotal - costs - fee;
           const remaining = Math.max(0, st.dailyNeed - st.todayContribution);
           const kd2 = (n) => `KWD ${(Number(n) || 0).toFixed(1)}`;
@@ -4415,7 +4416,7 @@ function ThreadSection({ j, jobs, upsellLeads, role, onOpenJob, onConvertLead, o
 }
 
 // ═══ 🏁 Master incentive report — per-truck table + launch switch ═════════════
-function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed, loan = 933, onSaveLoan, targetOrders = 400, salesScheme = "orders", paScheme = "orders", profitTarget = 3000, onSaveProfitTarget, orderPerTruck = 133.33, onSaveOrderPerTruck }) {
+function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa, fixedExpenses, onSaveFixed, loan = 933, onSaveLoan, targetOrders = 400, salesScheme = "orders", paScheme = "orders", profitTarget = 3000, onSaveProfitTarget, orderPerTruck = 133.33, onSaveOrderPerTruck, onSaveFee }) {
   const [mo, setMo] = useState(0);
   const [mode, setMode] = useState("month"); // month | range
   const [rFrom, setRFrom] = useState("");
@@ -4497,11 +4498,15 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
                 ["Bank loan / month", loan, (n) => onSaveLoan && onSaveLoan(n), "deducted for TRUE profit & the gate"],
                 ["Profit target / month", profitTarget, (n) => onSaveProfitTarget && onSaveProfitTarget(n), "the 🎯 mission aims for fixed + loan + this"],
                 ["Order target / truck", orderPerTruck, (n) => onSaveOrderPerTruck && onSaveOrderPerTruck(n), `× ${trucksActive} trucks = ${Math.round(orderPerTruck * trucksActive)} team target`],
+                ["Tabby fee %", FEE_RATES.tabby_pct, (n) => onSaveFee && onSaveFee("fee_tabby_pct", n), "of order total"],
+                ["Taly fee %", FEE_RATES.taly_pct, (n) => onSaveFee && onSaveFee("fee_taly_pct", n), `+ ${FEE_RATES.taly_flat.toFixed(3)} flat per order`],
+                ["Link gateway fee %", FEE_RATES.link_pct, (n) => onSaveFee && onSaveFee("fee_link_pct", n), "MyFatoorah/KNET link — Xero says this isn't 0!"],
+                ["KNET/POS fee %", FEE_RATES.knet_pct, (n) => onSaveFee && onSaveFee("fee_knet_pct", n), "card machine acquiring rate"],
               ].map(([lb, val, save, note]) => (
                 <label key={lb} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                   <span style={{ fontSize: 10, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>{lb}</span>
                   <input type="number" defaultValue={String(val)} key={lb + val}
-                    onBlur={e => { const n = Number(e.target.value); if (n > 0 && n !== Number(val)) save(n); }}
+                    onBlur={e => { const n = Number(e.target.value); if (!isNaN(n) && n >= 0 && n !== Number(val)) save(n); }}
                     className="filter-input" style={{ width: 120, padding: "5px 9px", fontSize: 13, fontWeight: 700 }} />
                   <span style={{ fontSize: 9.5, color: "var(--muted)", maxWidth: 150 }}>{note}</span>
                 </label>
@@ -4639,13 +4644,21 @@ const stPrimary = (svc) => {
   const p = String(svc || "").split("+")[0].trim();
   return ST_GROUPS.includes(p) ? p : "Other";
 };
-const stBnplFee = (j) => {
-  const pt = String(j.payment_through || "").toLowerCase();
-  const rev = Number(j.total) || 0;
-  if (pt === "tabby") return rev * 0.07;
-  if (pt === "taly") return rev * 0.06 + 0.100;
-  return 0;
+// ── Payment-method fees: EVERY method configurable (⚙ Variables). Xero's "Bank
+// Charges" (Jul: 2,163 = 4.8% of revenue) proved Link/KNET gateway fees dwarf BNPL —
+// modeling only Tabby/Taly understated costs everywhere.
+let FEE_RATES = { tabby_pct: 7, taly_pct: 6, taly_flat: 0.100, link_pct: 0, knet_pct: 0 };
+const payFeeOf = (method, total) => {
+  const t = Number(total) || 0, R = FEE_RATES;
+  switch (String(method || "")) {
+    case "Tabby": return t * R.tabby_pct / 100;
+    case "Taly":  return t * R.taly_pct / 100 + R.taly_flat;
+    case "Link":  return t * R.link_pct / 100;
+    case "KNET":  return t * R.knet_pct / 100;
+    default: return 0; // Cash / Sparts / Warranty
+  }
 };
+const stBnplFee = (j) => payFeeOf(j.payment_through, j.total);
 const stContribution = (j) => {
   const rev = Number(j.total) || 0;
   const cost = (j.items || []).reduce((x, it) => x + (Number(it.cost) || 0) * (Number(it.qty) || 1), 0);
@@ -4933,7 +4946,7 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
   loan = 933, onSaveLoan, targetOrders = 400, paCount = 2,
   salesScheme = "orders", paScheme = "orders", onSetScheme,
   paletteKey = "vivid", onSetPalette,
-  orderPerTruck = 133.33, onSaveOrderPerTruck,
+  orderPerTruck = 133.33, onSaveOrderPerTruck, onSaveFee,
   compareVisible, onToggleCompare }) {
   const [view, setView] = useState((HUB_FM || {}).view ?? "master");
   useEffect(() => { HUB_FM = { view }; }, [view]);
@@ -4961,6 +4974,7 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
           loan={loan} onSaveLoan={onSaveLoan} targetOrders={targetOrders}
           profitTarget={profitTarget} onSaveProfitTarget={onSaveProfitTarget}
           orderPerTruck={orderPerTruck} onSaveOrderPerTruck={onSaveOrderPerTruck}
+          onSaveFee={onSaveFee}
           salesScheme={salesScheme} paScheme={paScheme}
           enabled={enabled} onToggle={onToggle} salesOn={salesOn} onToggleSales={onToggleSales} paOn={paOn} onTogglePa={onTogglePa} />
       )}
@@ -5388,7 +5402,7 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
 
 // Transparency waterfall — the whole truth on every incentive page (July lesson)
 function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
-  const { monthNet, monthGross, fixedApplied, feeTabby, feeTaly } = computeIncentives(jobs, refDate, fixedExpenses);
+  const { monthNet, monthGross, fixedApplied, feeTabby, feeTaly, feeLink, feeKnet } = computeIncentives(jobs, refDate, fixedExpenses);
   const y = refDate.getFullYear(), m = refDate.getMonth();
   const rev = jobs.filter(j => jobSuccessful(j) && (d => d.getFullYear() === y && d.getMonth() === m)(new Date(j.completed_at || j.scheduled_at || j.created_at)))
     .reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
@@ -5405,8 +5419,10 @@ function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
       {row("Revenue", rev)}
       {row("Item costs", -costs)}
       {row("Gross profit", monthGross, { bold: true, line: true })}
-      {feeTabby > 0 && row("Tabby fees (7%)", -feeTabby)}
-      {feeTaly > 0 && row("Taly fees (6% + 0.100/order)", -feeTaly)}
+      {feeTabby > 0 && row(`Tabby fees (${FEE_RATES.tabby_pct}%)`, -feeTabby)}
+      {feeTaly > 0 && row(`Taly fees (${FEE_RATES.taly_pct}% + ${FEE_RATES.taly_flat.toFixed(3)})`, -feeTaly)}
+      {feeLink > 0 && row(`Link gateway fees (${FEE_RATES.link_pct}%)`, -feeLink)}
+      {feeKnet > 0 && row(`KNET/POS fees (${FEE_RATES.knet_pct}%)`, -feeKnet)}
       {row("Fixed expenses", -fixedApplied)}
       {row("Net (P&L)", monthNet, { bold: true, line: true })}
       {row("Bank loan payment", -(Number(loan) || 0))}
@@ -10018,6 +10034,13 @@ export default function App() {
   const orderTargetKD = Math.round((Number(appSettings.order_target_per_truck) || ORDER_INCENT.perTruckDefault) * Math.max(1, activeTrucks().length));
   const paCountActive = employees.filter(e => e.active && (e.role === "purchaser" || e.role === "accountant")).length || 2;
   const targetPaletteKey = TARGET_PALETTES[appSettings.target_palette] ? appSettings.target_palette : "vivid";
+  FEE_RATES = {
+    tabby_pct: Number(appSettings.fee_tabby_pct) || 7,
+    taly_pct: Number(appSettings.fee_taly_pct) || 6,
+    taly_flat: appSettings.fee_taly_flat != null && appSettings.fee_taly_flat !== "" ? Number(appSettings.fee_taly_flat) : 0.100,
+    link_pct: Number(appSettings.fee_link_pct) || 0,
+    knet_pct: Number(appSettings.fee_knet_pct) || 0,
+  };
   const setServiceTargetsEnabled = async (on) => {
     setAppSettings(p => ({ ...p, service_targets_enabled: on }));
     await saveAppSetting("service_targets_enabled", on);
@@ -10200,6 +10223,7 @@ export default function App() {
               paletteKey={targetPaletteKey} onSetPalette={(k) => { setAppSettings(p => ({ ...p, target_palette: k })); saveAppSetting("target_palette", k); }}
               orderPerTruck={Number(appSettings.order_target_per_truck) || ORDER_INCENT.perTruckDefault}
               onSaveOrderPerTruck={(n) => { setAppSettings(p => ({ ...p, order_target_per_truck: n })); saveAppSetting("order_target_per_truck", n); }}
+              onSaveFee={(key, n) => { setAppSettings(p => ({ ...p, [key]: n })); saveAppSetting(key, n); }}
               fixedExpenses={Number(appSettings.fixed_expenses) || 10600}
               onSaveFixed={(n) => { setAppSettings(p => ({ ...p, fixed_expenses: n })); saveAppSetting("fixed_expenses", n); }}
               enabled={incentiveOn} onToggle={setIncentiveEnabled}
