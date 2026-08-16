@@ -4566,12 +4566,27 @@ function IncentiveReport({ jobs, employees = [], enabled, onToggle, salesOn, onT
           return (
             <div className="card" style={{ marginBottom: 12, border: "1.5px solid #C7D2FE" }}>
               <div className="card-body" style={{ padding: "11px 15px" }}>
-                <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 5 }}>📈 Owner projection <span style={{ color: "var(--muted)", fontWeight: 600 }}>— master only · straight-line from {dom} days of {ref.toLocaleDateString("en-GB", { month: "long" })}</span></div>
+                <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 5 }}>📈 Owner projection <span style={{ color: "var(--muted)", fontWeight: 600 }}>— master only · from {dom} days of {ref.toLocaleDateString("en-GB", { month: "long" })}</span></div>
+                {revNeeded != null && (() => {
+                  const remRev = Math.max(0, revNeeded - revMTD);
+                  const perDayRev = daysLeft > 0 ? remRev / daysLeft : remRev;
+                  const remOrders = Math.ceil(remRev / avgTicket);
+                  return (
+                    <div style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px", marginBottom: 8, textAlign: "center" }}>
+                      <div style={{ fontSize: 10.5, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>🎯 Revenue needed this month to reach the target</div>
+                      <div style={{ fontSize: 28, fontWeight: 800 }}>{kd0(revNeeded)}</div>
+                      <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)" }}>
+                        = (fixed {kd0(fixedApplied)} + loan {kd0(loanApplied)} + target {kd0(Number(profitTarget) || 0)}) ÷ {Math.round(cmRatio * 100)}% real margin so far
+                      </div>
+                      <div style={{ fontSize: 12.5, fontWeight: 800, marginTop: 4 }}>
+                        booked {kd0(revMTD)} → <span style={{ color: remRev > 0 ? "#B45309" : "var(--success)" }}>{remRev > 0 ? `${kd0(remRev)} to go` : "covered ✓"}</span>
+                        {remRev > 0 && <span style={{ color: "var(--muted)", fontWeight: 600 }}> · ≈ {remOrders} orders · {kd0(perDayRev)}/day for {daysLeft} days</span>}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 12.5, fontWeight: 700 }}>
-                  <span>Month-end estimate: <strong>{kd0(estRev)}</strong> revenue · ≈ {estOrders} orders <span style={{ color: "var(--muted)", fontWeight: 600 }}>(avg ticket {kd0(avgTicket)})</span></span>
-                  {revNeeded != null && (
-                    <span>Mission needs: <strong>{kd0(revNeeded)}</strong> revenue <span style={{ color: "var(--muted)", fontWeight: 600 }}>(fixed + loan + target ÷ {Math.round(cmRatio * 100)}% margin)</span></span>
-                  )}
+                  <span>Month-end estimate at current pace: <strong>{kd0(estRev)}</strong> revenue · ≈ {estOrders} orders <span style={{ color: "var(--muted)", fontWeight: 600 }}>(avg ticket {kd0(avgTicket)})</span></span>
                 </div>
                 {revNeeded != null && (
                   <div style={{ marginTop: 6, fontSize: 12.5, fontWeight: 800, color: short ? "#B45309" : "var(--success)" }}>
