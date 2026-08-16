@@ -886,7 +886,15 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null, l
     };
   });
   const monthGross = rows.reduce((sm, r) => sm + r.profit, 0);
-  const monthNet = Math.round((monthGross - fixedApplied) * 100) / 100;
+  // BNPL fees are real variable costs (July: ~2,163!) — netted here so the gate & tiers see the truth
+  let feeTabby = 0, feeTaly = 0;
+  done.forEach(j => {
+    const pt = String(j.payment_through || ""); const tot = Number(j.total) || 0;
+    if (pt === "Tabby") feeTabby += tot * 0.07;
+    else if (pt === "Taly") feeTaly += tot * 0.06 + 0.100;
+  });
+  feeTabby = Math.round(feeTabby * 100) / 100; feeTaly = Math.round(feeTaly * 100) / 100;
+  const monthNet = Math.round((monthGross - feeTabby - feeTaly - fixedApplied) * 100) / 100;
   const loanApplied = range && range.from ? Math.round(((Number(loan) || 0) * Math.max(1, Math.round((new Date(range.to) - new Date(range.from)) / 86400000) + 1) / 30.44) * 100) / 100 : (Number(loan) || 0);
   const trueNet = Math.round((monthNet - loanApplied) * 100) / 100;
   const profitGate = trueNet >= INCENT.profitGateKD; // gate tests TRUE cash profit — after the bank loan (July lesson)
@@ -906,7 +914,7 @@ function computeIncentives(jobs, refDate, fixedExpenses = 12500, range = null, l
     rows.forEach(r => { r.bonusTotal = Math.round(Object.values(r.bonusShare).reduce((a2, b2) => a2 + b2, 0) * 1000) / 1000; });
   }
   rows.forEach(r => { r.payout = Math.round(((r.baseUnlocked ? r.basePot : 0) + r.upsellPay + r.bonusTotal) * 1000) / 1000; });
-  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied, loanApplied, trueNet };
+  return { target, rows, trucksActive: trucks.length, monthNet, monthGross, profitGate, fixedApplied, loanApplied, trueNet, feeTabby, feeTaly };
 }
 async function fetchTruckConfig() {
   try {
@@ -5380,7 +5388,7 @@ function computeOrderIncent(jobs, refDate, targetOrders) {
 
 // Transparency waterfall — the whole truth on every incentive page (July lesson)
 function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
-  const { monthNet, monthGross, fixedApplied } = computeIncentives(jobs, refDate, fixedExpenses);
+  const { monthNet, monthGross, fixedApplied, feeTabby, feeTaly } = computeIncentives(jobs, refDate, fixedExpenses);
   const y = refDate.getFullYear(), m = refDate.getMonth();
   const rev = jobs.filter(j => jobSuccessful(j) && (d => d.getFullYear() === y && d.getMonth() === m)(new Date(j.completed_at || j.scheduled_at || j.created_at)))
     .reduce((s2, j) => s2 + (Number(j.total) || 0), 0);
@@ -5397,6 +5405,8 @@ function ProfitWaterfall({ jobs, refDate, fixedExpenses, loan }) {
       {row("Revenue", rev)}
       {row("Item costs", -costs)}
       {row("Gross profit", monthGross, { bold: true, line: true })}
+      {feeTabby > 0 && row("Tabby fees (7%)", -feeTabby)}
+      {feeTaly > 0 && row("Taly fees (6% + 0.100/order)", -feeTaly)}
       {row("Fixed expenses", -fixedApplied)}
       {row("Net (P&L)", monthNet, { bold: true, line: true })}
       {row("Bank loan payment", -(Number(loan) || 0))}
