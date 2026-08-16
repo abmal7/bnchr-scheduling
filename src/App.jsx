@@ -6132,6 +6132,13 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
             <OrderActions job={j} onAction={(patch) => patchJob(patch)} />
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10, fontSize: 12 }}>
               <PaymentLinkEditor value={j.payment_link} onSave={(link) => patchJob({ payment_link: link })} compact />
+              {(() => {
+                    const PM = { Link: ["🔗", "#EFF6FF", "#1D4ED8"], Tabby: ["🅃", "#FDF2F8", "#BE185D"], Taly: ["🅃", "#FEF3C7", "#B45309"], "Visa/Master Card": ["💳", "#F5F3FF", "#6D28D9"], KNET: ["💳", "#F5F3FF", "#6D28D9"], Cash: ["💵", "#ECFDF5", "#047857"], Sparts: ["🤝", "#F1F5F9", "#475569"], Warranty: ["🛡", "#F1F5F9", "#475569"] };
+                    const pt = String(j.payment_through || "");
+                    const p = PM[pt]; if (!p) return null;
+                    const fee = payFeeOf(pt, j.total);
+                    return <span title={pt} style={{ fontSize: 10.5, fontWeight: 800, background: p[1], color: p[2], borderRadius: 8, padding: "3px 9px", whiteSpace: "nowrap" }}>{p[0]} {pt === "Visa/Master Card" ? "Visa/MC" : pt}{fee > 0 ? ` · fee ${fee.toFixed(3)}` : ""}</span>;
+                  })()}
               <span style={{ flex: "1 1 100%" }}><AccountingEditor xeroRef={j.xero_ref} invoiceNo={j.invoice_no} onSave={(patch) => patchJob(patch)} /></span>
             </div>
             <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--muted)" }}>
@@ -6498,22 +6505,7 @@ function PaymentLinkEditor({ value, onSave, compact }) {
         <span style={chip(false)} onClick={() => setEditing(true)}>✎</span>
       </span>
     ) : (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <span style={chip(false)} onClick={(e) => { e.stopPropagation(); setEditing(true); }}>+ Payment link</span>
-        {(() => {
-          const PM = { Link: ["🔗", "#EFF6FF", "#1D4ED8"], Tabby: ["🅃", "#FDF2F8", "#BE185D"], Taly: ["🅃", "#FEF3C7", "#B45309"], "Visa/Master Card": ["💳", "#F5F3FF", "#6D28D9"], KNET: ["💳", "#F5F3FF", "#6D28D9"], Cash: ["💵", "#ECFDF5", "#047857"], Sparts: ["🤝", "#F1F5F9", "#475569"], Warranty: ["🛡", "#F1F5F9", "#475569"] };
-          const pt = String(j.payment_through || "");
-          const p = PM[pt];
-          if (!p) return null;
-          const fee = payFeeOf(pt, j.total);
-          return (
-            <span title={fee > 0 ? `${pt} — fee KWD ${fee.toFixed(3)}` : pt}
-              style={{ fontSize: 10.5, fontWeight: 800, background: p[1], color: p[2], borderRadius: 8, padding: "3px 9px" }}>
-              {p[0]} {pt === "Visa/Master Card" ? "Visa/MC" : pt}{fee > 0 ? ` · fee ${fee.toFixed(3)}` : ""}
-            </span>
-          );
-        })()}
-      </span>
+      <span style={chip(false)} onClick={(e) => { e.stopPropagation(); setEditing(true); }}>+ Payment link</span>
     );
   }
   return (
@@ -6822,6 +6814,13 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                 <OrderActions job={job} compact onAction={(patch) => onAction(job, patch)} />
                 <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
                   <PaymentLinkEditor value={job.payment_link} onSave={(link) => onAction(job, { payment_link: link })} compact />
+                  {(() => {
+                    const PM = { Link: ["🔗", "#EFF6FF", "#1D4ED8"], Tabby: ["🅃", "#FDF2F8", "#BE185D"], Taly: ["🅃", "#FEF3C7", "#B45309"], "Visa/Master Card": ["💳", "#F5F3FF", "#6D28D9"], KNET: ["💳", "#F5F3FF", "#6D28D9"], Cash: ["💵", "#ECFDF5", "#047857"], Sparts: ["🤝", "#F1F5F9", "#475569"], Warranty: ["🛡", "#F1F5F9", "#475569"] };
+                    const pt = String(job.payment_through || "");
+                    const p = PM[pt]; if (!p) return null;
+                    const fee = payFeeOf(pt, job.total);
+                    return <span title={pt} style={{ fontSize: 10.5, fontWeight: 800, background: p[1], color: p[2], borderRadius: 8, padding: "3px 9px", whiteSpace: "nowrap" }}>{p[0]} {pt === "Visa/Master Card" ? "Visa/MC" : pt}{fee > 0 ? ` · fee ${fee.toFixed(3)}` : ""}</span>;
+                  })()}
                 </div>
               </div>
             )}
