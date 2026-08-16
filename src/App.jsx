@@ -8753,7 +8753,9 @@ function CostsView({ jobs, onUpdate }) {
                     ))}
                   </tr></thead>
                   <tbody>
-                    {histShown.map(h => {
+                    {(() => { const seen = new Set(); return histShown.map(h => {
+                      const itemKey = `${h.job_id}:${h.item_id || h.item_name}`;
+                      const superseded = seen.has(itemKey); h._superseded = superseded; seen.add(itemKey);
                       const job = jobs.find(j => j.id === h.job_id);
                       let it = job && h.item_id ? (job.items || []).find(x => x.id === h.item_id) : null;
                       if (job && !it) {
@@ -8776,8 +8778,8 @@ function CostsView({ jobs, onUpdate }) {
                       const oldV = { color: "var(--muted)", textDecoration: "line-through", fontSize: 10.5, marginRight: 4 };
                       return (
                         <Fragment key={h.id}>
-                          <tr>
-                            <td style={{ ...td3, color: "var(--muted)", fontSize: 11 }}>{String(h.created_at).slice(5, 16).replace("T", " ")}</td>
+                          <tr style={h._superseded ? { opacity: .55 } : undefined}>
+                            <td style={{ ...td3, color: "var(--muted)", fontSize: 11 }}>{String(h.created_at).slice(5, 16).replace("T", " ")}{h._superseded && <div style={{ fontSize: 8.5, fontWeight: 800, color: "var(--muted)" }}>↑ superseded</div>}</td>
                             <td style={td3}><div style={{ fontWeight: 700, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis" }}>{h.customer_name || "—"}</div><div style={{ fontSize: 10.5, color: "var(--muted)" }}>{h.invoice_no || ""}</div></td>
                             <td style={{ ...td3, whiteSpace: "normal", minWidth: 140, maxWidth: 210 }}>{h.item_name}{h._src === "order" && <div style={{ fontSize: 9.5, fontWeight: 700, color: "var(--muted)" }}>📦 came with the order</div>}</td>
                             <td style={td3}>{costChanged ? (<><span style={oldV}>{h.old_cost ?? "—"}</span><span style={chg}>{h.new_cost}</span></>) : <span style={{ fontWeight: 700 }}>{h.new_cost ?? h.old_cost ?? "—"}</span>}</td>
@@ -8789,7 +8791,7 @@ function CostsView({ jobs, onUpdate }) {
                                 {profit >= 0 ? "+" : ""}{Math.round(profit * 100) / 100}{price > 0 ? <span style={{ color: "var(--muted)", fontWeight: 600 }}> · {Math.round(profit / price * 100)}%</span> : null}
                               </span>) : "—"}
                             </td>
-                            <td style={td3}>{it && !editing && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px", fontSize: 11 }} onClick={() => setHEdit({ key: h.id, jobId: job.id, itemId: it.id, cost: it.cost || "", supplier: it.supplier || "", po: it.po || "" })}>✎</button>}</td>
+                            <td style={td3}>{it && !editing && !h._superseded && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px", fontSize: 11 }} onClick={() => setHEdit({ key: h.id, jobId: job.id, itemId: it.id, cost: it.cost || "", supplier: it.supplier || "", po: it.po || "" })}>✎</button>}</td>
                           </tr>
                           {editing && (
                             <tr><td colSpan={9} style={{ padding: "4px 8px 10px", borderBottom: "1px solid var(--border)" }}>
@@ -8805,14 +8807,14 @@ function CostsView({ jobs, onUpdate }) {
                           )}
                         </Fragment>
                       );
-                    })}
+                    }); })()}
                   </tbody>
                 </table>
               )}
             </div>
           </div>
           <div style={{ fontSize: 10.5, color: "var(--muted)", margin: "6px 0 14px" }}>
-            🟡 highlighted = manual change (old value struck through) · 📦 = cost arrived with the order (quote pipeline) · Price & Profit read live · ✎ corrects the item and logs a new line
+            🟡 highlighted = manual change (old struck through) · 📦 = came with the order · faded ↑ = older version of the same item (newest row is the truth) · Price & Profit read live · ✎ logs a new line, never overwrites
           </div>
         </>
       )}
