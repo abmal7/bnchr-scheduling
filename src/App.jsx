@@ -4134,9 +4134,12 @@ function TechUpsellForm({ job, onCreate, autoOpen, onDone, onCancel }) {
 
 // ─── Upsells page: the technician-generated funnel, with its own simple report ──
 // ═══ 💰 Collections — every promised payment, overdue first ═══════════════════
+let COLLECT_FM = null; // filters survive navigation
 function CollectionsView({ jobs, onSelectJob, onAction }) {
-  const [lang, setLang] = useState("en");
-  const [methodBy, setMethodBy] = useState({});
+  const lfm = COLLECT_FM || {};
+  const [lang, setLang] = useState(lfm.lang ?? "en");
+  const [methodBy, setMethodBy] = useState(lfm.methodBy ?? {});
+  useEffect(() => { COLLECT_FM = { lang, methodBy }; }, [lang, methodBy]);
   const [copiedId, setCopiedId] = useState(null);
   const rows = [];
   jobs.forEach(j => {
@@ -4220,10 +4223,13 @@ function CollectionsView({ jobs, onSelectJob, onAction }) {
   );
 }
 
+let UPSELL_FM = null; // filters survive navigation
 function UpsellsView({ upsellLeads, jobs, role, onConvert, onNotYet, onFollowUp, onReopen, onSelectJob }) {
-  const [filter, setFilter] = useState("due"); // due | open | not_yet | converted | all
-  const [truckF, setTruckF] = useState("all");
-  const [q, setQ] = useState("");
+  const ufm = UPSELL_FM || {};
+  const [filter, setFilter] = useState(ufm.filter ?? "due"); // due | open | not_yet | converted | all
+  const [truckF, setTruckF] = useState(ufm.truckF ?? "all");
+  const [q, setQ] = useState(ufm.q ?? "");
+  useEffect(() => { UPSELL_FM = { filter, truckF, q }; }, [filter, truckF, q]);
   const leads = upsellLeads || [];
   const jobOf = (l) => l.converted_job_id ? jobs.find(j => j.id === l.converted_job_id) : null;
 
@@ -4897,6 +4903,7 @@ function ServiceTargetsView({ jobs, fixedMonthly, loan = 933, profitTarget, onSa
 }
 
 // ═══ 🎛 Incentive Hub — the master's single page for every scheme ═════════════
+let HUB_FM = null; // filters survive navigation
 function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
   enabled, onToggle, salesOn, onToggleSales, paOn, onTogglePa,
   targetsOn, onToggleTargets, profitTarget, onSaveProfitTarget,
@@ -4904,7 +4911,8 @@ function IncentiveHub({ jobs, employees, fixedExpenses, onSaveFixed,
   salesScheme = "orders", paScheme = "orders", onSetScheme,
   paletteKey = "vivid", onSetPalette,
   compareVisible, onToggleCompare }) {
-  const [view, setView] = useState("master");
+  const [view, setView] = useState((HUB_FM || {}).view ?? "master");
+  useEffect(() => { HUB_FM = { view }; }, [view]);
   const VIEWS = [["master", "🎛 Master"], ["tech", "🚛 Technicians"], ["sales", "💎 Sales"], ["pa", "🎯 Purchase"], ["targets", "🎯 Service targets"]];
   const previewBar = (label, on, onFlip) => (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, background: "#EFF6FF", border: "1.5px solid #BFDBFE", borderRadius: 12, padding: "9px 14px", marginBottom: 12 }}>
@@ -7544,13 +7552,16 @@ function TechJobCard({ job, index, onUpdate, onCompletedPrompt }) {
   );
 }
 
+let HISTORY_FM = null; // filters survive navigation
 function HistoryView({ jobs, onSelectJob, onEdit, onReorder }) {
-  const [search, setSearch] = useState("");
-  const [filterTruck, setFilterTruck] = useState("all");
-  const [filterAgent, setFilterAgent] = useState("all");
-  const [quick, setQuick] = useState("all"); // all | completed | cancelled | paid | unpaid
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const hfm = HISTORY_FM || {};
+  const [search, setSearch] = useState(hfm.search ?? "");
+  const [filterTruck, setFilterTruck] = useState(hfm.filterTruck ?? "all");
+  const [filterAgent, setFilterAgent] = useState(hfm.filterAgent ?? "all");
+  const [quick, setQuick] = useState(hfm.quick ?? "all"); // all | completed | cancelled | paid | unpaid
+  const [dateFrom, setDateFrom] = useState(hfm.dateFrom ?? "");
+  const [dateTo, setDateTo] = useState(hfm.dateTo ?? "");
+  useEffect(() => { HISTORY_FM = { search, filterTruck, filterAgent, quick, dateFrom, dateTo }; }, [search, filterTruck, filterAgent, quick, dateFrom, dateTo]);
 
   // History = successful orders (by status OR technician completion) + cancelled + incomplete
   const histJobs = jobs.filter(j => jobSuccessful(j) || j.status === "cancelled" || j.status === "incomplete");
@@ -8437,19 +8448,22 @@ function TruckSettingsView({ rows, onReload, owner }) {
 // ─── Costs to fill (purchaser / owner) ────────────────────────────────────────
 // Focused worklist of orders whose collectable items are missing a cost.
 // Purchaser fills cost per item; saves straight onto the order for accurate margins.
+let COSTS_FM = null; // filters survive navigation
 function CostsView({ jobs, onUpdate }) {
   const [savingId, setSavingId] = useState("");
   const [drafts, setDrafts] = useState({}); // {jobId: {itemId: cost}}
   const [supDrafts, setSupDrafts] = useState({}); // {jobId: {itemId: supplier}}
   const [poDrafts, setPoDrafts] = useState({});   // {jobId: {itemId: po}}
-  const [view, setView] = useState("fill");       // fill | history
+  const cofm = COSTS_FM || {};
+  const [view, setView] = useState(cofm.view ?? "fill");       // fill | history
   const [hist, setHist] = useState([]);
-  const [histPeriod, setHistPeriod] = useState("today"); // today | week | month | range
-  const [hFrom, setHFrom] = useState("");
-  const [hTo, setHTo] = useState("");
+  const [histPeriod, setHistPeriod] = useState(cofm.histPeriod ?? "today"); // today | week | month | range
+  const [hFrom, setHFrom] = useState(cofm.hFrom ?? "");
+  const [hTo, setHTo] = useState(cofm.hTo ?? "");
   const [hEdit, setHEdit] = useState(null); // { key, jobId, itemId, cost, supplier, po }
-  const [hSearch, setHSearch] = useState("");
+  const [hSearch, setHSearch] = useState(cofm.hSearch ?? "");
   const [hErr, setHErr] = useState("");
+  useEffect(() => { COSTS_FM = { view, histPeriod, hFrom, hTo, hSearch }; }, [view, histPeriod, hFrom, hTo, hSearch]);
   const saveHistEdit = async () => {
     const job = jobs.find(j => j.id === hEdit.jobId);
     if (!job) return;
@@ -8798,13 +8812,16 @@ function CostsView({ jobs, onUpdate }) {
 // are not in the system yet, so inquiry-based metrics stay in Trengo for now.
 const MONTHLY_TARGET = 45000; // KWD — edit here when the target changes
 
+let REPORTS_FM = null; // filters survive navigation
 function ReportsView({ jobs, quotes, customers, owner }) {
   const todayD = new Date(); todayD.setHours(0, 0, 0, 0);
   // LOCAL date string — never toISOString here: UTC conversion shifts
   // Kuwait's midnight back to the previous day and skews every preset.
   const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const [from, setFrom] = useState(iso(todayD));
-  const [to, setTo] = useState(iso(todayD));
+  const rfm = REPORTS_FM || {};
+  const [from, setFrom] = useState(rfm.from ?? iso(todayD));
+  const [to, setTo] = useState(rfm.to ?? iso(todayD));
+  useEffect(() => { REPORTS_FM = { from, to }; }, [from, to]);
 
   const preset = (key) => {
     const d = new Date(todayD);
@@ -9199,10 +9216,13 @@ function ReportsView({ jobs, quotes, customers, owner }) {
 // Full quote lifecycle: open → success (order created) or lost (with reason).
 // Stamped status is the source of truth; legacy quotes fall back to the
 // derived order match. Follow-up ladder: 24h → 3d → 7d, snooze overrides.
+let QUOTES_FM = null; // filters survive navigation
 function QuotesView({ quotes, jobs, customers, onBook, onSelectJob, onQuoteUpdate }) {
-  const [statusF, setStatusF] = useState("all"); // all | success | open | followup | lost
-  const [agentF, setAgentF] = useState("all");
-  const [search, setSearch] = useState("");
+  const qfm = QUOTES_FM || {};
+  const [statusF, setStatusF] = useState(qfm.statusF ?? "all"); // all | success | open | followup | lost
+  const [agentF, setAgentF] = useState(qfm.agentF ?? "all");
+  const [search, setSearch] = useState(qfm.search ?? "");
+  useEffect(() => { QUOTES_FM = { statusF, agentF, search }; }, [statusF, agentF, search]);
   const [action, setAction] = useState(null); // { id, type: "lost" | "snooze" }
   const [lostReason, setLostReason] = useState(LOST_REASONS[0]);
   const [snoozeDate, setSnoozeDate] = useState("");
