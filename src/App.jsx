@@ -5389,12 +5389,14 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
         <div className="stat-lbl" style={{ color: cp.sub, fontWeight: 800 }}>
           {won ? (mode === "orders" ? "DAY TARGET WON" : "DAY MISSION WON") : mode === "orders" ? `orders to book · goal ${goal}` : "profit to book today"}
         </div>
-        <div style={{ display: "flex", height: 7, background: cp.track, borderRadius: 4, overflow: "hidden", marginTop: 6 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 4, fontSize: 9.5, fontWeight: 800, color: cp.sub, marginTop: 6 }}>
+          <span style={{ color: cp.text }}>✓ {mode === "orders" ? done : done.toFixed(0)}</span>
+          <span style={{ opacity: .8 }}>⏳ {mode === "orders" ? pending : pending.toFixed(0)}</span>
+          <span>🎯 {mode === "orders" ? goal : goal.toFixed(0)}</span>
+        </div>
+        <div style={{ display: "flex", height: 7, background: cp.track, borderRadius: 4, overflow: "hidden", marginTop: 3 }}>
           <div style={{ width: solidPct + "%", background: cp.fill, transition: "width .5s" }} />
           <div style={{ width: fadePct + "%", background: cp.fill, opacity: 0.4, transition: "width .5s" }} />
-        </div>
-        <div style={{ fontSize: 9.5, fontWeight: 700, color: cp.sub, marginTop: 3 }}>
-          {mode === "orders" ? `${done}✓${pending ? ` +${pending}⏳` : ""}` : `✓ ${done.toFixed(0)}${pending > 0.5 ? ` +${pending.toFixed(0)}⏳` : ""}`}
         </div>
       </div>
     );
@@ -6489,7 +6491,6 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
   return (
     <>
       <div className="stats-grid">
-        {dayTargetCard}
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--accent)" }}>{base.filter(j => j.status !== "cancelled").length}</div><div className="stat-lbl">Jobs today</div></div>
         <div className="stat-card"><div className="stat-num" style={{ color: "var(--success)" }}>{done}</div><div className="stat-lbl">Completed</div></div>
         <div className="stat-card">
@@ -6499,6 +6500,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
           <div style={{ fontSize: 10, color: "#059669", fontWeight: 600, marginTop: 1 }}>collected this day: KWD {collectedKD.toFixed(3)}</div>
         </div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{base.filter(j => j.payment_status === "paid" && j.status !== "cancelled").length}</div><div className="stat-lbl">Paid</div></div>
+        {dayTargetCard}
       </div>
 
       <div className="page-header">
