@@ -8912,7 +8912,7 @@ function CostsView({ jobs, onUpdate }) {
             if (!nIt) return null;
             return (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-                {[["🧾 Items (filtered)", nIt, null], ["Revenue", `KWD ${rev.toFixed(3)}`, null], ["Item costs", `KWD ${cost.toFixed(3)}`, null], ["Profit", `${prof >= 0 ? "+" : "−"}KWD ${Math.abs(prof).toFixed(3)}${rev > 0 ? ` · ${Math.round(prof / rev * 100)}%` : ""}`, prof >= 0 ? "var(--success)" : "var(--danger)"]].map(([lb, v, c2]) => (
+                {[["🧾 Costed items in filter (no labor)", nIt, null], ["Revenue", `KWD ${rev.toFixed(3)}`, null], ["Item costs", `KWD ${cost.toFixed(3)}`, null], ["Profit", `${prof >= 0 ? "+" : "−"}KWD ${Math.abs(prof).toFixed(3)}${rev > 0 ? ` · ${Math.round(prof / rev * 100)}%` : ""}`, prof >= 0 ? "var(--success)" : "var(--danger)"]].map(([lb, v, c2]) => (
                   <div key={lb} style={{ flex: "1 1 130px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px" }}>
                     <div style={{ fontSize: 9.5, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>{lb}</div>
                     <div style={{ fontSize: 14.5, fontWeight: 800, color: c2 || "var(--text)" }}>{v}</div>
@@ -9012,15 +9012,27 @@ function CostsView({ jobs, onUpdate }) {
           cost += (Number(it.cost) || 0) * q2;
         }));
         const prof = rev - cost;
-        return (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-            {[["🧾 Today's items", nIt, null], ["Revenue", `KWD ${rev.toFixed(3)}`, null], ["Item costs", `KWD ${cost.toFixed(3)}`, null], ["Profit", `${prof >= 0 ? "+" : "−"}KWD ${Math.abs(prof).toFixed(3)}${rev > 0 ? ` · ${Math.round(prof / rev * 100)}%` : ""}`, prof >= 0 ? "var(--success)" : "var(--danger)"]].map(([lb, v, c2]) => (
+        // parts/tires-only subset — the comparable twin of the History report
+        let pRev = 0, pCost = 0, pN = 0;
+        tj.forEach(j => (j.items || []).forEach(it => {
+          if (!(it.kind === "tire" || it.kind === "part") || isLaborLine(it)) return;
+          const q2 = Number(it.qty) || 1; pN += q2;
+          pRev += (Number(it.price ?? it.unit_price) || 0) * q2;
+          pCost += (Number(it.cost) || 0) * q2;
+        }));
+        return (<>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
+            {[["🧾 Today's schedule — all items", nIt, null], ["Revenue (incl. labor)", `KWD ${rev.toFixed(3)}`, null], ["Item costs", `KWD ${cost.toFixed(3)}`, null], ["Profit", `${prof >= 0 ? "+" : "−"}KWD ${Math.abs(prof).toFixed(3)}${rev > 0 ? ` · ${Math.round(prof / rev * 100)}%` : ""}`, prof >= 0 ? "var(--success)" : "var(--danger)"]].map(([lb, v, c2]) => (
               <div key={lb} style={{ flex: "1 1 130px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: "7px 12px" }}>
                 <div style={{ fontSize: 9.5, fontWeight: 800, color: "var(--muted)", textTransform: "uppercase" }}>{lb}</div>
                 <div style={{ fontSize: 15, fontWeight: 800, color: c2 || "var(--text)" }}>{v}</div>
               </div>
             ))}
           </div>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--muted)", margin: "0 2px 10px" }}>
+            🔩 parts/tires only: {pN} items · revenue KWD {pRev.toFixed(3)} · costs KWD {pCost.toFixed(3)} · profit {pRev - pCost >= 0 ? "+" : "−"}KWD {Math.abs(pRev - pCost).toFixed(3)}{pRev > 0 ? ` · ${Math.round((pRev - pCost) / pRev * 100)}%` : ""} — compare with History (History also includes today's edits on older orders)
+          </div>
+        </>
         );
       })()}
       {(() => {
