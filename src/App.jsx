@@ -5415,6 +5415,7 @@ function MissionCelebrator({ done, goal, won }) {
 
 // ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
 function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid", variant = "bar", forceMode = null, agentName = null }) {
+  const [roadsOpen, setRoadsOpen] = useState(false); // 🛣 tap the mission card → the roads breakdown
   // one bar, one scheme: the ACTIVE one (💎 orders wins if both are live; owner previews orders when none)
   const mode = forceMode || (salesOn ? "orders" : targetsOn ? "mission" : null); // strictly the ACTIVE scheme
   if (!mode) return null;
@@ -5470,8 +5471,12 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
     const rem = Math.max(0, goal - done - pending);
     const allBooked = rem === 0 && !won;
     const bigNum = won ? "🎉" : allBooked ? "⏳" : mode === "orders" ? `${rem}` : `KWD ${rem.toFixed(0)}`;
-    return (
-      <div className="stat-card" style={{ background: cp.bg, color: cp.text, boxShadow: cp.shadow, border: "none" }}>
+    const roads = (mode === "mission" && st && rem > 0) ? (st.rows || []).filter(g => g.name !== "Other" && g.avg > 0.5).slice(0, 6) : [];
+    const EM = { "Tire Change & Balancing": "🛞", "Battery": "🔋", "Oil & Filter": "🛢", "Tire Patch": "🩹", "Brake Pads": "🛑", "Major Service": "🔧" };
+    const SH = { "Tire Change & Balancing": "Tires", "Battery": "Battery", "Oil & Filter": "Oil", "Tire Patch": "Patch", "Brake Pads": "Brakes", "Major Service": "Major" };
+    return (<>
+      <div className="stat-card" onClick={() => mode === "mission" && rem > 0 && setRoadsOpen(o => !o)}
+        style={{ background: cp.bg, color: cp.text, boxShadow: cp.shadow, border: "none", cursor: mode === "mission" && rem > 0 ? "pointer" : "default" }}>
         {mode === "mission" && <MissionCelebrator done={done} goal={goal} won={won} />}
         <div className="stat-num" style={{ color: cp.text }}>{bigNum}</div>
         <div className="stat-lbl" style={{ color: cp.sub, fontWeight: 800 }}>
@@ -5497,8 +5502,23 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
           <span style={{ color: cp.text }}>✓ {mode === "orders" ? done : done.toFixed(0)} completed</span>
           <span style={{ opacity: .85 }}>⏳ {mode === "orders" ? done + pending : (done + pending).toFixed(0)} booked</span>
         </div>
+        {mode === "mission" && rem > 0 && <div style={{ fontSize: 8.5, fontWeight: 700, color: cp.sub, marginTop: 3 }}>{roadsOpen ? "▲ hide the roads" : "▼ tap — pick your road"}</div>}
       </div>
-    );
+      {roadsOpen && roads.length > 0 && (
+        <div style={{ gridColumn: "1 / -1", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 14, padding: "10px 12px" }}>
+          <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 6, textAlign: "center" }}>🛣 Pick your road — any ONE of these books the remaining KWD {rem.toFixed(0)}:</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7 }}>
+            {roads.map(g => (
+              <div key={g.name} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 11, padding: "8px 4px", textAlign: "center" }}>
+                <div style={{ fontSize: 21 }}>{EM[g.name] || "📦"}</div>
+                <div style={{ fontSize: 15, fontWeight: 800 }}>{Math.ceil(rem / g.avg)}× <span style={{ fontSize: 10.5 }}>{SH[g.name] || g.name}</span></div>
+                <div style={{ fontSize: 8.5, fontWeight: 700, color: "var(--muted)" }}>≈ {g.avg.toFixed(0)} KD each</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>);
   }
   const reachPct = (done + pending) / goal * 100;
   const pal = targetPalette(paletteKey, "strip", won ? "win" : reachPct >= 75 ? "push" : "chase");
@@ -6132,13 +6152,13 @@ function JobDetail({ job, onBack, onUpdate, onReschedule, onEdit, onReorder, onR
             <OrderActions job={j} onAction={(patch) => patchJob(patch)} />
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10, fontSize: 12 }}>
               <PaymentLinkEditor value={j.payment_link} onSave={(link) => patchJob({ payment_link: link })} compact />
-              {(() => {
+              {(() => { try {
                     const PM = { Link: ["🔗", "#EFF6FF", "#1D4ED8"], Tabby: ["🅃", "#FDF2F8", "#BE185D"], Taly: ["🅃", "#FEF3C7", "#B45309"], "Visa/Master Card": ["💳", "#F5F3FF", "#6D28D9"], KNET: ["💳", "#F5F3FF", "#6D28D9"], Cash: ["💵", "#ECFDF5", "#047857"], Sparts: ["🤝", "#F1F5F9", "#475569"], Warranty: ["🛡", "#F1F5F9", "#475569"] };
                     const pt = String(j.payment_through || "");
                     const p = PM[pt]; if (!p) return null;
                     const fee = payFeeOf(pt, j.total);
                     return <span title={pt} style={{ fontSize: 10.5, fontWeight: 800, background: p[1], color: p[2], borderRadius: 8, padding: "3px 9px", whiteSpace: "nowrap" }}>{p[0]} {pt === "Visa/Master Card" ? "Visa/MC" : pt}{fee > 0 ? ` · fee ${fee.toFixed(3)}` : ""}</span>;
-                  })()}
+                  } catch (e) { return null; } })()}
               <span style={{ flex: "1 1 100%" }}><AccountingEditor xeroRef={j.xero_ref} invoiceNo={j.invoice_no} onSave={(patch) => patchJob(patch)} /></span>
             </div>
             <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--muted)" }}>
@@ -6814,13 +6834,13 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                 <OrderActions job={job} compact onAction={(patch) => onAction(job, patch)} />
                 <div style={{ marginTop: 8 }} onClick={e => e.stopPropagation()}>
                   <PaymentLinkEditor value={job.payment_link} onSave={(link) => onAction(job, { payment_link: link })} compact />
-                  {(() => {
+                  {(() => { try {
                     const PM = { Link: ["🔗", "#EFF6FF", "#1D4ED8"], Tabby: ["🅃", "#FDF2F8", "#BE185D"], Taly: ["🅃", "#FEF3C7", "#B45309"], "Visa/Master Card": ["💳", "#F5F3FF", "#6D28D9"], KNET: ["💳", "#F5F3FF", "#6D28D9"], Cash: ["💵", "#ECFDF5", "#047857"], Sparts: ["🤝", "#F1F5F9", "#475569"], Warranty: ["🛡", "#F1F5F9", "#475569"] };
                     const pt = String(job.payment_through || "");
                     const p = PM[pt]; if (!p) return null;
                     const fee = payFeeOf(pt, job.total);
                     return <span title={pt} style={{ fontSize: 10.5, fontWeight: 800, background: p[1], color: p[2], borderRadius: 8, padding: "3px 9px", whiteSpace: "nowrap" }}>{p[0]} {pt === "Visa/Master Card" ? "Visa/MC" : pt}{fee > 0 ? ` · fee ${fee.toFixed(3)}` : ""}</span>;
-                  })()}
+                  } catch (e) { return null; } })()}
                 </div>
               </div>
             )}
