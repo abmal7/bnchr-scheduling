@@ -2240,6 +2240,27 @@ function applyDiscount(base, disc) {
 }
 const blankDisc = () => ({ type: "pct", value: 0 });
 
+// Effective (discounted) unit price for a saved item: finds its service's price_disc
+// and applies it pro-rata. Falls back to the gross unit price when no discount exists.
+function itemNetPricing(job, it) {
+  const gross = Number(it.price ?? it.unit_price) || 0;
+  try {
+    const svcs = (job && job.services) || [];
+    const svc = svcs.find(sv => sv.id === (it.service_id || it.id)) || svcs.find(sv => (sv.parts || []).some(p => p.id === it.id));
+    const d = svc && svc.price_disc;
+    if (!d || !(Number(d.value) > 0) || !gross) return { unit: gross, gross, disc: null };
+    let base = 0;
+    if (it.kind === "tire") {
+      base = (Number(svc.unit_price) || 0) * (Number(svc.qty) || 1) + (Number(svc.rear_unit_price) || 0) * (Number(svc.rear_qty) || 0);
+    } else {
+      base = (svc.parts || []).reduce((s2, p) => s2 + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
+    }
+    if (!(base > 0)) return { unit: gross, gross, disc: null };
+    const ratio = applyDiscount(base, d) / base;
+    return { unit: Math.round(gross * ratio * 1000) / 1000, gross, disc: d };
+  } catch (e) { return { unit: gross, gross, disc: null }; }
+}
+
 // One editable discount control (toggle %/amount + value), shows live result.
 function DiscountField({ base, disc, onChange, label }) {
   const result = applyDiscount(base, disc);
@@ -8981,7 +9002,7 @@ function CostsView({ jobs, onUpdate }) {
               if (!it) { nIt += 1; cost += Number(h.new_cost) || 0; return; }
               const q2 = Number(it.qty) || 1;
               nIt += q2;
-              rev += (Number(it.price ?? it.unit_price) || 0) * q2;
+              rev += itemNetPricing(job, it).unit * q2;
               cost += (Number(it.cost) || 0) * q2;
             });
             const prof = rev - cost;
@@ -9026,7 +9047,8 @@ function CostsView({ jobs, onUpdate }) {
                       const costChanged = !isOrd && Number(h.old_cost || 0) !== Number(h.new_cost || 0);
                       const supChanged = !isOrd && (h.old_supplier || "") !== (h.new_supplier || "");
                       const poChanged = !isOrd && (h.old_po || "") !== (h.new_po || "");
-                      const price = it ? Number(it.price ?? it.unit_price) || 0 : null;
+                      const pr = it ? itemNetPricing(job, it) : null;
+                      const price = pr ? pr.unit : null;
                       const curCost = it ? Number(it.cost) || 0 : Number(h.new_cost) || 0;
                       const profit = price != null && price > 0 ? price - curCost : null;
                       const td3 = { fontSize: 12, padding: "7px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top", whiteSpace: "nowrap" };
@@ -9041,7 +9063,15 @@ function CostsView({ jobs, onUpdate }) {
                             <td style={td3}>{costChanged ? (<><span style={oldV}>{h.old_cost ?? "—"}</span><span style={chg}>{h.new_cost}</span></>) : <span style={{ fontWeight: 700 }}>{h.new_cost ?? h.old_cost ?? "—"}</span>}</td>
                             <td style={td3}>{supChanged ? (<><span style={oldV}>{h.old_supplier || "—"}</span><span style={chg}>{h.new_supplier || "—"}</span></>) : (h.new_supplier || h.old_supplier || (it && it.supplier ? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>now: {it.supplier}</span> : "—"))}</td>
                             <td style={td3}>{poChanged ? (<><span style={oldV}>{h.old_po || "—"}</span><span style={chg}>{h.new_po || "—"}</span></>) : (h.new_po || h.old_po || (it && it.po ? <span style={{ color: "var(--muted)", fontStyle: "italic" }}>now: {it.po}</span> : "—"))}</td>
-                            <td style={{ ...td3, fontWeight: 700 }}>{price != null && price > 0 ? price : "—"}</td>
+                            <td style={{ ...td3, fontWeight: 700 }}>{price != null && price > 0 ? (
+                              pr.disc ? (
+                                <span title={`service discount ${pr.disc.type === "pct" ? pr.disc.value + "%" : "KD " + pr.disc.value}, shared across its items`}>
+                                  <span style={{ color: "var(--muted)", textDecoration: "line-through", fontSize: 10.5, marginRight: 4 }}>{pr.gross}</span>
+                                  {price}
+                                  <span style={{ fontSize: 9, fontWeight: 800, background: "#FEF3C7", color: "#B45309", borderRadius: 6, padding: "1px 5px", marginLeft: 4 }}>−{pr.disc.type === "pct" ? pr.disc.value + "%" : "KD " + pr.disc.value}</span>
+                                </span>
+                              ) : price
+                            ) : "—"}</td>
                             <td style={td3}>{profit != null ? (
                               <span style={{ fontWeight: 800, color: profit >= 0 ? "var(--success)" : "var(--danger)" }}>
                                 {profit >= 0 ? "+" : ""}{Math.round(profit * 100) / 100}{price > 0 ? <span style={{ color: "var(--muted)", fontWeight: 600 }}> · {Math.round(profit / price * 100)}%</span> : null}
@@ -9084,7 +9114,7 @@ function CostsView({ jobs, onUpdate }) {
         tj.forEach(j => (j.items || []).forEach(it => {
           const q2 = Number(it.qty) || 1;
           nIt += q2;
-          rev += (Number(it.price ?? it.unit_price) || 0) * q2;
+          rev += itemNetPricing(j, it).unit * q2;
           cost += (Number(it.cost) || 0) * q2;
         }));
         const prof = rev - cost;
@@ -9093,7 +9123,7 @@ function CostsView({ jobs, onUpdate }) {
         tj.forEach(j => (j.items || []).forEach(it => {
           if (!(it.kind === "tire" || it.kind === "part") || isLaborLine(it)) return;
           const q2 = Number(it.qty) || 1; pN += q2;
-          pRev += (Number(it.price ?? it.unit_price) || 0) * q2;
+          pRev += itemNetPricing(j, it).unit * q2;
           pCost += (Number(it.cost) || 0) * q2;
         }));
         return (<>
