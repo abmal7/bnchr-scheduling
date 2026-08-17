@@ -5413,9 +5413,35 @@ function MissionCelebrator({ done, goal, won }) {
   return null;
 }
 
+function DayRoadsPanel({ jobs, fixedMonthly, loan, profitTarget }) {
+  let st = null;
+  try { st = computeServiceTargets(jobs || [], new Date(), fixedMonthly, profitTarget, loan); } catch (e) { return null; }
+  if (!st) return null;
+  const rem = Math.max(0, st.dailyNeed - (st.todayContribDone || 0) - (st.todayContribPending || 0));
+  if (!(rem > 0)) return null;
+  const roads = (st.rows || []).filter(g => g.name !== "Other" && g.avg > 0.5).slice(0, 6);
+  if (!roads.length) return null;
+  const EM = { "Tire Change & Balancing": "🛞", "Battery": "🔋", "Oil & Filter": "🛢", "Tire Patch": "🩹", "Brake Pads": "🛑", "Major Service": "🔧" };
+  const SH = { "Tire Change & Balancing": "Tires", "Battery": "Battery", "Oil & Filter": "Oil", "Tire Patch": "Patch", "Brake Pads": "Brakes", "Major Service": "Major" };
+  return (
+    <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 14, padding: "10px 12px", margin: "-8px 0 16px" }}>
+      <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 6, textAlign: "center" }}>🛣 Pick your road — any ONE of these books the remaining KWD {rem.toFixed(0)}:</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7 }}>
+        {roads.map(g => (
+          <div key={g.name} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 11, padding: "8px 4px", textAlign: "center" }}>
+            <div style={{ fontSize: 21 }}>{EM[g.name] || "📦"}</div>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>{Math.ceil(rem / g.avg)}× <span style={{ fontSize: 10.5 }}>{SH[g.name] || g.name}</span></div>
+            <div style={{ fontSize: 8.5, fontWeight: 700, color: "var(--muted)" }}>≈ {g.avg.toFixed(0)} KD each</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ═══ 📍 Ambient day-target strip — lives on the Schedule page, where the day happens ═══
-function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid", variant = "bar", forceMode = null, agentName = null }) {
-  const [roadsOpen, setRoadsOpen] = useState(false); // 🛣 tap the mission card → the roads breakdown
+function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, salesOn, targetsOn, isOwner, paletteKey = "vivid", variant = "bar", forceMode = null, agentName = null, roadsOpen = false, onToggleRoads = null }) {
+
   // one bar, one scheme: the ACTIVE one (💎 orders wins if both are live; owner previews orders when none)
   const mode = forceMode || (salesOn ? "orders" : targetsOn ? "mission" : null); // strictly the ACTIVE scheme
   if (!mode) return null;
@@ -5471,12 +5497,9 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
     const rem = Math.max(0, goal - done - pending);
     const allBooked = rem === 0 && !won;
     const bigNum = won ? "🎉" : allBooked ? "⏳" : mode === "orders" ? `${rem}` : `KWD ${rem.toFixed(0)}`;
-    const roads = (mode === "mission" && st && rem > 0) ? (st.rows || []).filter(g => g.name !== "Other" && g.avg > 0.5).slice(0, 6) : [];
-    const EM = { "Tire Change & Balancing": "🛞", "Battery": "🔋", "Oil & Filter": "🛢", "Tire Patch": "🩹", "Brake Pads": "🛑", "Major Service": "🔧" };
-    const SH = { "Tire Change & Balancing": "Tires", "Battery": "Battery", "Oil & Filter": "Oil", "Tire Patch": "Patch", "Brake Pads": "Brakes", "Major Service": "Major" };
-    return (<>
-      <div className="stat-card" onClick={() => mode === "mission" && rem > 0 && setRoadsOpen(o => !o)}
-        style={{ background: cp.bg, color: cp.text, boxShadow: cp.shadow, border: "none", cursor: mode === "mission" && rem > 0 ? "pointer" : "default" }}>
+    return (
+      <div className="stat-card" onClick={() => mode === "mission" && rem > 0 && onToggleRoads && onToggleRoads()}
+        style={{ background: cp.bg, color: cp.text, boxShadow: cp.shadow, border: "none", cursor: mode === "mission" && rem > 0 && onToggleRoads ? "pointer" : "default" }}>
         {mode === "mission" && <MissionCelebrator done={done} goal={goal} won={won} />}
         <div className="stat-num" style={{ color: cp.text }}>{bigNum}</div>
         <div className="stat-lbl" style={{ color: cp.sub, fontWeight: 800 }}>
@@ -5502,23 +5525,9 @@ function DayTargetStrip({ jobs, targetOrders, fixedMonthly, loan, profitTarget, 
           <span style={{ color: cp.text }}>✓ {mode === "orders" ? done : done.toFixed(0)} completed</span>
           <span style={{ opacity: .85 }}>⏳ {mode === "orders" ? done + pending : (done + pending).toFixed(0)} booked</span>
         </div>
-        {mode === "mission" && rem > 0 && <div style={{ fontSize: 8.5, fontWeight: 700, color: cp.sub, marginTop: 3 }}>{roadsOpen ? "▲ hide the roads" : "▼ tap — pick your road"}</div>}
+        {mode === "mission" && rem > 0 && onToggleRoads && <div style={{ fontSize: 8.5, fontWeight: 700, color: cp.sub, marginTop: 3 }}>{roadsOpen ? "▲ hide the roads" : "▼ tap — pick your road"}</div>}
       </div>
-      {roadsOpen && roads.length > 0 && (
-        <div style={{ gridColumn: "1 / -1", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 14, padding: "10px 12px" }}>
-          <div style={{ fontSize: 11.5, fontWeight: 800, marginBottom: 6, textAlign: "center" }}>🛣 Pick your road — any ONE of these books the remaining KWD {rem.toFixed(0)}:</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 7 }}>
-            {roads.map(g => (
-              <div key={g.name} style={{ background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 11, padding: "8px 4px", textAlign: "center" }}>
-                <div style={{ fontSize: 21 }}>{EM[g.name] || "📦"}</div>
-                <div style={{ fontSize: 15, fontWeight: 800 }}>{Math.ceil(rem / g.avg)}× <span style={{ fontSize: 10.5 }}>{SH[g.name] || g.name}</span></div>
-                <div style={{ fontSize: 8.5, fontWeight: 700, color: "var(--muted)" }}>≈ {g.avg.toFixed(0)} KD each</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </>);
+    );
   }
   const reachPct = (done + pending) / goal * 100;
   const pal = targetPalette(paletteKey, "strip", won ? "win" : reachPct >= 75 ? "push" : "chase");
@@ -6572,7 +6581,8 @@ function OrderActions({ job, onAction, compact }) {
 
 // Filters survive opening an order and coming back (the list unmounts, its memory shouldn't)
 let SCHED_FILTER_MEMORY = null;
-function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role, dayTargetCard = null }) {
+function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onReschedule, onAction, role, renderDayTarget = null, dayRoadsPanel = null }) {
+  const [roadsOpen, setRoadsOpen] = useState(false);
   const fm = SCHED_FILTER_MEMORY || {};
   const [filterTruck, setFilterTruck] = useState(fm.filterTruck ?? "all");
   const [stageF, setStageF] = useState(fm.stageF ?? "active");   // active | successful | all — default: the working queue
@@ -6643,8 +6653,9 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
           <div style={{ fontSize: 10, color: "#059669", fontWeight: 600, marginTop: 1 }}>collected this day: KWD {collectedKD.toFixed(3)}</div>
         </div>
         <div className="stat-card"><div className="stat-num" style={{ color: "#1D4ED8" }}>{base.filter(j => j.payment_status === "paid" && j.status !== "cancelled").length}</div><div className="stat-lbl">Paid</div></div>
-        {dayTargetCard}
+        {renderDayTarget && renderDayTarget({ roadsOpen, onToggleRoads: () => setRoadsOpen(o => !o) })}
       </div>
+      {roadsOpen && dayRoadsPanel}
 
       <div className="page-header">
         <div className="page-title">Schedule</div>
@@ -6743,7 +6754,7 @@ function ScheduleView({ jobs, customers, onSelectJob, onNewJob, onNewJobAt, onRe
                   {job.assigned_truck && <span className="tag" style={{ background: truckColor(job.assigned_truck).bg, color: truckColor(job.assigned_truck).text, whiteSpace: "nowrap" }}>{job.assigned_truck}</span>}
                   {job.scheduled_at && (
                     <span className="tag tag-time" style={{ whiteSpace: "nowrap" }}>
-                      {fmtDate(job.scheduled_at)} · {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}
+                      {fmtTime(job.scheduled_at)}{job.duration ? ` · ${job.duration}h` : ""}
                     </span>
                   )}
                 </div>
@@ -10554,12 +10565,14 @@ export default function App() {
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "schedule" && (
             <ScheduleView key={"sched-" + cfgTick} jobs={jobs} customers={customers} role={role}
-              dayTargetCard={role === "sales" && serviceTargetsOn ? (
+              renderDayTarget={role === "sales" && serviceTargetsOn ? (({ roadsOpen, onToggleRoads }) => (
                 <DayTargetStrip variant="card" forceMode="mission" jobs={jobs} targetOrders={orderTargetKD}
                   fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD}
                   profitTarget={Number(appSettings.service_profit_target) || 3000}
-                  salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner} paletteKey={targetPaletteKey} />
-              ) : null}
+                  salesOn={salesIncentOn} targetsOn={serviceTargetsOn} isOwner={isOwner} paletteKey={targetPaletteKey}
+                  roadsOpen={roadsOpen} onToggleRoads={onToggleRoads} />
+              )) : null}
+              dayRoadsPanel={<DayRoadsPanel jobs={jobs} fixedMonthly={Number(appSettings.fixed_expenses) || 10600} loan={loanKD} profitTarget={Number(appSettings.service_profit_target) || 3000} />}
               onSelectJob={setSelectedJob} onNewJob={() => { setPrefillSlot(null); setShowNew(true); }} onNewJobAt={(truck, hour, date) => { setPrefillSlot({ truck, hour, date }); setShowNew(true); }} onReschedule={setRescheduleJob} onEdit={setEditingJob} onAction={handleJobAction} />
           )}
           {!loading && !selectedJob && !selectedCustomer && tab === "quotes" && (
