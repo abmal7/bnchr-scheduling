@@ -2938,6 +2938,7 @@ function TruckSlotGrid({ jobs, dateStr, duration, selectedTruck, selectedHour, o
 // 3) Slot grid scheduling (truck + start hour, multi-hour duration)
 // 4) Admin (lead, payment, notes)  → submit as DRAFT
 function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, addresses, jobs, prefill, prefillOrder, onNewCustomer, onCustomerCreated, onCarCreated, onAddressCreated, defaultAgent, catalog, fixedMonthly = 10600, profitTargetKD = 3000, loanKD = 933, paletteKey = "vivid" }) {
+  const [keepVerif, setKeepVerif] = useState(true); // 🔒 minor edits keep the verification chain by default
   const isEdit = !!editJob;
   // Reconstruct editable service blocks from a saved job (uses services[] if present, else items[])
   const hydrateServices = (job) => {
@@ -3335,7 +3336,7 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
         patch.parts_released = false;
         patch.techs_released = false;
       }
-      if (itemsChanged && !settled) {
+      if (itemsChanged && !settled && !keepVerif) {
         // re-verification habit: clear all match confirmations + downstream per-item checks.
         // NEVER on completed orders — corrections (e.g. linking the car afterwards) must
         // not erase the verification history of work already delivered.
@@ -3420,7 +3421,18 @@ function NewJobModal({ onClose, onCreated, onEdited, editJob, customers, cars, a
           )}
           {isEdit && (editJob.parts_released || editJob.techs_released || editJob.truck_status === "processing" || editJob.truck_status === "completed") && (
             <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 8, padding: "10px 14px", margin: "0 0 14px", fontSize: 13, color: "#92400E" }}>
-              ⚠ Work has already started on this order ({editJob.parts_released ? "parts released" : ""}{editJob.parts_released && (editJob.techs_released || editJob.truck_status !== "scheduled") ? ", " : ""}{editJob.techs_released ? "shown to technicians" : ""}{editJob.truck_status && editJob.truck_status !== "scheduled" ? ` · truck ${editJob.truck_status}` : ""}). Editing services or items will reset the verification checks and the distributor/technician will need to re-verify. Proceed carefully.
+              ⚠ Work has already started on this order ({editJob.parts_released ? "parts released" : ""}{editJob.parts_released && (editJob.techs_released || editJob.truck_status !== "scheduled") ? ", " : ""}{editJob.techs_released ? "shown to technicians" : ""}{editJob.truck_status && editJob.truck_status !== "scheduled" ? ` · truck ${editJob.truck_status}` : ""}).
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 8, cursor: "pointer", fontWeight: 700 }}>
+                <input type="checkbox" checked={keepVerif} onChange={e => setKeepVerif(e.target.checked)} style={{ marginTop: 2 }} />
+                <span>
+                  🔒 Keep verification checks ({keepVerif ? "ON" : "OFF"})
+                  <span style={{ display: "block", fontWeight: 600, fontSize: 11, marginTop: 2 }}>
+                    {keepVerif
+                      ? "For minor edits (price, address, note, payment) that DON'T change the physical work — the distributor & technician checks stay exactly as they are."
+                      : "⚠ OFF: saving will RESET the whole verification chain — sales match, distributor tire check, and both technician checks — and the team must re-verify from the start. Use when tires/parts actually changed."}
+                  </span>
+                </span>
+              </label>
             </div>
           )}
           <div className="form-grid">
@@ -9139,6 +9151,39 @@ function CostsView({ jobs, onUpdate }) {
             🔩 parts/tires only: {pN} items · revenue KWD {pRev.toFixed(3)} · costs KWD {pCost.toFixed(3)} · profit {pRev - pCost >= 0 ? "+" : "−"}KWD {Math.abs(pRev - pCost).toFixed(3)}{pRev > 0 ? ` · ${Math.round((pRev - pCost) / pRev * 100)}%` : ""} — compare with History (History also includes today's edits on older orders)
           </div>
         </>
+        );
+      })()}
+      {(() => {
+        // 🕳 DETECTOR: revenue in the order total that no item line represents —
+        // invisible to costing (the Dalil case: 303 KD of Pirellis priced only in the total)
+        const todayStr3 = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+        const holes = [];
+        jobs.filter(j => j.status !== "cancelled" && j.status !== "draft" && String(j.scheduled_at || "").slice(0, 10) === todayStr3)
+          .forEach(j => {
+            try {
+              const itemsSale = (j.items || []).reduce((s2, it) => s2 + itemNetPricing(j, it).unit * (Number(it.qty) || 1), 0);
+              const laborNet = (j.services || []).reduce((s2, sv) => {
+                const g = Number(sv.labor) || 0;
+                const d = sv.labor_disc;
+                const net = d && Number(d.value) > 0 ? (d.type === "pct" ? g * (1 - Number(d.value) / 100) : Math.max(0, g - Number(d.value))) : g;
+                return s2 + net;
+              }, 0);
+              const gap = (Number(j.total) || 0) - itemsSale - laborNet;
+              if (gap > 1) holes.push({ j, gap });
+            } catch (e) {}
+          });
+        if (!holes.length) return null;
+        return (
+          <div style={{ background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: 12, padding: "9px 13px", marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, color: "#B91C1C", marginBottom: 3 }}>
+              🕳 Unitemized revenue — {holes.length} order{holes.length === 1 ? "" : "s"} carry money no item line represents (can't be costed, profit reports under-count it):
+            </div>
+            {holes.map(({ j, gap }) => (
+              <div key={j.id} style={{ fontSize: 11.5, fontWeight: 700, color: "#7F1D1D" }}>
+                {j.customer_name || j.invoice_no || "order"} — KWD {gap.toFixed(3)} in the total but not in items · open the order and add the missing item lines (with qty & price)
+              </div>
+            ))}
+          </div>
         );
       })()}
       {(() => {
